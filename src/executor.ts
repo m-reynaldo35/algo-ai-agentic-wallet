@@ -2,6 +2,8 @@ import { validateSandboxExport } from "./middleware/validation.js";
 import { authenticateAgentIdentity } from "./auth/liquidAuth.js";
 import { signAtomicGroup } from "./signer/roccaWallet.js";
 import { executeSettlement, type SettlementResult } from "./network/broadcaster.js";
+import { logSettlementSuccess, logExecutionFailure } from "./services/audit.js";
+import { config } from "./config.js";
 import type { SandboxExport } from "./services/transaction.js";
 
 /**
@@ -74,6 +76,7 @@ export async function executePipeline(
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown validation error";
     console.error(`[Executor] ABORT at Stage 1 (validation): ${error}`);
+    logExecutionFailure(agentId, "validation", error);
     return {
       success: false,
       failedStage: "validation",
@@ -91,6 +94,7 @@ export async function executePipeline(
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown auth error";
     console.error(`[Executor] ABORT at Stage 2 (auth): ${error}`);
+    logExecutionFailure(agentId, "auth", error);
     return {
       success: false,
       failedStage: "auth",
@@ -112,6 +116,7 @@ export async function executePipeline(
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown signing error";
     console.error(`[Executor] ABORT at Stage 3 (sign): ${error}`);
+    logExecutionFailure(agentId, "sign", error);
     return {
       success: false,
       failedStage: "sign",
@@ -129,6 +134,7 @@ export async function executePipeline(
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown broadcast error";
     console.error(`[Executor] ABORT at Stage 4 (broadcast): ${error}`);
+    logExecutionFailure(agentId, "broadcast", error);
     return {
       success: false,
       failedStage: "broadcast",
@@ -145,6 +151,13 @@ export async function executePipeline(
   console.log(`[Executor]   Round:  ${settlement.confirmedRound}`);
   console.log(`[Executor]   Group:  ${settlement.groupId}`);
   console.log(`[Executor] ═══════════════════════════════════════════\n`);
+
+  logSettlementSuccess(
+    settlement.txnId,
+    agentId,
+    config.x402.priceMicroUsdc,
+    settlement.groupId,
+  );
 
   return {
     success: true,

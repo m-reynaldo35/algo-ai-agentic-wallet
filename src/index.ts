@@ -1,12 +1,20 @@
 import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
 import { config } from "./config.js";
 import { x402Paywall } from "./middleware/x402.js";
 import { constructAtomicGroup } from "./services/transaction.js";
 import { executePipeline } from "./executor.js";
 import { DEFAULT_SLIPPAGE_BIPS } from "./utils/slippage.js";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const app = express();
 app.use(express.json());
+
+// ── Serve public/skill.md and other static assets ─────────────
+app.use(express.static(path.join(__dirname, "..", "public")));
 
 // ── Health ──────────────────────────────────────────────────────
 app.get("/health", (_req, res) => {

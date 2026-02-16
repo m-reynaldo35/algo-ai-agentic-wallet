@@ -2,6 +2,7 @@
   "name": "algo-ai-agentic-wallet",
   "version": "0.1.0",
   "description": "x402-compliant AI-to-AI financial routing and settlement protocol on Algorand",
+  "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -11,6 +12,7 @@
     "deploy:preview": "npm run build && vercel"
   },
   "dependencies": {
+    "@m-reynaldo35/x402-client": "^0.1.0",
     "algosdk": "^3.2.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2"
