@@ -9,7 +9,37 @@
   ],
   "routes": [
     {
+      "src": "/api/(.*)",
+      "methods": ["OPTIONS", "POST", "GET"],
+      "headers": {
+        "Access-Control-Allow-Origin": "https://*.moltbook.com, https://*.openclaw.network",
+        "Access-Control-Allow-Methods": "OPTIONS, POST, GET",
+        "Access-Control-Allow-Headers": "Content-Type, X-PAYMENT, X-SLIPPAGE-BIPS, X-Platform-Id",
+        "Access-Control-Max-Age": "86400",
+        "X-Frame-Options": "DENY",
+        "X-Content-Type-Options": "nosniff",
+        "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
+        "Referrer-Policy": "strict-origin-when-cross-origin"
+      },
+      "dest": "dist/index.js"
+    },
+    {
+      "src": "/health",
+      "methods": ["GET"],
+      "headers": {
+        "X-Frame-Options": "DENY",
+        "X-Content-Type-Options": "nosniff",
+        "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload"
+      },
+      "dest": "dist/index.js"
+    },
+    {
       "src": "/(.*)",
+      "headers": {
+        "X-Frame-Options": "DENY",
+        "X-Content-Type-Options": "nosniff",
+        "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload"
+      },
       "dest": "dist/index.js"
     }
   ],

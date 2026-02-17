@@ -16,4 +16,15 @@ export const config = {
     /** Algorand testnet USDC ASA ID */
     usdcAssetId: parseInt(process.env.X402_USDC_ASSET_ID || "10458941", 10),
   },
+
+  gora: {
+    /** Gora Oracle main application ID (Testnet) */
+    appId: BigInt(process.env.GORA_APP_ID || "1275319623"),
+    /** Gora Oracle request fee in microAlgos */
+    requestFeeMicroAlgo: BigInt(process.env.GORA_REQUEST_FEE || "100000"),
+    /** Maximum oracle data age in seconds before rejection */
+    maxStalenessSeconds: parseInt(process.env.GORA_MAX_STALENESS_SECONDS || "15", 10),
+    /** USDC/ALGO price feed key (Gora feed identifier) */
+    priceFeedKey: process.env.GORA_PRICE_FEED_KEY || "USDC/ALGO",
+  },
 } as const;

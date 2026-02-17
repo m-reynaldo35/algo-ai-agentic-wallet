@@ -13,7 +13,11 @@
   },
   "dependencies": {
     "@m-reynaldo35/x402-client": "^0.1.0",
+    "@upstash/ratelimit": "^2.0.8",
+    "@upstash/redis": "^1.36.2",
     "algosdk": "^3.2.0",
+    "did-jwt-vc": "^4.0.16",
+    "did-resolver": "^4.1.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "pino": "^10.3.1"

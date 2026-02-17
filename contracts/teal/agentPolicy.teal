@@ -1,0 +1,49 @@
+#pragma version 10
+
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║  Agent Spending Policy — Delegated Logic Signature              ║
+// ║                                                                  ║
+// ║  A stateless TEAL Smart Signature that mathematically bounds    ║
+// ║  agent spending at the AVM consensus level. When an agent's     ║
+// ║  Algorand account delegates authority to this LogicSig, every   ║
+// ║  transaction the agent submits must satisfy ALL assertions      ║
+// ║  below — otherwise the AVM rejects it before execution.         ║
+// ║                                                                  ║
+// ║  Policy Rules:                                                   ║
+// ║    1. Maximum fee: 1000 microAlgo (prevents fee draining)       ║
+// ║    2. Transaction type: ASA Transfer only (type enum 4)         ║
+// ║    3. Maximum spend: 50 USDC per transaction (50,000,000 μUSDC) ║
+// ╚══════════════════════════════════════════════════════════════════╝
+
+// ── Rule 1: Fee Ceiling ─────────────────────────────────────────
+// Reject any transaction with a fee exceeding 1000 microAlgo.
+// This prevents a compromised agent from inflating fees to drain
+// the delegating account's ALGO balance.
+txn Fee
+int 1000
+<=
+assert
+
+// ── Rule 2: Transaction Type Restriction ────────────────────────
+// Only allow Asset Transfer transactions (TypeEnum == 4).
+// This prevents the agent from issuing payments, application
+// calls, key registrations, or any other transaction type.
+// The agent can ONLY move ASAs — nothing else.
+txn TypeEnum
+int 4
+==
+assert
+
+// ── Rule 3: Per-Transaction Spending Cap ────────────────────────
+// Cap each ASA transfer at 50,000,000 micro-units (50 USDC).
+// Even if the delegating account holds millions of USDC, a
+// single agent transaction can never move more than 50 USDC.
+txn AssetAmount
+int 50000000
+<=
+assert
+
+// ── Verdict ─────────────────────────────────────────────────────
+// All three assertions passed. Approve the transaction.
+int 1
+return

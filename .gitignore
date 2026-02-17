@@ -4,3 +4,4 @@ dist/
 !.env.example
 *.js.map
 .vercel/
+.vercel

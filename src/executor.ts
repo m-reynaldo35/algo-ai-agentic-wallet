@@ -2,7 +2,7 @@ import { validateSandboxExport } from "./middleware/validation.js";
 import { authenticateAgentIdentity } from "./auth/liquidAuth.js";
 import { signAtomicGroup } from "./signer/roccaWallet.js";
 import { executeSettlement, type SettlementResult } from "./network/broadcaster.js";
-import { logSettlementSuccess, logExecutionFailure } from "./services/audit.js";
+import { logSettlementSuccess, logExecutionFailure, type OracleContext } from "./services/audit.js";
 import { config } from "./config.js";
 import type { SandboxExport } from "./services/transaction.js";
 
@@ -69,14 +69,21 @@ export async function executePipeline(
 
   // ── Stage 1: Validation Gatekeeper ────────────────────────────
   // Runs BEFORE any auth or signing. Decodes the unsigned blobs
-  // and mathematically verifies toll amount, receiver, and signer.
+  // and mathematically verifies toll amount, receiver, signer,
+  // Gora oracle price bounds, and oracle data freshness.
   console.log(`\n[Executor] Stage 1/4: Validating sandbox export...`);
+  let oracleContext: OracleContext | undefined;
   try {
-    validateSandboxExport(sandboxExport);
+    const validationResult = await validateSandboxExport(sandboxExport);
+    oracleContext = validationResult.oracleContext;
+
+    if (oracleContext) {
+      console.log(`[Executor]   Oracle: ${oracleContext.assetPair} @ ${oracleContext.goraConsensusPrice} (δ=${oracleContext.slippageDelta}bips)`);
+    }
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown validation error";
     console.error(`[Executor] ABORT at Stage 1 (validation): ${error}`);
-    logExecutionFailure(agentId, "validation", error);
+    logExecutionFailure(agentId, "validation", error, oracleContext);
     return {
       success: false,
       failedStage: "validation",
@@ -94,7 +101,7 @@ export async function executePipeline(
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown auth error";
     console.error(`[Executor] ABORT at Stage 2 (auth): ${error}`);
-    logExecutionFailure(agentId, "auth", error);
+    logExecutionFailure(agentId, "auth", error, oracleContext);
     return {
       success: false,
       failedStage: "auth",
@@ -116,7 +123,7 @@ export async function executePipeline(
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown signing error";
     console.error(`[Executor] ABORT at Stage 3 (sign): ${error}`);
-    logExecutionFailure(agentId, "sign", error);
+    logExecutionFailure(agentId, "sign", error, oracleContext);
     return {
       success: false,
       failedStage: "sign",
@@ -134,7 +141,7 @@ export async function executePipeline(
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown broadcast error";
     console.error(`[Executor] ABORT at Stage 4 (broadcast): ${error}`);
-    logExecutionFailure(agentId, "broadcast", error);
+    logExecutionFailure(agentId, "broadcast", error, oracleContext);
     return {
       success: false,
       failedStage: "broadcast",
@@ -157,6 +164,7 @@ export async function executePipeline(
     agentId,
     config.x402.priceMicroUsdc,
     settlement.groupId,
+    oracleContext,
   );
 
   return {

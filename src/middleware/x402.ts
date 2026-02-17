@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import algosdk from "algosdk";
 import { config } from "../config.js";
+import { enforceReplayProtection } from "./replayGuard.js";
 
 /**
  * x402 Payment Required middleware — Phase 2: Cryptographic Enforcement.
@@ -26,6 +27,10 @@ interface X402PaymentProof {
   transactions: string[];
   senderAddr: string;
   signature: string;
+  /** Unix epoch seconds — enforced within 60s time bound */
+  timestamp?: number;
+  /** Number Used Once — prevents signature replay */
+  nonce?: string;
 }
 
 // ── application/pay+json response schema ────────────────────────
@@ -141,7 +146,7 @@ function verifyGroupIntegrity(proof: X402PaymentProof): boolean {
 }
 
 // ── Middleware ──────────────────────────────────────────────────
-export function x402Paywall(req: Request, res: Response, next: NextFunction): void {
+export async function x402Paywall(req: Request, res: Response, next: NextFunction): Promise<void> {
   const paymentHeader = req.header("X-PAYMENT");
 
   // Step 1: Header presence
@@ -166,6 +171,16 @@ export function x402Paywall(req: Request, res: Response, next: NextFunction): vo
   // Step 4: Atomic group integrity
   if (!verifyGroupIntegrity(proof)) {
     reject402(res, req.path, "Group integrity failure. Transaction group IDs do not match the claimed groupId.");
+    return;
+  }
+
+  // Step 5: Replay attack prevention — time bound + nonce uniqueness (Redis-backed)
+  const replayCheck = await enforceReplayProtection(proof.timestamp, proof.nonce);
+  if (!replayCheck.valid) {
+    res.status(401).json({
+      error: `Unauthorized: Signature Replay Detected`,
+      detail: replayCheck.error,
+    });
     return;
   }
 

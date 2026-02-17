@@ -1,4 +1,5 @@
 import algosdk from "algosdk";
+import crypto from "crypto";
 import type { PayJson, X402PaymentProof } from "./types.js";
 
 /**
@@ -93,6 +94,8 @@ async function buildPaymentProof(
     transactions: [Buffer.from(signedTxn).toString("base64")],
     senderAddr: senderAddress,
     signature: Buffer.from(signature).toString("base64"),
+    timestamp: Math.floor(Date.now() / 1000),
+    nonce: crypto.randomUUID(),
   };
 }
 

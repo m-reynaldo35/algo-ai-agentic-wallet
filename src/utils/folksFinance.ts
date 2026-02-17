@@ -20,6 +20,9 @@ export const FOLKS_NTT_APP_ID = BigInt(process.env.FOLKS_NTT_APP_ID || "10000000
 export const WORMHOLE_CORE_APP_ID = BigInt(process.env.WORMHOLE_CORE_APP_ID || "1000000002");
 export const WORMHOLE_TOKEN_BRIDGE_APP_ID = BigInt(process.env.WORMHOLE_TOKEN_BRIDGE_APP_ID || "1000000003");
 
+// ── Gora Oracle App ID (re-exported for foreign apps reference) ─
+export const GORA_ORACLE_APP_ID = BigInt(process.env.GORA_APP_ID || "1275319623");
+
 // Wormhole chain IDs (standard)
 export const WORMHOLE_CHAIN_IDS: Record<string, number> = {
   algorand: 8,
@@ -115,7 +118,7 @@ export async function buildNTTBridgeTxn(
     appIndex: FOLKS_NTT_APP_ID,
     appArgs: [methodSelector, amountArg, chainIdArg, recipientArg, nonceArg, minAmountOutArg],
     foreignAssets: [BigInt(config.x402.usdcAssetId)],
-    foreignApps: [WORMHOLE_CORE_APP_ID, WORMHOLE_TOKEN_BRIDGE_APP_ID],
+    foreignApps: [WORMHOLE_CORE_APP_ID, WORMHOLE_TOKEN_BRIDGE_APP_ID, GORA_ORACLE_APP_ID],
     suggestedParams,
     note: new Uint8Array(Buffer.from(`x402:ntt:${destinationChain}:${Date.now()}`)),
   });

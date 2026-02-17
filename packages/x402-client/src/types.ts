@@ -53,6 +53,10 @@ export interface X402PaymentProof {
   transactions: string[];
   senderAddr: string;
   signature: string;
+  /** Unix epoch seconds — enforced within 60s time bound */
+  timestamp?: number;
+  /** Number Used Once — prevents signature replay */
+  nonce?: string;
 }
 
 // ── Sandbox Export (returned by /api/agent-action) ─────────────

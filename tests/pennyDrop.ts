@@ -154,12 +154,14 @@ async function pennyDrop() {
 
   log("AGENT A", `Ed25519 signature produced: ${Buffer.from(signature).toString("base64").slice(0, 20)}...`);
 
-  // Construct the X-PAYMENT header payload
+  // Construct the X-PAYMENT header payload (with replay protection fields)
   const paymentProof = {
     groupId,
     transactions: signedProofTxns.map((st) => Buffer.from(st).toString("base64")),
     senderAddr: agentAddr,
     signature: Buffer.from(signature).toString("base64"),
+    timestamp: Math.floor(Date.now() / 1000),
+    nonce: `penny-drop-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   };
 
   // Base64-encode the JSON payload for the header
