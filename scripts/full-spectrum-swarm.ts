@@ -321,8 +321,9 @@ async function runTypeB(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-PAYMENT": xPayment,
+        "X-PAYMENT":      xPayment,
         "X-SLIPPAGE-BIPS": "50",
+        "x-algo-auth":    addr,   // KYA: agent declares identity before settlement
       },
       body: JSON.stringify({
         senderAddress:        addr,

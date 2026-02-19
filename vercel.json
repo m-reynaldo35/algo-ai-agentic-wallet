@@ -38,39 +38,21 @@
 
     {
       "src": "/api/agent-action",
-      "missing": [
-        {
-          "type": "header",
-          "key": "x-algo-auth"
-        }
-      ],
-      "mitigate": {
-        "action": "deny"
-      }
+      "has": [{ "type": "header", "key": "x-payment" }],
+      "missing": [{ "type": "header", "key": "x-algo-auth" }],
+      "mitigate": { "action": "deny" }
     },
     {
       "src": "/api/batch-action",
-      "missing": [
-        {
-          "type": "header",
-          "key": "x-algo-auth"
-        }
-      ],
-      "mitigate": {
-        "action": "deny"
-      }
+      "has": [{ "type": "header", "key": "x-payment" }],
+      "missing": [{ "type": "header", "key": "x-algo-auth" }],
+      "mitigate": { "action": "deny" }
     },
     {
       "src": "/api/execute",
-      "missing": [
-        {
-          "type": "header",
-          "key": "x-algo-auth"
-        }
-      ],
-      "mitigate": {
-        "action": "deny"
-      }
+      "has": [{ "type": "header", "key": "x-payment" }],
+      "missing": [{ "type": "header", "key": "x-algo-auth" }],
+      "mitigate": { "action": "deny" }
     },
 
     {
