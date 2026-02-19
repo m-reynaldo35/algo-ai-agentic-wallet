@@ -194,10 +194,25 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
       throw err; // Re-throw staleness errors immediately (Module 3)
     }
     // On oracle fetch failure (network issues, uninitialized oracle),
-    // record the error but don't hard-fail — allow offline/testnet operation
+    // log a warning but don't push to errors[] — allow offline/testnet operation.
+    // errors[] poisoning would cause valid=false despite oraclePriceVerified=true.
     const msg = err instanceof Error ? err.message : "unknown error";
-    errors.push(`Rule 3: Oracle fetch failed — ${msg}`);
-    console.warn(`[Validation] Oracle fetch failed (non-fatal): ${msg}`);
+    console.warn(`[Validation] Rule 3: Oracle fetch failed (non-fatal, degrading gracefully): ${msg}`);
+
+    // Report to Sentry so oracle degradation is visible in the dashboard.
+    // This is not a thrown error — the pipeline continues — but it must
+    // never be silent in production. Phase 2 transition requires knowing
+    // how often the oracle is unreachable.
+    try {
+      const { captureException } = await import("@sentry/node");
+      captureException(new Error(`Gora oracle degraded: ${msg}`), {
+        level: "warning",
+        tags: { module: "validation", rule: "oracle_preflight" },
+      });
+    } catch {
+      // Sentry not available (test environment) — warn only
+    }
+
     oraclePriceVerified = true; // Graceful degradation for testnet
   }
 

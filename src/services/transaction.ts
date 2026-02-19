@@ -2,7 +2,6 @@ import algosdk from "algosdk";
 import { config } from "../config.js";
 import { getAlgodClient, getSuggestedParams } from "../network/nodely.js";
 import { buildNTTBridgeTxn } from "../utils/folksFinance.js";
-import { buildGoraOracleAppCall, buildGoraFeeTxn } from "../utils/gora.js";
 import { calculateMinAmountOut, DEFAULT_SLIPPAGE_BIPS } from "../utils/slippage.js";
 import { initSandbox, sealSandbox, type SandboxContext } from "../sandbox/vibekit.js";
 
@@ -212,36 +211,6 @@ export async function constructAtomicGroup(
     );
 
     // ────────────────────────────────────────────────────────────
-    // Txn 2: Gora Oracle Request Fee
-    //
-    // Payment transaction to the Gora Oracle application address
-    // covering the oracle request fee. This ensures the oracle
-    // price feed query is funded within the same atomic group.
-    // ────────────────────────────────────────────────────────────
-    const goraFeeTxn = buildGoraFeeTxn(senderAddr, suggestedParams);
-
-    manifest.push(
-      `[2] Gora Oracle Fee: ${config.gora.requestFeeMicroAlgo} microAlgo | ${senderAddr} → Gora App (${config.gora.appId})`,
-    );
-
-    // ────────────────────────────────────────────────────────────
-    // Txn 3: Gora Oracle Price Feed Request
-    //
-    // Application NoOp call to the Gora Oracle contract requesting
-    // the latest USDC/ALGO price assertion. The oracle data is
-    // used by the validation loop (Module 2) to independently
-    // verify the cross-chain swap rate before signing proceeds.
-    // ────────────────────────────────────────────────────────────
-    const goraOracleCallTxn = await buildGoraOracleAppCall(
-      { sender: senderAddr, feedKey: config.gora.priceFeedKey },
-      suggestedParams,
-    );
-
-    manifest.push(
-      `[3] Gora Oracle: Request ${config.gora.priceFeedKey} price feed | App ID: ${config.gora.appId}`,
-    );
-
-    // ────────────────────────────────────────────────────────────
     // Cryptographic Binding: Atomic Group Assignment
     //
     // algosdk.assignGroupID computes SHA-512/256 over the
@@ -252,8 +221,13 @@ export async function constructAtomicGroup(
     // same block and ALL must succeed — or ALL revert.
     //
     // This guarantees: no toll without bridge, no bridge without toll.
+    //
+    // Goracle price certification runs server-side via fetchGoraPriceData()
+    // in validateSandboxExport() before this group reaches the signer.
+    // Phase 2/3 transition: add keeper-funded oracle txn here once
+    // daily revenue exceeds 3× keeper cost (~$50/day).
     // ────────────────────────────────────────────────────────────
-    const txns = [x402TollTxn, bridgeTxn, goraFeeTxn, goraOracleCallTxn];
+    const txns = [x402TollTxn, bridgeTxn];
     algosdk.assignGroupID(txns);
 
     // Extract the group ID for the export envelope
@@ -508,27 +482,17 @@ export async function constructBatchedAtomicGroup(
       });
     }
 
-    // ── Shared Gora oracle call (one per batch) ─────────────────
-    const goraFeeTxn = buildGoraFeeTxn(senderAddr, suggestedParams);
-    const oracleIdx = intents.length * 2;
-    manifest.push(
-      `[${oracleIdx}] Gora Oracle Fee: ${config.gora.requestFeeMicroAlgo} microAlgo`,
-    );
-
-    const goraOracleCallTxn = await buildGoraOracleAppCall(
-      { sender: senderAddr, feedKey: config.gora.priceFeedKey },
-      suggestedParams,
-    );
-    manifest.push(
-      `[${oracleIdx + 1}] Gora Oracle: Request ${config.gora.priceFeedKey} price feed`,
-    );
-
     // ── Cryptographic Binding: Single Irreducible Atomic Group ──
-    // All toll payments, all bridge calls, and the oracle call are
-    // bound by a single SHA-512/256 group hash. The Algorand AVM
-    // enforces that ALL must succeed or ALL revert atomically.
-    // A failed slippage check on ANY intent kills the ENTIRE batch.
-    const allTxns = [...tollTxns, ...bridgeTxns, goraFeeTxn, goraOracleCallTxn];
+    // All toll payments and bridge calls are bound by a single
+    // SHA-512/256 group hash. The Algorand AVM enforces that ALL
+    // must succeed or ALL revert atomically. A failed slippage
+    // check on ANY intent kills the ENTIRE batch.
+    //
+    // Goracle price certification runs server-side via fetchGoraPriceData()
+    // in validateSandboxExport() before this group reaches the signer.
+    // Phase 2/3 transition: add keeper-funded oracle txn here once
+    // daily revenue exceeds 3× keeper cost (~$50/day).
+    const allTxns = [...tollTxns, ...bridgeTxns];
     algosdk.assignGroupID(allTxns);
 
     const groupId = Buffer.from(allTxns[0].group!).toString("base64");
