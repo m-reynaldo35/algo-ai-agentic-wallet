@@ -1,0 +1,55 @@
+{
+  "manifest_version": "1.0",
+  "agent_name": "Algo AI Wallet Router",
+  "agent_id": "algo-wallet-x402-router",
+  "description": "Autonomous cross-chain liquidity routing via x402 payment gate.",
+  "protocol": "x402-v1",
+  "capabilities": [
+    "cross-chain-swap",
+    "x402-settlement",
+    "atomic-data-swap",
+    "gora-oracle-pricing"
+  ],
+  "pricing": {
+    "currency": "USDC",
+    "amount_micro": 100000,
+    "amount_human": "0.10",
+    "network": "algorand-mainnet",
+    "asset_id": 31566704,
+    "toll_model": "per-request"
+  },
+  "endpoints": {
+    "agent_action": "https://ai-agentic-wallet.com/api/agent-action",
+    "execute": "https://ai-agentic-wallet.com/api/execute",
+    "health": "https://ai-agentic-wallet.com/health",
+    "telemetry": "https://ai-agentic-wallet.com/api/telemetry"
+  },
+  "webhook_url": "https://ai-agentic-wallet.com/api/execute",
+  "auth": {
+    "method": "X-PAYMENT",
+    "signature_scheme": "Ed25519",
+    "header": "X-PAYMENT",
+    "payload_encoding": "base64-json",
+    "identity": {
+      "standard": "W3C-VC",
+      "kya_required": true,
+      "min_reputation_score": 90
+    }
+  },
+  "network": {
+    "chain": "algorand",
+    "environment": "mainnet",
+    "consensus": "Pure Proof-of-Stake",
+    "finality": "sub-3s"
+  },
+  "oracle": {
+    "provider": "Gora",
+    "feed": "USDC/ALGO",
+    "max_staleness_seconds": 15
+  },
+  "policy": {
+    "spending_cap_micro_usdc": 50000000,
+    "enforcement": "TEAL-LogicSig",
+    "teal_version": 10
+  }
+}

@@ -1,5 +1,6 @@
 import algosdk from "algosdk";
 import { config } from "../config.js";
+import { getAlgodClient, getSuggestedParams } from "../network/nodely.js";
 import { buildNTTBridgeTxn } from "../utils/folksFinance.js";
 import { buildGoraOracleAppCall, buildGoraFeeTxn } from "../utils/gora.js";
 import { calculateMinAmountOut, DEFAULT_SLIPPAGE_BIPS } from "../utils/slippage.js";
@@ -104,39 +105,8 @@ export interface SandboxExport {
 }
 
 // ── Algod Client ────────────────────────────────────────────────
-
-function getAlgodClient(): algosdk.Algodv2 {
-  return new algosdk.Algodv2(
-    config.algorand.nodeToken,
-    config.algorand.nodeUrl,
-  );
-}
-
-/**
- * Fetch suggested params from the Algorand node.
- * In sandbox/test environments where the node is unreachable,
- * falls back to deterministic mock params that match the
- * algosdk.SuggestedParams shape exactly.
- */
-async function getSuggestedParams(): Promise<algosdk.SuggestedParams> {
-  try {
-    const client = getAlgodClient();
-    return await client.getTransactionParams().do();
-  } catch {
-    // Sandbox fallback: deterministic params for offline construction.
-    // These produce valid unsigned transaction structures that can be
-    // re-parameterized by Rocca before signing if needed.
-    return {
-      flatFee: true,
-      fee: BigInt(1000),
-      minFee: BigInt(1000),
-      firstValid: BigInt(1000),
-      lastValid: BigInt(2000),
-      genesisID: `${config.algorand.network}-v1.0`,
-      genesisHash: new Uint8Array(32), // 32-byte zero hash for sandbox
-    };
-  }
-}
+// Centralized via src/network/nodely.ts (Nodely free tier)
+// getAlgodClient() and getSuggestedParams() imported above
 
 // ── Core Builder ────────────────────────────────────────────────
 
@@ -149,7 +119,7 @@ async function getSuggestedParams(): Promise<algosdk.SuggestedParams> {
  *   │  Txn 0 — x402 Toll (ASA Transfer)                      │
  *   │  makeAssetTransferTxnWithSuggestedParams                │
  *   │  sender → TREASURY_ADDRESS                              │
- *   │  0.10 USDC (100,000 micro-USDC, ASA ID from config)    │
+ *   │  0.01 USDC (10,000 micro-USDC, ASA ID from config)     │
  *   ├─────────────────────────────────────────────────────────┤
  *   │  Txn 1 — Folks Finance NTT Bridge (Application Call)   │
  *   │  makeApplicationNoOpTxn → Folks NTT App                 │
@@ -161,7 +131,7 @@ async function getSuggestedParams(): Promise<algosdk.SuggestedParams> {
  *   └─────────────────────────────────────────────────────────┘
  *
  * @param senderAddr       - Algorand address of the payer (will sign via Rocca)
- * @param amount           - Payment amount in micro-USDC (default: 100,000 = $0.10)
+ * @param amount           - Payment amount in micro-USDC (default: 10,000 = $0.01)
  * @param destinationChain - Wormhole target chain (default: "ethereum")
  * @param destinationRecipient - Optional recipient on destination chain
  * @param slippageBips     - Slippage tolerance in basis points (default: 50 = 0.5%)
@@ -186,25 +156,22 @@ export async function constructAtomicGroup(
     // ────────────────────────────────────────────────────────────
     // Txn 0: The x402 Toll
     //
-    // ASA Transfer of exactly 0.10 USDC from the requesting agent's
+    // ASA Transfer of exactly 0.01 USDC from the requesting agent's
     // address to the protocol treasury. This is the monetization
     // layer — every agent-action call costs one toll.
     // ────────────────────────────────────────────────────────────
+    // Micali audit note — physically etched into every confirmed settlement on-chain.
+    // Format: honda_v1|success|{ISO8601}|{src}->{dst}|{amount}musd
+    // Agents can query the Algorand indexer by note-prefix to self-audit our track record.
+    const auditNote = `honda_v1|success|${new Date().toISOString()}|algorand->${destinationChain}|${amount}musd`;
+
     const x402TollTxn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
       sender: senderAddr,
       receiver: TREASURY_ADDRESS,
       amount: BigInt(amount),
       assetIndex: USDC_ASSET_ID,
       suggestedParams,
-      note: new Uint8Array(Buffer.from(
-        JSON.stringify({
-          protocol: "x402",
-          type: "toll",
-          amount,
-          asset: `ASA:${USDC_ASSET_ID}`,
-          ts: Date.now(),
-        }),
-      )),
+      note: new Uint8Array(Buffer.from(auditNote)),
     });
 
     manifest.push(
@@ -493,6 +460,9 @@ export async function constructBatchedAtomicGroup(
       const destChain = intent.destinationChain ?? "ethereum";
       const slippageBips = intent.slippageBips ?? DEFAULT_SLIPPAGE_BIPS;
 
+      // Micali audit note for each batch intent — each is an independent on-chain audit record.
+      const batchAuditNote = `honda_v1|batch|success|${new Date().toISOString()}|algorand->${destChain}|${amount}musd|idx:${idx}`;
+
       // Toll transaction for this intent
       const tollTxn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
         sender: senderAddr,
@@ -500,17 +470,7 @@ export async function constructBatchedAtomicGroup(
         amount: BigInt(amount),
         assetIndex: USDC_ASSET_ID,
         suggestedParams,
-        note: new Uint8Array(Buffer.from(
-          JSON.stringify({
-            protocol: "x402",
-            type: "toll",
-            batch: true,
-            index: idx,
-            amount,
-            asset: `ASA:${USDC_ASSET_ID}`,
-            ts: Date.now(),
-          }),
-        )),
+        note: new Uint8Array(Buffer.from(batchAuditNote)),
       });
       tollTxns.push(tollTxn);
       totalTollMicroUsdc += amount;

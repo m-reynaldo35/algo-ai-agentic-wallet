@@ -4,17 +4,95 @@
   "builds": [
     {
       "src": "dist/index.js",
-      "use": "@vercel/node"
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": ["public/**"]
+      }
     }
   ],
   "routes": [
     {
       "src": "/api/(.*)",
+      "methods": ["OPTIONS"],
+      "headers": {
+        "Access-Control-Allow-Origin": "https://*.moltbook.com, https://*.openclaw.network, https://portal.ai-agentic-wallet.com, https://ai-agentic-wallet.com",
+        "Access-Control-Allow-Methods": "OPTIONS, POST, GET",
+        "Access-Control-Allow-Headers": "Content-Type, X-PAYMENT, X-SLIPPAGE-BIPS, X-Platform-Id, x-algo-auth, User-Agent",
+        "Access-Control-Max-Age": "86400"
+      },
+      "status": 204
+    },
+
+    {
+      "src": "/api/portal/(.*)",
+      "missing": [
+        {
+          "type": "header",
+          "key": "user-agent"
+        }
+      ],
+      "mitigate": {
+        "action": "challenge"
+      }
+    },
+
+    {
+      "src": "/api/agent-action",
+      "missing": [
+        {
+          "type": "header",
+          "key": "x-algo-auth"
+        }
+      ],
+      "mitigate": {
+        "action": "deny"
+      }
+    },
+    {
+      "src": "/api/batch-action",
+      "missing": [
+        {
+          "type": "header",
+          "key": "x-algo-auth"
+        }
+      ],
+      "mitigate": {
+        "action": "deny"
+      }
+    },
+    {
+      "src": "/api/execute",
+      "missing": [
+        {
+          "type": "header",
+          "key": "x-algo-auth"
+        }
+      ],
+      "mitigate": {
+        "action": "deny"
+      }
+    },
+
+    {
+      "src": "/api/(.*)",
+      "missing": [
+        {
+          "type": "header",
+          "key": "user-agent"
+        }
+      ],
+      "mitigate": {
+        "action": "challenge"
+      }
+    },
+
+    {
+      "src": "/api/(.*)",
       "methods": ["OPTIONS", "POST", "GET"],
       "headers": {
-        "Access-Control-Allow-Origin": "https://*.moltbook.com, https://*.openclaw.network",
+        "Access-Control-Allow-Origin": "https://*.moltbook.com, https://*.openclaw.network, https://portal.ai-agentic-wallet.com",
         "Access-Control-Allow-Methods": "OPTIONS, POST, GET",
-        "Access-Control-Allow-Headers": "Content-Type, X-PAYMENT, X-SLIPPAGE-BIPS, X-Platform-Id",
+        "Access-Control-Allow-Headers": "Content-Type, X-PAYMENT, X-SLIPPAGE-BIPS, X-Platform-Id, x-algo-auth, User-Agent",
         "Access-Control-Max-Age": "86400",
         "X-Frame-Options": "DENY",
         "X-Content-Type-Options": "nosniff",

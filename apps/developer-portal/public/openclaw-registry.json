@@ -1,0 +1,72 @@
+{
+  "openclaw_version": "1.0",
+  "protocol_id": "x402-algo-wallet",
+  "protocol_name": "x402 Algorand Settlement Protocol",
+  "protocol_version": "0.1.0",
+  "description": "AI-to-AI financial routing and settlement on Algorand with cryptographic enforcement at the AVM consensus level.",
+  "toll_requirement": true,
+  "toll": {
+    "amount_micro": 100000,
+    "currency": "USDC",
+    "asset_id": 31566704,
+    "network": "algorand-mainnet",
+    "receiver": "E46PHV7THPP4MAIE6YX4FALPZTPDDN56SRHZBDRVCO6NZYOGNXYTQ6FHQE"
+  },
+  "auth_method": "X-PAYMENT-Ed25519",
+  "auth_spec": {
+    "header": "X-PAYMENT",
+    "encoding": "base64",
+    "payload_schema": {
+      "groupId": "base64 — SHA-512/256 atomic group ID",
+      "transactions": "base64[] — unsigned transaction blobs",
+      "senderAddr": "string — Algorand address of the payer",
+      "signature": "base64 — Ed25519 signature over groupId"
+    },
+    "verification": "algosdk.verifyBytes(groupId, signature, senderAddr)"
+  },
+  "identity": {
+    "standard": "W3C Verifiable Credentials",
+    "provider": "Rocca",
+    "kya_claim": "credentialSubject.KYA_Status === 'Verified'",
+    "reputation_claim": "credentialSubject.ReputationScore >= 90"
+  },
+  "endpoints": {
+    "agent_action": {
+      "method": "POST",
+      "path": "/api/agent-action",
+      "description": "Initiates x402 handshake. Returns 402 with payment terms, then 200 with SandboxExport."
+    },
+    "execute": {
+      "method": "POST",
+      "path": "/api/execute",
+      "description": "Submits a SandboxExport to the settlement pipeline. Returns on-chain confirmation."
+    },
+    "health": {
+      "method": "GET",
+      "path": "/health",
+      "description": "Service health check."
+    }
+  },
+  "security": {
+    "replay_protection": "Upstash Redis nonce cache (60s TTL)",
+    "rate_limiting": "Upstash sliding window (100 req/min per key)",
+    "spending_policy": "TEAL v10 LogicSig — fee ≤ 1000, type = axfer, amount ≤ 50M",
+    "oracle_validation": "Gora consensus price ± slippage bounds, 15s staleness max",
+    "sandbox": "VibeKit zero-trust — no private keys in transaction builder"
+  },
+  "network": {
+    "chain": "algorand",
+    "chain_id": 8,
+    "environment": "mainnet",
+    "bridge": "Wormhole NTT via Folks Finance",
+    "supported_destinations": [
+      "ethereum",
+      "solana",
+      "avalanche",
+      "polygon",
+      "base",
+      "arbitrum",
+      "optimism"
+    ]
+  }
+}

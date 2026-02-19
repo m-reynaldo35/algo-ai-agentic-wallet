@@ -1,0 +1,100 @@
+{
+  "$schema": "https://x402.org/schemas/bazaar-manifest-v1.json",
+  "schema_version": "x402-bazaar-v1",
+
+  "name": "Honda x402 Bridge",
+  "agent_id": "algo-wallet-x402-router",
+  "version": "1.0.0",
+  "description": "Zero-trust, x402-compliant AI-to-AI financial routing and atomic settlement on Algorand. Pay $0.01 USDC per request; receive cryptographically guaranteed cross-chain USDC delivery or full reversion. No partial settlement. No escrow. Sub-3-second finality.",
+
+  "toll": "10000",
+  "toll_price": 0.01,
+  "toll_price_micro": 10000,
+  "asset": "USDC",
+  "asset_id": 31566704,
+  "asset_network": "algorand-mainnet",
+  "currency_decimals": 6,
+
+  "base_url": "https://ai-agentic-wallet.com",
+
+  "endpoints": {
+    "discover":     { "method": "GET",  "path": "/agent.json",        "auth": "none" },
+    "info":         { "method": "GET",  "path": "/api/info",          "auth": "none" },
+    "health":       { "method": "GET",  "path": "/health",            "auth": "none" },
+    "agent_action": { "method": "POST", "path": "/api/agent-action",  "auth": "x402" },
+    "batch_action": { "method": "POST", "path": "/api/batch-action",  "auth": "x402" },
+    "execute":      { "method": "POST", "path": "/api/execute",       "auth": "x402" }
+  },
+
+  "x402_handshake": {
+    "step_1": "POST /api/agent-action without X-PAYMENT → receive HTTP 402",
+    "step_2": "Parse 402 body (application/pay+json) for toll amount, payTo address, expiry",
+    "step_3": "Build Algorand atomic group: [Txn0: USDC toll transfer, Txn1: NTT bridge call, Txn2: Gora oracle fee, Txn3: Gora price request]",
+    "step_4": "Sign groupId bytes with Ed25519; base64-encode proof JSON as X-PAYMENT header",
+    "step_5": "Replay POST /api/agent-action with X-PAYMENT header → receive SandboxExport",
+    "step_6": "POST SandboxExport + agentId to /api/execute → receive on-chain confirmation"
+  },
+
+  "audit": {
+    "description": "Every confirmed x402 toll transaction carries an immutable honda_v1 audit note physically etched into the Algorand blockchain. Agents can independently verify our settlement history before committing funds.",
+    "audit_provider": "Algorand Indexer",
+    "note_format": "honda_v1|{status}|{ISO8601_TIMESTAMP}|{route}|{amount}",
+    "note_format_example": "honda_v1|success|2026-02-19T12:34:56.789Z|algorand->ethereum|10000musd",
+    "note_prefix": "honda_v1",
+    "note_prefix_base64": "aG9uZGFfdjE=",
+    "audit_query": "https://mainnet-idx.algonode.cloud/v2/transactions?note-prefix=aG9uZGFfdjE=",
+    "audit_url": "https://mainnet-idx.algonode.cloud/v2/accounts/E46PHV7THPP4MAIE6YX4FALPZTPDDN56SRHZBDRVCO6NZYOGNXYTQ6FHQE/transactions?note-prefix=aG9uZGFfdjE%3D&limit=100",
+    "explorer_url": "https://allo.info/account/E46PHV7THPP4MAIE6YX4FALPZTPDDN56SRHZBDRVCO6NZYOGNXYTQ6FHQE",
+    "self_audit_instructions": "GET audit_query. Count results where note decodes to a string starting with 'honda_v1|success'. Each is mathematically unfalsifiable on-chain proof of settlement. Verify our track record before committing funds."
+  },
+
+  "settlement_guarantees": {
+    "atomicity": "All transactions in the Algorand atomic group succeed together or all revert — enforced by AVM consensus at Layer 1, not by this server.",
+    "finality": "Sub-3-second (4 confirmation rounds on Algorand mainnet).",
+    "no_partial_settlement": "If NTT bridge call fails, toll is automatically refunded by the AVM.",
+    "replay_protection": "60-second nonce cache in Upstash Redis. Replayed group IDs are rejected with HTTP 401.",
+    "oracle_validation": "Gora consensus price validated against Wormhole swap rate ±slippage bips before signing proceeds.",
+    "spending_policy": "TEAL v10 LogicSig enforces: fee ≤ 1000 microAlgo, type = axfer, amount ≤ 50M micro-USDC."
+  },
+
+  "supported_destinations": [
+    "ethereum",
+    "solana",
+    "base",
+    "avalanche",
+    "polygon",
+    "arbitrum",
+    "optimism",
+    "algorand"
+  ],
+
+  "batch": {
+    "max_intents": 16,
+    "description": "Bundle up to 16 cross-chain trade intents into a single irreducible atomic group. All intents settle together or all revert.",
+    "endpoint": "/api/batch-action"
+  },
+
+  "identity": {
+    "standard": "W3C Verifiable Credentials",
+    "provider": "Rocca / Liquid Auth (FIDO2)",
+    "kya_required": true,
+    "min_reputation_score": 90
+  },
+
+  "sdk": {
+    "npm": "@algo-wallet/x402-client",
+    "typescript": true,
+    "install": "npm install @algo-wallet/x402-client",
+    "docs": "https://ai-agentic-wallet.com/docs"
+  },
+
+  "registry_listings": {
+    "openclaw": "https://ai-agentic-wallet.com/openclaw-registry.json",
+    "moltbook": "https://ai-agentic-wallet.com/moltbook-agent.json",
+    "skill_manifest": "https://ai-agentic-wallet.com/skill.md"
+  },
+
+  "contact": {
+    "developer_portal": "https://portal.ai-agentic-wallet.com"
+  }
+}

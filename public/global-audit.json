@@ -1,0 +1,11 @@
+{
+  "schema": "honda-audit-v1",
+  "description": "Live audit log of all honda_v1 settlements. Updated after each swarm run. Every entry with status=success corresponds to an immutable on-chain transaction.",
+  "updated": "2026-02-19T00:00:00.000Z",
+  "mode": "pending",
+  "totalRuns": 0,
+  "onChainQuery": "https://mainnet-idx.algonode.cloud/v2/transactions?note-prefix=aG9uZGFfdjE=",
+  "notePrefix": "honda_v1",
+  "notePrefixBase64": "aG9uZGFfdjE=",
+  "entries": []
+}
