@@ -11,12 +11,16 @@
  * │                                                                          │
  * │  Stage 2a — ALGO Cold Ceiling Sweep (top pressure)                      │
  * │    When the treasury ALGO exceeds TREASURY_CEILING_ALGO, sweep the      │
- * │    excess to the cold wallet. Bounds ALGO at-risk to ceiling + target.  │
+ * │    excess to the cold wallet. Ceiling must be > target.                 │
  * │                                                                          │
  * │  Stage 2b — USDC Cold Ceiling Sweep (top pressure)                      │
  * │    When the treasury USDC exceeds TREASURY_USDC_CEILING, sweep the      │
  * │    excess to the cold wallet (ASA transfer, cold must be opted in).     │
- * │    Bounds USDC at-risk to the configured ceiling.                       │
+ * │                                                                          │
+ * │  Alerts — Telegram + Webhook                                             │
+ * │    Low signer balance, treasury can't cover refill, and sweeps all      │
+ * │    fire instant Telegram messages (set TELEGRAM_BOT_TOKEN +             │
+ * │    TELEGRAM_CHAT_ID) and/or a generic webhook (Slack / Discord).        │
  * │                                                                          │
  * │  Flow:                                                                   │
  * │                                                                          │
@@ -29,24 +33,33 @@
  * │    Signing wallet   ← max ALGO at-risk = target                        │
  * │                                                                          │
  * │  Usage:   tsx scripts/treasury-refill.ts                                 │
- * │  Daemon:  Railway / PM2 / systemd (set REFILL_CHECK_INTERVAL_S)         │
+ * │  Daemon:  Railway / PM2 / systemd                                        │
  * │                                                                          │
  * │  Required env vars:                                                      │
  * │    ALGO_TREASURY_MNEMONIC     25-word treasury wallet mnemonic           │
  * │    ALGO_SIGNER_MNEMONIC       25-word signing wallet mnemonic            │
  * │                                                                          │
  * │  Optional env vars:                                                      │
+ * │    TELEGRAM_BOT_TOKEN         Bot token from @BotFather                  │
+ * │    TELEGRAM_CHAT_ID           Your personal chat ID (see setup below)   │
+ * │    ALERT_WEBHOOK_URL          Slack / Discord webhook URL                │
  * │    COLD_WALLET_ADDRESS        Cold wallet address for all sweeps         │
- * │    TREASURY_CEILING_ALGO      Max ALGO to keep in treasury (default 50) │
- * │    TREASURY_USDC_CEILING      Max USDC to keep in treasury (default 100)│
- * │    WALLET_TARGET_ALGO         Target signer balance in ALGO (default 10) │
- * │    TREASURY_MIN_RESERVE_ALGO  Min ALGO kept in treasury    (default 2)  │
- * │    REFILL_ALERT_THRESHOLD     Fraction that triggers alert (default 0.40)│
- * │    REFILL_CHECK_INTERVAL_S    Poll interval in seconds     (default 60) │
- * │    ALERT_WEBHOOK_URL          Slack / Discord webhook URL for alerts     │
- * │    SENTRY_DSN                 Sentry DSN for captured warnings           │
+ * │    TREASURY_CEILING_ALGO      Max ALGO in treasury     (default 1000)   │
+ * │    TREASURY_USDC_CEILING      Max USDC in treasury     (default 100)    │
+ * │    WALLET_TARGET_ALGO         Target signer balance    (default 500)    │
+ * │    TREASURY_MIN_RESERVE_ALGO  Min ALGO kept in treasury (default 10)    │
+ * │    REFILL_ALERT_THRESHOLD     Alert fraction           (default 0.40)   │
+ * │    REFILL_CHECK_INTERVAL_S    Poll interval in seconds (default 10)     │
+ * │    SENTRY_DSN                 Sentry DSN for error reporting             │
  * │    ALGORAND_NODE_URL          Algod endpoint (default: Nodely mainnet)  │
  * │    ALGORAND_NODE_TOKEN        Algod auth token (default: empty)          │
+ * │                                                                          │
+ * │  Telegram setup (2 minutes):                                             │
+ * │    1. Message @BotFather on Telegram → /newbot → follow prompts         │
+ * │    2. Copy the bot token into TELEGRAM_BOT_TOKEN                        │
+ * │    3. Message your new bot once (say anything)                           │
+ * │    4. Visit: https://api.telegram.org/bot{TOKEN}/getUpdates             │
+ * │    5. Copy "id" from the "chat" object → TELEGRAM_CHAT_ID               │
  * └─────────────────────────────────────────────────────────────────────────┘
  */
 
@@ -71,21 +84,26 @@ const ALGOD_URL   = process.env.ALGORAND_NODE_URL   || "https://mainnet-api.4160
 const ALGOD_TOKEN = process.env.ALGORAND_NODE_TOKEN || "";
 
 const TARGET_MICRO = BigInt(
-  Math.round(parseFloat(process.env.WALLET_TARGET_ALGO || "10") * 1_000_000),
+  Math.round(parseFloat(process.env.WALLET_TARGET_ALGO || "500") * 1_000_000),
 );
 const ALGO_CEILING_MICRO = BigInt(
-  Math.round(parseFloat(process.env.TREASURY_CEILING_ALGO || "50") * 1_000_000),
+  Math.round(parseFloat(process.env.TREASURY_CEILING_ALGO || "1000") * 1_000_000),
 );
 const USDC_CEILING_MICRO = BigInt(
   Math.round(parseFloat(process.env.TREASURY_USDC_CEILING || "100") * 1_000_000),
 );
 const MIN_RESERVE_MICRO = BigInt(
-  Math.round(parseFloat(process.env.TREASURY_MIN_RESERVE_ALGO || "2") * 1_000_000),
+  Math.round(parseFloat(process.env.TREASURY_MIN_RESERVE_ALGO || "10") * 1_000_000),
 );
 const ALERT_THRESHOLD   = parseFloat(process.env.REFILL_ALERT_THRESHOLD || "0.40");
-const CHECK_INTERVAL_MS = parseInt(process.env.REFILL_CHECK_INTERVAL_S || "60", 10) * 1000;
+const CHECK_INTERVAL_MS = parseInt(process.env.REFILL_CHECK_INTERVAL_S || "10", 10) * 1000;
 const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL || "";
 const COLD_ADDRESS      = process.env.COLD_WALLET_ADDRESS || "";
+
+// ── Telegram config ───────────────────────────────────────────────────────
+
+const TG_TOKEN   = process.env.TELEGRAM_BOT_TOKEN || "";
+const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID   || "";
 
 // ── Logger ────────────────────────────────────────────────────────────────
 
@@ -173,46 +191,50 @@ function pctStr(current: bigint, target: bigint): string {
   return ((Number(current) / Number(target)) * 100).toFixed(1) + "%";
 }
 
-// ── Alert (warning-level, 30-min cooldown) ────────────────────────────────
+// ── Telegram ──────────────────────────────────────────────────────────────
 
-let lastAlertMs = 0;
+/**
+ * Send a Telegram message directly to your phone.
+ * Requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID.
+ * Never throws — failures are logged but don't break the daemon.
+ *
+ * Setup:
+ *   1. Message @BotFather on Telegram → /newbot
+ *   2. Copy token → TELEGRAM_BOT_TOKEN
+ *   3. Message your bot once, then visit:
+ *      https://api.telegram.org/bot{TOKEN}/getUpdates
+ *   4. Copy "id" from the "chat" object → TELEGRAM_CHAT_ID
+ */
+async function sendTelegram(message: string): Promise<void> {
+  if (!TG_TOKEN || !TG_CHAT_ID) return;
 
-async function sendAlert(message: string, fields: Record<string, string>): Promise<void> {
-  const now = Date.now();
-  if (now - lastAlertMs < ALERT_COOLDOWN_MS) {
-    log.debug("Alert suppressed (within cooldown window)");
-    return;
-  }
-  lastAlertMs = now;
-
-  await postWebhook(message, fields);
-
-  if (process.env.SENTRY_DSN) {
-    Sentry.captureMessage(buildMessageBody(message, fields), {
-      level: "warning",
-      tags: {
-        component: "treasury-refill",
-        ...Object.fromEntries(
-          Object.entries(fields).map(([k, v]) => [k.toLowerCase().replace(/\s/g, "_"), v]),
-        ),
-      },
+  try {
+    const url  = `https://api.telegram.org/bot${TG_TOKEN}/sendMessage`;
+    const body = JSON.stringify({
+      chat_id:    TG_CHAT_ID,
+      text:       message,
+      parse_mode: "HTML",
     });
-    log.info("Sentry alert fired");
-  }
 
-  if (!process.env.SENTRY_DSN && !ALERT_WEBHOOK_URL) {
-    log.warn("No alert channel configured — set SENTRY_DSN or ALERT_WEBHOOK_URL");
+    const res = await fetch(url, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      signal:  AbortSignal.timeout(8_000),
+    });
+
+    if (res.ok) {
+      log.info("Telegram alert delivered");
+    } else {
+      const err = await res.text().catch(() => "");
+      log.warn({ status: res.status, err }, "Telegram delivery failed");
+    }
+  } catch (err) {
+    log.warn({ err }, "Telegram request failed");
   }
 }
 
-// ── Notify (info-level, no cooldown) ─────────────────────────────────────
-// Used for sweep confirmations — working-as-designed events with unique txids.
-
-async function sendNotify(message: string, fields: Record<string, string>): Promise<void> {
-  await postWebhook(message, fields);
-}
-
-// ── Shared webhook POST ───────────────────────────────────────────────────
+// ── Webhook ───────────────────────────────────────────────────────────────
 
 function buildMessageBody(message: string, fields: Record<string, string>): string {
   const detail = Object.entries(fields).map(([k, v]) => `  ${k}: ${v}`).join("\n");
@@ -226,10 +248,10 @@ async function postWebhook(message: string, fields: Record<string, string>): Pro
   try {
     const body = JSON.stringify({ text, content: text, username: "x402 Treasury Monitor" });
     const res  = await fetch(ALERT_WEBHOOK_URL, {
-      method: "POST",
+      method:  "POST",
       headers: {
         "Content-Type": "application/json",
-        "User-Agent": "x402-treasury-refill/1.0",
+        "User-Agent":   "x402-treasury-refill/1.0",
       },
       body,
       signal: AbortSignal.timeout(8_000),
@@ -242,6 +264,62 @@ async function postWebhook(message: string, fields: Record<string, string>): Pro
   } catch (err) {
     log.warn({ err }, "Webhook delivery failed");
   }
+}
+
+// ── Unified notification dispatch ────────────────────────────────────────
+// All notifications go through here — Telegram + webhook fired in parallel.
+
+async function notify(
+  message: string,
+  fields:  Record<string, string>,
+  level:   "alert" | "info" = "info",
+): Promise<void> {
+  const body = buildMessageBody(message, fields);
+
+  await Promise.allSettled([
+    sendTelegram(body),
+    postWebhook(message, fields),
+    level === "alert" && process.env.SENTRY_DSN
+      ? Promise.resolve(
+          Sentry.captureMessage(body, {
+            level: "warning",
+            tags: {
+              component: "treasury-refill",
+              ...Object.fromEntries(
+                Object.entries(fields).map(([k, v]) => [
+                  k.toLowerCase().replace(/\s/g, "_"),
+                  v,
+                ]),
+              ),
+            },
+          }),
+        )
+      : Promise.resolve(),
+  ]);
+
+  if (level === "alert" && !TG_TOKEN && !ALERT_WEBHOOK_URL && !process.env.SENTRY_DSN) {
+    log.warn("No alert channel configured — set TELEGRAM_BOT_TOKEN/CHAT_ID, ALERT_WEBHOOK_URL, or SENTRY_DSN");
+  }
+}
+
+// ── Alert (warning-level, 30-min cooldown) ────────────────────────────────
+
+let lastAlertMs = 0;
+
+async function sendAlert(message: string, fields: Record<string, string>): Promise<void> {
+  const now = Date.now();
+  if (now - lastAlertMs < ALERT_COOLDOWN_MS) {
+    log.debug("Alert suppressed (within cooldown window)");
+    return;
+  }
+  lastAlertMs = now;
+  await notify(message, fields, "alert");
+}
+
+// ── Notify (info-level, no cooldown) ─────────────────────────────────────
+
+async function sendNotify(message: string, fields: Record<string, string>): Promise<void> {
+  await notify(message, fields, "info");
 }
 
 // ── Signed ALGO Payment ───────────────────────────────────────────────────
@@ -320,34 +398,35 @@ async function maybeRefillSigner(
   const required     = topUpMicro + MIN_RESERVE_MICRO + TX_FEE + MIN_ACCOUNT_BALANCE;
 
   await sendAlert(
-    `⚠️  x402 Signer Wallet Low — ${pctLabel} full`,
+    `⚠️ x402 Signer Wallet Low — ${pctLabel} full`,
     {
-      "Signer balance":   microToAlgo(signerBalance),
-      "Target balance":   microToAlgo(TARGET_MICRO),
-      "Fill level":       pctLabel,
-      "Top-up needed":    microToAlgo(topUpMicro),
-      "Treasury ALGO":    microToAlgo(treasuryAlgo),
+      "Signer balance": microToAlgo(signerBalance),
+      "Target":         microToAlgo(TARGET_MICRO),
+      "Fill level":     pctLabel,
+      "Top-up needed":  microToAlgo(topUpMicro),
+      "Treasury ALGO":  microToAlgo(treasuryAlgo),
     },
   );
 
   if (treasuryAlgo < required) {
     log.error(
       { treasuryAlgo: microToAlgo(treasuryAlgo), required: microToAlgo(required) },
-      "Treasury ALGO too low to refill — manual intervention required",
+      "Treasury ALGO too low to refill — manual top-up required",
     );
     await sendAlert(
-      `🚨  x402 Treasury Cannot Cover Refill`,
+      `🚨 ACTION REQUIRED — Treasury Cannot Cover Refill\nPlease deposit ALGO to treasury wallet immediately.`,
       {
-        "Treasury ALGO": microToAlgo(treasuryAlgo),
-        "Required":      microToAlgo(required),
-        "Shortfall":     microToAlgo(required - treasuryAlgo),
+        "Treasury wallet": treasury.addr.toString(),
+        "Treasury ALGO":   microToAlgo(treasuryAlgo),
+        "Required":        microToAlgo(required),
+        "Shortfall":       microToAlgo(required - treasuryAlgo),
       },
     );
     return;
   }
 
   log.info(
-    { topUp: microToAlgo(topUpMicro), from: treasury.addr.toString(), to: signerAddr },
+    { topUp: microToAlgo(topUpMicro), to: signerAddr },
     "Sending ALGO refill...",
   );
 
@@ -371,15 +450,14 @@ async function maybeRefillSigner(
 // ── Stage 2a: ALGO cold ceiling sweep ────────────────────────────────────
 
 async function maybeSweepAlgoToCold(
-  algod:           algosdk.Algodv2,
-  treasury:        algosdk.Account,
-  treasuryAlgo:    bigint,
+  algod:        algosdk.Algodv2,
+  treasury:     algosdk.Account,
+  treasuryAlgo: bigint,
 ): Promise<void> {
   if (!COLD_ADDRESS) return;
   if (treasuryAlgo <= ALGO_CEILING_MICRO) return;
 
-  // sweepAmount lands treasury exactly at ceiling after paying fee:
-  //   treasuryAlgo - sweepAmount - TX_FEE = ALGO_CEILING_MICRO
+  // Post-sweep treasury = ALGO_CEILING_MICRO; fee comes out of the excess.
   const sweepAmount = treasuryAlgo - ALGO_CEILING_MICRO - TX_FEE;
   if (sweepAmount <= 0n) {
     log.debug("ALGO sweep skipped — excess too small to cover fee");
@@ -405,7 +483,7 @@ async function maybeSweepAlgoToCold(
   log.info({ txid, swept: microToAlgo(sweepAmount), treasuryPost: microToAlgo(post) }, "ALGO cold sweep confirmed ✓");
 
   await sendNotify(
-    `🧊  x402 ALGO Cold Sweep — ${microToAlgo(sweepAmount)} secured`,
+    `🧊 x402 ALGO Cold Sweep — ${microToAlgo(sweepAmount)} secured`,
     {
       "Swept":          microToAlgo(sweepAmount),
       "Cold wallet":    COLD_ADDRESS,
@@ -426,22 +504,19 @@ async function maybeSweepUsdcToCold(
   if (!COLD_ADDRESS) return;
   if (treasuryUsdc <= USDC_CEILING_MICRO) return;
 
-  // Sweep all USDC above the ceiling — ASA transfers don't consume the asset,
-  // fee is paid in ALGO. Guard that treasury has enough ALGO for the fee.
   const sweepAmount = treasuryUsdc - USDC_CEILING_MICRO;
 
-  // Ensure treasury can pay the ALGO fee for this ASA transfer
   if (treasuryAlgo < MIN_ACCOUNT_BALANCE + TX_FEE) {
     log.error(
       { treasuryAlgo: microToAlgo(treasuryAlgo) },
       "Treasury has insufficient ALGO to pay USDC sweep fee — skipping",
     );
     await sendAlert(
-      `🚨  x402 Treasury Cannot Pay USDC Sweep Fee`,
+      `🚨 Treasury Cannot Pay USDC Sweep Fee`,
       {
-        "Treasury ALGO":   microToAlgo(treasuryAlgo),
-        "Fee required":    microToAlgo(TX_FEE),
-        "USDC pending":    microToUsdc(sweepAmount),
+        "Treasury ALGO": microToAlgo(treasuryAlgo),
+        "Fee required":  microToAlgo(TX_FEE),
+        "USDC pending":  microToUsdc(sweepAmount),
       },
     );
     return;
@@ -464,16 +539,12 @@ async function maybeSweepUsdcToCold(
 
   const postBalances = await getTreasuryBalances(algod, treasury.addr.toString());
   log.info(
-    {
-      txid,
-      swept:            microToUsdc(sweepAmount),
-      treasuryUsdcPost: microToUsdc(postBalances.usdc),
-    },
+    { txid, swept: microToUsdc(sweepAmount), treasuryUsdcPost: microToUsdc(postBalances.usdc) },
     "USDC cold sweep confirmed ✓",
   );
 
   await sendNotify(
-    `🧊  x402 USDC Cold Sweep — ${microToUsdc(sweepAmount)} secured`,
+    `🧊 x402 USDC Cold Sweep — ${microToUsdc(sweepAmount)} secured`,
     {
       "Swept":          microToUsdc(sweepAmount),
       "Cold wallet":    COLD_ADDRESS,
@@ -490,7 +561,6 @@ async function runCycle(
   treasury:   algosdk.Account,
   signerAddr: string,
 ): Promise<void> {
-  // Fetch treasury (ALGO + USDC) and signer (ALGO) in parallel
   const [signerAlgo, treasuryBalances] = await Promise.all([
     getAlgoBalance(algod, signerAddr),
     getTreasuryBalances(algod, treasury.addr.toString()),
@@ -508,13 +578,8 @@ async function runCycle(
     "Balance check",
   );
 
-  // Stage 1  — refill signer ALGO if low
   await maybeRefillSigner(algod, treasury, signerAddr, signerAlgo);
-
-  // Stage 2a — sweep ALGO to cold if above ceiling
   await maybeSweepAlgoToCold(algod, treasury, treasuryBalances.algo);
-
-  // Stage 2b — sweep USDC to cold if above ceiling
   await maybeSweepUsdcToCold(algod, treasury, treasuryBalances.usdc, treasuryBalances.algo);
 }
 
@@ -528,12 +593,17 @@ async function main(): Promise<void> {
   const signer     = loadAccount(signerMnemonic,   "signer");
   const signerAddr = signer.addr.toString();
 
-  // Wipe the signer sk immediately — only the address is needed here.
-  // The treasury sk is retained for signing refill and sweep transactions.
   signer.sk.fill(0);
 
   if (treasury.addr.toString() === signerAddr) {
     throw new Error("ALGO_TREASURY_MNEMONIC and ALGO_SIGNER_MNEMONIC must be different wallets");
+  }
+
+  // Guard: ceiling must be larger than target so treasury can always fund a full refill
+  if (ALGO_CEILING_MICRO <= TARGET_MICRO) {
+    throw new Error(
+      `TREASURY_CEILING_ALGO (${microToAlgo(ALGO_CEILING_MICRO)}) must be greater than WALLET_TARGET_ALGO (${microToAlgo(TARGET_MICRO)})`,
+    );
   }
 
   if (COLD_ADDRESS) {
@@ -546,14 +616,15 @@ async function main(): Promise<void> {
     if (COLD_ADDRESS === signerAddr) {
       throw new Error("COLD_WALLET_ADDRESS must differ from signer address");
     }
-    if (ALGO_CEILING_MICRO < MIN_ACCOUNT_BALANCE + TX_FEE) {
-      throw new Error(
-        `TREASURY_CEILING_ALGO too low — must be at least ${microToAlgo(MIN_ACCOUNT_BALANCE + TX_FEE)}`,
-      );
-    }
   }
 
   const algod = buildAlgod();
+
+  const telegramStatus = TG_TOKEN && TG_CHAT_ID
+    ? `configured (chat ${TG_CHAT_ID})`
+    : TG_TOKEN
+      ? "token set but TELEGRAM_CHAT_ID missing"
+      : "not configured";
 
   log.info(
     {
@@ -566,11 +637,16 @@ async function main(): Promise<void> {
       minReserveAlgo:  microToAlgo(MIN_RESERVE_MICRO),
       alertThreshold:  `${(ALERT_THRESHOLD * 100).toFixed(0)}%`,
       checkIntervalS:  CHECK_INTERVAL_MS / 1000,
-      alertWebhook:    ALERT_WEBHOOK_URL ? "configured" : "not set",
+      telegram:        telegramStatus,
+      webhook:         ALERT_WEBHOOK_URL ? "configured" : "not set",
       sentry:          process.env.SENTRY_DSN ? "configured" : "not set",
     },
     "Treasury refill daemon starting",
   );
+
+  if (!TG_TOKEN && !ALERT_WEBHOOK_URL && !process.env.SENTRY_DSN) {
+    log.warn("No alert channel configured — set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to receive phone alerts");
+  }
 
   if (!COLD_ADDRESS) {
     log.warn("Cold sweeps disabled — set COLD_WALLET_ADDRESS to enable ALGO + USDC ceiling sweeps");
