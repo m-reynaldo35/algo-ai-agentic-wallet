@@ -1,5 +1,6 @@
 import algosdk from "algosdk";
 import { config } from "../config.js";
+import { getAlgodClient } from "../network/nodely.js";
 
 /**
  * ┌─────────────────────────────────────────────────────────────────┐
@@ -135,10 +136,7 @@ export function buildGoraFeeTxn(
  * @returns GoraPricePayload with the latest price, timestamp, and freshness
  */
 export async function fetchGoraPriceData(): Promise<GoraPricePayload> {
-  const client = new algosdk.Algodv2(
-    config.algorand.nodeToken,
-    config.algorand.nodeUrl,
-  );
+  const client = getAlgodClient();
 
   const appInfo = await client.getApplicationByID(config.gora.appId).do();
   const globalState = appInfo.params?.globalState as

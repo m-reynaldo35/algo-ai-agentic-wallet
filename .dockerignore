@@ -1,0 +1,40 @@
+# Build artifacts
+dist/
+*.js.map
+*.d.ts.map
+
+# Dev tooling
+node_modules/
+.env*
+!.env.example
+
+# Tests and scripts (not needed in container)
+tests/
+scripts/
+
+# Apps (deployed separately)
+apps/
+
+# Packages (compiled into dist via src imports)
+packages/
+
+# Contracts (TEAL source — not needed at runtime)
+contracts/
+
+# Repo files
+.git/
+.gitignore
+*.md
+!public/skill.md
+
+# Vercel (replaced by Railway)
+vercel.json
+.vercel/
+
+# Wallet files (never in container)
+*.txt
+*.png
+live-test-wallets.txt
+testnet-wallet*.txt
+mainnet-sender-qr.png
+testnet-wallet-qr.png

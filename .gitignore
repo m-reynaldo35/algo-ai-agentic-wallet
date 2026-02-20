@@ -5,3 +5,14 @@ dist/
 *.js.map
 .vercel/
 .vercel
+
+# Wallet key material — never commit
+live-test-wallets.txt
+testnet-wallet.txt
+*.txt.wallet
+*-wallet.txt
+*-wallets.txt
+
+# QR code images for wallet addresses
+*-qr.png
+*-qr.jpg

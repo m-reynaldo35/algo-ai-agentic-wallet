@@ -20,16 +20,16 @@ import crypto from "crypto";
 const PORTAL_SECRET = process.env.PORTAL_API_SECRET;
 
 export function requirePortalAuth(req: Request, res: Response, next: NextFunction): void {
-  // Dev bypass
-  if (process.env.NODE_ENV !== "production") {
-    if (!PORTAL_SECRET) {
-      next();
-      return;
-    }
+  // Explicit dev bypass — only when DISABLE_PORTAL_AUTH=true is set AND no secret configured.
+  // Never active in production (requires deliberate opt-in, not the default).
+  if (process.env.DISABLE_PORTAL_AUTH === "true" && !PORTAL_SECRET) {
+    console.warn("[PortalAuth] WARNING: Auth bypassed via DISABLE_PORTAL_AUTH=true — never use in production");
+    next();
+    return;
   }
 
   if (!PORTAL_SECRET) {
-    // Secret not configured — fail closed
+    // Secret not configured and bypass not explicitly enabled — fail closed
     res.status(503).json({ error: "Portal authentication not configured" });
     return;
   }

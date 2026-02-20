@@ -85,18 +85,34 @@ function reject402(res: Response, endpoint: string, reason: string): void {
   res.status(402).contentType("application/pay+json").json(buildPayJson(endpoint, reason));
 }
 
+// Algorand address regex: 58 chars, Base32 uppercase + digits 2-7
+const ALGO_ADDR_RE = /^[A-Z2-7]{58}$/;
+
 /**
  * Parse and structurally validate the X-PAYMENT header JSON.
+ * Enforces strict length bounds on all fields to prevent DoS.
  */
 function parsePaymentHeader(raw: string): X402PaymentProof | null {
+  // Hard cap: 1 MB on the raw header value
+  if (raw.length > 1_000_000) return null;
+
   try {
     const decoded = JSON.parse(Buffer.from(raw, "base64").toString("utf-8"));
     if (
       typeof decoded.groupId === "string" &&
+      decoded.groupId.length >= 32 &&
+      decoded.groupId.length <= 128 &&
       Array.isArray(decoded.transactions) &&
-      decoded.transactions.every((t: unknown) => typeof t === "string") &&
+      decoded.transactions.length > 0 &&
+      decoded.transactions.length <= 16 && // Algorand atomic group max
+      decoded.transactions.every(
+        (t: unknown) => typeof t === "string" && t.length > 0 && t.length < 20_000,
+      ) &&
       typeof decoded.senderAddr === "string" &&
-      typeof decoded.signature === "string"
+      ALGO_ADDR_RE.test(decoded.senderAddr) &&
+      typeof decoded.signature === "string" &&
+      decoded.signature.length >= 64 &&
+      decoded.signature.length <= 256
     ) {
       return decoded as X402PaymentProof;
     }

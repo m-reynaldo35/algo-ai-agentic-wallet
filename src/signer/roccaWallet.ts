@@ -2,22 +2,26 @@ import algosdk from "algosdk";
 import { validateAuthToken, type AuthToken } from "../auth/liquidAuth.js";
 
 /**
- * Rocca Wallet — Seedless Ed25519 Signing Module
+ * Rocca Wallet — Environment-Switched Ed25519 Signing Module
  *
  * ┌─────────────────────────────────────────────────────────────────┐
  * │  SIGNING BOUNDARY                                               │
  * │                                                                 │
  * │  This is the ONLY module in the entire codebase where private   │
- * │  key material exists. In production, the Rocca Wallet SDK       │
- * │  manages keys in a secure enclave — keys never leave the        │
- * │  device/HSM. The SDK exposes only a sign(blob) → signature      │
- * │  interface, with key generation and storage handled internally. │
+ * │  key material exists.                                           │
  * │                                                                 │
- * │  LOCAL DEV ONLY: We use an algosdk ephemeral account to         │
- * │  simulate the Rocca signing interface. This account is          │
- * │  generated fresh per process and NEVER persisted.               │
+ * │  Mode selection (via ALGO_SIGNER_MNEMONIC env var):             │
  * │                                                                 │
- * │  Production: Replace mockRoccaSign() with the Rocca SDK call.   │
+ * │  ┌─ PRODUCTION ──────────────────────────────────────────────┐  │
+ * │  │ ALGO_SIGNER_MNEMONIC set → persistent, funded signer.    │  │
+ * │  │ Uses algosdk.mnemonicToSecretKey() for server-side        │  │
+ * │  │ signing with a known, fundable address.                   │  │
+ * │  └──────────────────────────────────────────────────────────┘  │
+ * │                                                                 │
+ * │  ┌─ DEV ────────────────────────────────────────────────────┐  │
+ * │  │ No mnemonic → ephemeral algosdk.generateAccount().       │  │
+ * │  │ Generated fresh per process, NEVER persisted.            │  │
+ * │  └──────────────────────────────────────────────────────────┘  │
  * └─────────────────────────────────────────────────────────────────┘
  */
 
@@ -30,48 +34,40 @@ export interface SignedGroupResult {
   txnCount: number;
 }
 
-// ── Local Dev: Ephemeral Signing Account ────────────────────────
-// This exists ONLY for local testing. In production, Rocca Wallet
-// manages keys internally — no mnemonic/secret key is ever exposed.
-let ephemeralAccount: algosdk.Account | null = null;
+// ── Signer Account (lazy-initialized) ────────────────────────────
 
-function getEphemeralAccount(): algosdk.Account {
-  if (!ephemeralAccount) {
-    ephemeralAccount = algosdk.generateAccount();
-    console.log(`[RoccaWallet] DEV MODE: Ephemeral signer created: ${ephemeralAccount.addr}`);
-    console.log(`[RoccaWallet] WARNING: This is a mock signer. Replace with Rocca SDK for production.`);
+let _signerAccount: algosdk.Account | null = null;
+
+function getSignerAccount(): algosdk.Account {
+  if (_signerAccount) return _signerAccount;
+
+  const mnemonic = process.env.ALGO_SIGNER_MNEMONIC;
+
+  if (mnemonic) {
+    _signerAccount = algosdk.mnemonicToSecretKey(mnemonic);
+    console.log(`[RoccaWallet] Persistent signer loaded: ${_signerAccount.addr}`);
+    console.log(`[RoccaWallet] Ensure this address is funded before broadcasting transactions.`);
+  } else {
+    _signerAccount = algosdk.generateAccount();
+    console.warn(`[RoccaWallet] DEV MODE: Ephemeral signer created: ${_signerAccount.addr}`);
+    console.warn(`[RoccaWallet] Set ALGO_SIGNER_MNEMONIC for a persistent, funded signer.`);
   }
-  return ephemeralAccount;
+
+  return _signerAccount;
 }
 
 /**
- * Simulate the Rocca Wallet seedless signing interface.
- *
- * Production replacement (Rocca SDK):
- *   const rocca = await RoccaWallet.connect(authToken);
- *   const signed = await rocca.signTransactions(unsignedBlobs);
- *   return signed;
- *
- * The Rocca SDK:
- *   1. Validates the Liquid Auth token with its internal verifier
- *   2. Derives the Ed25519 keypair from the user's FIDO2 credential
- *      inside a secure enclave (TEE/HSM)
- *   3. Signs each transaction blob
- *   4. Returns signed blobs — the private key never leaves the enclave
+ * Sign an array of unsigned transaction blobs.
+ * Uses the environment-selected signer account.
  */
-async function mockRoccaSign(
+function signBlobs(
   unsignedBlobs: Uint8Array[],
-  _authToken: string,
-): Promise<{ signedBlobs: Uint8Array[]; signerAddr: string }> {
-  const account = getEphemeralAccount();
+): { signedBlobs: Uint8Array[]; signerAddr: string } {
+  const account = getSignerAccount();
   const signedBlobs: Uint8Array[] = [];
 
   for (const blob of unsignedBlobs) {
-    // Decode the unsigned transaction
     const txn = algosdk.decodeUnsignedTransaction(blob);
-
-    // Sign with the ephemeral account
-    // Production: Rocca SDK handles this internally via secure enclave
     const signedTxn = txn.signTxn(account.sk);
     signedBlobs.push(signedTxn);
   }
@@ -136,8 +132,8 @@ export async function signAtomicGroup(
 
   console.log(`[RoccaWallet] Group integrity verified: ${unsignedBlobs.length} txns, groupId=${Buffer.from(expectedGroupId!).toString("base64").slice(0, 12)}...`);
 
-  // ── Sign via Rocca (mock in dev, SDK in production) ───────────
-  const { signedBlobs, signerAddr } = await mockRoccaSign(unsignedBlobs, authToken.token);
+  // ── Sign via environment-selected signer ───────────────────────
+  const { signedBlobs, signerAddr } = signBlobs(unsignedBlobs);
 
   console.log(`[RoccaWallet] Atomic group signed by: ${signerAddr}`);
 

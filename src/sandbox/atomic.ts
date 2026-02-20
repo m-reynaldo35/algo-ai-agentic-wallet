@@ -1,5 +1,6 @@
 import algosdk from "algosdk";
 import { config } from "../config.js";
+import { getAlgodClient } from "../network/nodely.js";
 
 /**
  * ┌─────────────────────────────────────────────────────────────────┐
@@ -34,15 +35,7 @@ export interface UnsignedAtomicGroup {
   groupId: string;
 }
 
-/**
- * Build an Algorand client for the configured network.
- */
-function getAlgodClient(): algosdk.Algodv2 {
-  return new algosdk.Algodv2(
-    config.algorand.nodeToken,
-    config.algorand.nodeUrl,
-  );
-}
+// Algod client centralized via src/network/nodely.ts (Nodely free tier)
 
 /**
  * Construct an atomic group of unsigned Algorand transactions.

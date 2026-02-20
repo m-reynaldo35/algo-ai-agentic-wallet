@@ -5,6 +5,7 @@ import { executeSettlement, type SettlementResult } from "./network/broadcaster.
 import { logSettlementSuccess, logExecutionFailure, type OracleContext } from "./services/audit.js";
 import { config } from "./config.js";
 import type { SandboxExport } from "./services/transaction.js";
+import { Sentry } from "./lib/sentry.js";
 
 /**
  * Master Executor — End-to-End Settlement Pipeline
@@ -134,18 +135,36 @@ export async function executePipeline(
   }
 
   // ── Stage 4: Broadcaster — On-Chain Settlement ────────────────
+  // The broadcast stage is where TEAL LogicSig policy breaches
+  // surface. When an agent's delegated Smart Signature rejects a
+  // transaction (fee too high, wrong type, amount exceeds cap),
+  // the Algod node returns "logic eval failed" or "rejected by logic".
+  // We trap these specifically and classify them as POLICY_BREACH.
   console.log(`[Executor] Stage 4/4: Broadcasting to ${routing.network}...`);
   let settlement;
   try {
     settlement = await executeSettlement(signedGroup.signedTransactions);
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown broadcast error";
-    console.error(`[Executor] ABORT at Stage 4 (broadcast): ${error}`);
+    const errorLower = error.toLowerCase();
+    const isPolicyBreach = errorLower.includes("logic eval failed") || errorLower.includes("rejected by logic");
+
+    if (isPolicyBreach) {
+      console.error(`[Executor] TEAL POLICY BREACH at Stage 4 (broadcast): ${error}`);
+      console.error(`[Executor]   Agent ${agentId} exceeded LogicSig spending bounds.`);
+      console.error(`[Executor]   The AVM rejected the transaction at Layer 1 consensus.`);
+    } else {
+      console.error(`[Executor] ABORT at Stage 4 (broadcast): ${error}`);
+    }
+
+    Sentry.setTag("blockchain_consensus", "rejected");
     logExecutionFailure(agentId, "broadcast", error, oracleContext);
     return {
       success: false,
       failedStage: "broadcast",
-      error,
+      error: isPolicyBreach
+        ? `POLICY_BREACH: ${error}`
+        : error,
       agentId,
       sandboxId,
     };

@@ -1,5 +1,7 @@
 import algosdk from "algosdk";
 import { config } from "../config.js";
+import { getAlgodClient } from "./nodely.js";
+import { Sentry } from "../lib/sentry.js";
 
 /**
  * Network Broadcaster — Algorand Atomic Group Submission
@@ -28,12 +30,7 @@ export interface SettlementResult {
 
 const CONFIRMATION_ROUNDS = 4;
 
-function getAlgodClient(): algosdk.Algodv2 {
-  return new algosdk.Algodv2(
-    config.algorand.nodeToken,
-    config.algorand.nodeUrl,
-  );
-}
+// Algod client centralized via src/network/nodely.ts (Nodely free tier)
 
 /**
  * Submit a signed atomic group to the Algorand network and wait
@@ -65,18 +62,57 @@ export async function executeSettlement(
     offset += blob.length;
   }
 
-  // ── Submit to network ─────────────────────────────────────────
-  const { txid } = await client.sendRawTransaction(concatenated).do();
-  console.log(`[Broadcaster] Submitted — txId: ${txid}`);
+  // ── Submit + confirm inside a Sentry L1 Finality span ────────
+  // Module 1: measures exact ms from broadcast to Algorand round
+  // finality. Emits a Protocol Latency Warning if > 4500 ms.
+  const { txid, confirmedRound } = await Sentry.startSpan(
+    {
+      name: "L1 Finality Check",
+      op: "algorand.finality",
+      attributes: {
+        "algorand.network": config.algorand.network,
+        "algorand.txn_count": signedGroup.length,
+        "algorand.confirmation_rounds": CONFIRMATION_ROUNDS,
+      },
+    },
+    async (span) => {
+      const broadcastStart = Date.now();
 
-  // ── Wait for confirmation ─────────────────────────────────────
-  // Algorand's sub-3s finality means this typically resolves in
-  // a single block. We wait up to CONFIRMATION_ROUNDS for safety.
-  console.log(`[Broadcaster] Awaiting confirmation (up to ${CONFIRMATION_ROUNDS} rounds)...`);
-  const confirmation = await algosdk.waitForConfirmation(client, txid, CONFIRMATION_ROUNDS);
+      const { txid } = await client.sendRawTransaction(concatenated).do();
+      console.log(`[Broadcaster] Submitted — txId: ${txid}`);
+      span.setAttribute("algorand.txid", txid);
 
-  const confirmedRound = Number(confirmation.confirmedRound ?? 0);
-  console.log(`[Broadcaster] Confirmed in round ${confirmedRound}`);
+      console.log(`[Broadcaster] Awaiting confirmation (up to ${CONFIRMATION_ROUNDS} rounds)...`);
+      const confirmation = await algosdk.waitForConfirmation(client, txid, CONFIRMATION_ROUNDS);
+
+      const finalityMs = Date.now() - broadcastStart;
+      const confirmedRound = Number(confirmation.confirmedRound ?? 0);
+
+      span.setAttribute("algorand.finality_ms", finalityMs);
+      span.setAttribute("algorand.confirmed_round", confirmedRound);
+      span.setAttribute("blockchain_consensus", "finalized");
+
+      console.log(`[Broadcaster] Confirmed in round ${confirmedRound} (${finalityMs}ms)`);
+
+      // Protocol Latency Warning — Algorand's threshold is ~3.3s; 4.5s signals degraded conditions
+      if (finalityMs > 4500) {
+        Sentry.captureMessage(
+          `Protocol Latency Warning: L1 finality took ${finalityMs}ms (threshold: 4500ms)`,
+          {
+            level: "warning",
+            tags: {
+              "algorand.txid": txid,
+              "algorand.finality_ms": String(finalityMs),
+              "algorand.confirmed_round": String(confirmedRound),
+              blockchain_consensus: "finalized",
+            },
+          },
+        );
+      }
+
+      return { txid, confirmedRound };
+    },
+  );
 
   // ── Extract group ID from the first signed transaction ────────
   const firstDecoded = algosdk.decodeSignedTransaction(signedGroup[0]);

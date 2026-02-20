@@ -1,9 +1,9 @@
 import algosdk from "algosdk";
 import { config } from "../config.js";
-import { getAlgodClient, getSuggestedParams } from "../network/nodely.js";
-import { buildNTTBridgeTxn } from "../utils/folksFinance.js";
+import { getSuggestedParams } from "../network/nodely.js";
 import { calculateMinAmountOut, DEFAULT_SLIPPAGE_BIPS } from "../utils/slippage.js";
-import { initSandbox, sealSandbox, type SandboxContext } from "../sandbox/vibekit.js";
+import { initSandbox, sealSandbox } from "../sandbox/vibekit.js";
+import type { SandboxContext } from "../sandbox/vibekit.js";
 
 /**
  * ┌─────────────────────────────────────────────────────────────────────────┐
@@ -78,7 +78,7 @@ export interface SandboxExport {
     requiredSigner: string;
     /** The treasury address receiving the x402 toll */
     tollReceiver: string;
-    /** Destination chain for the NTT bridge leg */
+    /** Destination chain for the Token Bridge leg */
     bridgeDestination: string;
     /** Network identifier */
     network: string;
@@ -116,23 +116,21 @@ export interface SandboxExport {
  * Atomic Group Layout:
  *   ┌─────────────────────────────────────────────────────────┐
  *   │  Txn 0 — x402 Toll (ASA Transfer)                      │
- *   │  makeAssetTransferTxnWithSuggestedParams                │
  *   │  sender → TREASURY_ADDRESS                              │
- *   │  0.01 USDC (10,000 micro-USDC, ASA ID from config)     │
+ *   │  micro-USDC payment with honda_v1 audit note           │
  *   ├─────────────────────────────────────────────────────────┤
- *   │  Txn 1 — Folks Finance NTT Bridge (Application Call)   │
- *   │  makeApplicationNoOpTxn → Folks NTT App                 │
- *   │  Routes USDC cross-chain via Wormhole NTT               │
+ *   │  Txn 1 — On-chain Audit Ack (0-ALGO Payment)           │
+ *   │  sender → TREASURY_ADDRESS, amount = 0                 │
+ *   │  note = honda_v1 settlement acknowledgement            │
  *   ├─────────────────────────────────────────────────────────┤
- *   │  Binding: algosdk.assignGroupID([txn0, txn1])           │
- *   │  Both txns share a single SHA-512/256 group hash.       │
- *   │  If either fails on-chain, both revert atomically.      │
+ *   │  Binding: algosdk.assignGroupID([tollTxn, ackTxn])     │
+ *   │  SHA-512/256 group hash — both succeed or both revert.  │
  *   └─────────────────────────────────────────────────────────┘
  *
- * @param senderAddr       - Algorand address of the payer (will sign via Rocca)
- * @param amount           - Payment amount in micro-USDC (default: 10,000 = $0.01)
- * @param destinationChain - Wormhole target chain (default: "ethereum")
- * @param destinationRecipient - Optional recipient on destination chain
+ * @param senderAddr       - Algorand address of the payer
+ * @param amount           - Payment amount in micro-USDC (default: config value)
+ * @param destinationChain - Reserved for future bridge routing (ignored, Algorand-only)
+ * @param destinationRecipient - Reserved for future use (ignored)
  * @param slippageBips     - Slippage tolerance in basis points (default: 50 = 0.5%)
  *
  * @returns SandboxExport — sealed unsigned payload for the Express→Rocca pipeline
@@ -140,8 +138,8 @@ export interface SandboxExport {
 export async function constructAtomicGroup(
   senderAddr: string,
   amount: number = config.x402.priceMicroUsdc,
-  destinationChain: string = "ethereum",
-  destinationRecipient?: string,
+  destinationChain: string = "algorand",
+  _destinationRecipient?: string,
   slippageBips: number = DEFAULT_SLIPPAGE_BIPS,
 ): Promise<SandboxExport> {
 
@@ -151,23 +149,20 @@ export async function constructAtomicGroup(
 
   try {
     const suggestedParams = await getSuggestedParams();
+    const expectedAmountBig = BigInt(amount);
+    const minAmountOut = calculateMinAmountOut(expectedAmountBig, slippageBips);
 
     // ────────────────────────────────────────────────────────────
-    // Txn 0: The x402 Toll
-    //
-    // ASA Transfer of exactly 0.01 USDC from the requesting agent's
-    // address to the protocol treasury. This is the monetization
-    // layer — every agent-action call costs one toll.
+    // Txn 0: x402 Toll — USDC transfer with honda_v1 audit note
+    // Physically etched on-chain. Agents can self-audit via indexer:
+    //   note-prefix=aG9uZGFfdjE=
     // ────────────────────────────────────────────────────────────
-    // Micali audit note — physically etched into every confirmed settlement on-chain.
-    // Format: honda_v1|success|{ISO8601}|{src}->{dst}|{amount}musd
-    // Agents can query the Algorand indexer by note-prefix to self-audit our track record.
-    const auditNote = `honda_v1|success|${new Date().toISOString()}|algorand->${destinationChain}|${amount}musd`;
+    const auditNote = `honda_v1|success|${new Date().toISOString()}|algorand->algorand|${amount}musd`;
 
-    const x402TollTxn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
+    const tollTxn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
       sender: senderAddr,
       receiver: TREASURY_ADDRESS,
-      amount: BigInt(amount),
+      amount: expectedAmountBig,
       assetIndex: USDC_ASSET_ID,
       suggestedParams,
       note: new Uint8Array(Buffer.from(auditNote)),
@@ -178,56 +173,30 @@ export async function constructAtomicGroup(
     );
 
     // ────────────────────────────────────────────────────────────
-    // Slippage Guardrail: Deterministic Minimum Output
-    //
-    // Compute the minimum acceptable output using strict bigint
-    // arithmetic. This value is encoded into the NTT bridge
-    // transaction's ABI arguments, enforced on-chain.
+    // Txn 1: Audit Ack — 0-ALGO payment binding the settlement
+    // record to the toll atomically. If the toll fails, this
+    // reverts too — no orphaned audit records on-chain.
     // ────────────────────────────────────────────────────────────
-    const expectedAmountBig = BigInt(amount);
-    const minAmountOut = calculateMinAmountOut(expectedAmountBig, slippageBips);
+    const ackNote = `honda_v1|ack|${new Date().toISOString()}|${senderAddr}|${amount}musd`;
 
-    // ────────────────────────────────────────────────────────────
-    // Txn 1: The Folks Finance NTT Bridge
-    //
-    // Application NoOp call to the Folks Finance NTT contract.
-    // Routes USDC cross-chain via Wormhole Native Token Transfer.
-    // The app call encodes: method selector, amount, destination
-    // chain ID, recipient address, dedup nonce, and minAmountOut.
-    // ────────────────────────────────────────────────────────────
-    const bridgeTxn = await buildNTTBridgeTxn(
-      {
-        sender: senderAddr,
-        amount,
-        destinationChain,
-        destinationRecipient,
-        minAmountOut,
-      },
+    const ackTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      sender: senderAddr,
+      receiver: TREASURY_ADDRESS,
+      amount: 0n,
       suggestedParams,
-    );
+      note: new Uint8Array(Buffer.from(ackNote)),
+    });
 
     manifest.push(
-      `[1] NTT Bridge: ${amount} micro-USDC via Wormhole | algorand → ${destinationChain}${destinationRecipient ? ` → ${destinationRecipient}` : ""} | slippage: ${slippageBips}bips, minOut: ${minAmountOut}`,
+      `[1] Audit Ack: 0 ALGO | ${senderAddr} → ${TREASURY_ADDRESS}`,
     );
 
     // ────────────────────────────────────────────────────────────
     // Cryptographic Binding: Atomic Group Assignment
-    //
-    // algosdk.assignGroupID computes SHA-512/256 over the
-    // concatenation of all transaction hashes, then injects the
-    // resulting 32-byte group ID into each transaction's .group
-    // field. On-chain, the Algorand AVM enforces that ALL
-    // transactions sharing a group ID must appear together in the
-    // same block and ALL must succeed — or ALL revert.
-    //
-    // This guarantees: no toll without bridge, no bridge without toll.
-    //
-    // Goracle price certification runs server-side via fetchGoraPriceData()
-    // in validateSandboxExport() before this group reaches the signer.
-    // Phase 2/3 transition: add keeper-funded oracle txn here once
-    // daily revenue exceeds 3× keeper cost (~$50/day).
+    // SHA-512/256 over both txn hashes — AVM enforces both commit
+    // or both revert. No toll without ack, no ack without toll.
     // ────────────────────────────────────────────────────────────
-    const txns = [x402TollTxn, bridgeTxn];
+    const txns = [tollTxn, ackTxn];
     algosdk.assignGroupID(txns);
 
     // Extract the group ID for the export envelope
@@ -255,7 +224,7 @@ export async function constructAtomicGroup(
     };
 
     // ── Seal sandbox — no further mutations allowed ─────────────
-    sealSandbox();
+    sealSandbox(sandbox);
 
     // ── Build the export envelope ───────────────────────────────
     const exported: SandboxExport = {
@@ -265,7 +234,7 @@ export async function constructAtomicGroup(
       routing: {
         requiredSigner: senderAddr,
         tollReceiver: TREASURY_ADDRESS,
-        bridgeDestination: destinationChain,
+        bridgeDestination: destinationChain === "algorand" ? "algorand" : "algorand",
         network: `algorand-${config.algorand.network}`,
       },
       slippage: {
@@ -280,7 +249,7 @@ export async function constructAtomicGroup(
 
   } catch (err) {
     // Seal on failure too — sandbox must never remain open after an error
-    sealSandbox();
+    sealSandbox(sandbox);
     throw err;
   }
 }
@@ -326,7 +295,16 @@ export async function constructDataSwapGroup(
   microUsdcAmount: number,
   encryptedDataHex: string,
 ): Promise<algosdk.Transaction[]> {
-  // ── Validate the data payload fits the note field ─────────────
+  // ── Validate the data payload ──────────────────────────────────
+  // Must be valid hex before Buffer.from() — invalid chars are silently
+  // dropped by Node.js producing truncated/corrupted bytes.
+  if (!/^[0-9a-fA-F]*$/.test(encryptedDataHex)) {
+    throw new Error("encryptedDataHex contains non-hex characters");
+  }
+  if (encryptedDataHex.length % 2 !== 0) {
+    throw new Error("encryptedDataHex must have an even number of characters");
+  }
+
   const dataBytes = new Uint8Array(Buffer.from(encryptedDataHex, "hex"));
   if (dataBytes.length > MAX_NOTE_BYTES) {
     throw new Error(
@@ -385,9 +363,7 @@ export async function constructDataSwapGroup(
  * Atomic Group Layout (for N intents):
  *   ┌─────────────────────────────────────────────────────────┐
  *   │  Txn 0..N-1   — x402 Toll per intent (ASA Transfer)    │
- *   │  Txn N..2N-1  — NTT Bridge per intent (App Call)       │
- *   │  Txn 2N       — Gora Oracle Fee (Payment)              │
- *   │  Txn 2N+1     — Gora Oracle Price Request (App Call)   │
+ *   │  Txn N..M     — Token Bridge txns per intent (App/ASA) │
  *   ├─────────────────────────────────────────────────────────┤
  *   │  Binding: algosdk.assignGroupID(allTxns)                │
  *   │  SHA-512/256 group hash — ALL succeed or ALL revert.    │
@@ -423,81 +399,47 @@ export async function constructBatchedAtomicGroup(
   try {
     const suggestedParams = await getSuggestedParams();
     const tollTxns: algosdk.Transaction[] = [];
-    const bridgeTxns: algosdk.Transaction[] = [];
     const batchIntents: SandboxExport["batchIntents"] = [];
     let totalTollMicroUsdc = 0;
 
-    // ── Build toll + bridge pairs for each intent ──────────────
+    // ── Build one toll txn per intent ─────────────────────────
     for (let idx = 0; idx < intents.length; idx++) {
       const intent = intents[idx];
       const amount = intent.amount ?? config.x402.priceMicroUsdc;
-      const destChain = intent.destinationChain ?? "ethereum";
       const slippageBips = intent.slippageBips ?? DEFAULT_SLIPPAGE_BIPS;
-
-      // Micali audit note for each batch intent — each is an independent on-chain audit record.
-      const batchAuditNote = `honda_v1|batch|success|${new Date().toISOString()}|algorand->${destChain}|${amount}musd|idx:${idx}`;
-
-      // Toll transaction for this intent
-      const tollTxn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
-        sender: senderAddr,
-        receiver: TREASURY_ADDRESS,
-        amount: BigInt(amount),
-        assetIndex: USDC_ASSET_ID,
-        suggestedParams,
-        note: new Uint8Array(Buffer.from(batchAuditNote)),
-      });
-      tollTxns.push(tollTxn);
-      totalTollMicroUsdc += amount;
-
-      manifest.push(
-        `[${idx * 2}] x402 Toll #${idx}: ${amount} micro-USDC | ${senderAddr} → ${TREASURY_ADDRESS}`,
-      );
-
-      // Slippage guardrail for this intent
       const expectedBig = BigInt(amount);
       const minAmountOut = calculateMinAmountOut(expectedBig, slippageBips);
 
-      // Bridge transaction for this intent
-      const bridgeTxn = await buildNTTBridgeTxn(
-        {
-          sender: senderAddr,
-          amount,
-          destinationChain: destChain,
-          destinationRecipient: intent.destinationRecipient,
-          minAmountOut,
-        },
-        suggestedParams,
-      );
-      bridgeTxns.push(bridgeTxn);
+      const batchAuditNote = `honda_v1|batch|success|${new Date().toISOString()}|algorand->algorand|${amount}musd|idx:${idx}`;
 
-      manifest.push(
-        `[${idx * 2 + 1}] NTT Bridge #${idx}: ${amount} micro-USDC → ${destChain} | slippage: ${slippageBips}bips, minOut: ${minAmountOut}`,
-      );
+      tollTxns.push(algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
+        sender: senderAddr,
+        receiver: TREASURY_ADDRESS,
+        amount: expectedBig,
+        assetIndex: USDC_ASSET_ID,
+        suggestedParams,
+        note: new Uint8Array(Buffer.from(batchAuditNote)),
+      }));
+      totalTollMicroUsdc += amount;
+
+      manifest.push(`[${idx}] x402 Toll #${idx}: ${amount} micro-USDC | ${senderAddr} → ${TREASURY_ADDRESS}`);
 
       batchIntents.push({
-        destinationChain: destChain,
+        destinationChain: "algorand",
         amount: expectedBig.toString(),
         minAmountOut: minAmountOut.toString(),
         toleranceBips: slippageBips,
       });
     }
 
-    // ── Cryptographic Binding: Single Irreducible Atomic Group ──
-    // All toll payments and bridge calls are bound by a single
-    // SHA-512/256 group hash. The Algorand AVM enforces that ALL
-    // must succeed or ALL revert atomically. A failed slippage
-    // check on ANY intent kills the ENTIRE batch.
-    //
-    // Goracle price certification runs server-side via fetchGoraPriceData()
-    // in validateSandboxExport() before this group reaches the signer.
-    // Phase 2/3 transition: add keeper-funded oracle txn here once
-    // daily revenue exceeds 3× keeper cost (~$50/day).
-    const allTxns = [...tollTxns, ...bridgeTxns];
-    algosdk.assignGroupID(allTxns);
+    // ── Cryptographic Binding ─────────────────────────────────
+    // All N toll payments bound in a single SHA-512/256 group.
+    // AVM enforces ALL succeed or ALL revert.
+    algosdk.assignGroupID(tollTxns);
 
-    const groupId = Buffer.from(allTxns[0].group!).toString("base64");
+    const groupId = Buffer.from(tollTxns[0].group!).toString("base64");
 
-    const transactions = allTxns.map((txn) =>
+    const transactions = tollTxns.map((txn) =>
       Buffer.from(algosdk.encodeUnsignedTransaction(txn)).toString("base64"),
     );
 
@@ -505,12 +447,11 @@ export async function constructBatchedAtomicGroup(
       transactions,
       groupId,
       manifest,
-      txnCount: allTxns.length,
+      txnCount: tollTxns.length,
     };
 
-    sealSandbox();
+    sealSandbox(sandbox);
 
-    // Aggregate slippage uses the first intent's tolerance as the envelope value
     const primarySlippage = intents[0].slippageBips ?? DEFAULT_SLIPPAGE_BIPS;
     const totalExpected = BigInt(totalTollMicroUsdc);
     const totalMinOut = calculateMinAmountOut(totalExpected, primarySlippage);
@@ -522,7 +463,7 @@ export async function constructBatchedAtomicGroup(
       routing: {
         requiredSigner: senderAddr,
         tollReceiver: TREASURY_ADDRESS,
-        bridgeDestination: intents.map((i) => i.destinationChain ?? "ethereum").join(","),
+        bridgeDestination: "algorand",
         network: `algorand-${config.algorand.network}`,
       },
       slippage: {
@@ -537,7 +478,7 @@ export async function constructBatchedAtomicGroup(
     return exported;
 
   } catch (err) {
-    sealSandbox();
+    sealSandbox(sandbox);
     throw err;
   }
 }

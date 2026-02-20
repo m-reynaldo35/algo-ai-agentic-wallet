@@ -1,3 +1,5 @@
+console.log("Boot start. PORT=", process.env.PORT);
+
 import { initSentry } from "./lib/sentry.js";
 initSentry(); // Must be first — before any other imports touch the network
 
@@ -17,11 +19,36 @@ import { getWebhookDeliveries } from "./services/webhook.js";
 import { registerSSEBroadcaster } from "./services/audit.js";
 import { requirePortalAuth } from "./middleware/portalAuth.js";
 import helmet from "helmet";
+import cors from "cors";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+
+// ── CORS Policy ─────────────────────────────────────────────────
+// Explicitly deny all cross-origin requests to the API.
+// The developer portal (separate origin) uses server-side proxying
+// through /api/live/* so it does not need CORS headers here.
+// If browser-based agents need direct access in future, add allowed
+// origins via CORS_ALLOWED_ORIGINS env var.
+const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS
+  ? process.env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim())
+  : [];
+
+app.use(cors({
+  origin: allowedOrigins.length > 0 ? allowedOrigins : false,
+  methods: ["GET", "POST", "PATCH"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-PAYMENT",
+    "X-Portal-Key",
+    "x-api-key",
+    "X-SLIPPAGE-BIPS",
+  ],
+  credentials: false,
+}));
 
 // ── Security Headers (helmet) ───────────────────────────────────
 app.use(helmet({
@@ -137,12 +164,12 @@ app.post("/api/agent-action", x402Paywall, async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("[agent-action]", message);
-    res.status(500).json({ error: "Failed to construct atomic group", detail: message });
+    res.status(500).json({ error: "Failed to construct atomic group" });
   }
 });
 
 // ── Execute full pipeline: validate → auth → sign → broadcast ───
-app.post("/api/execute", async (req, res) => {
+app.post("/api/execute", requirePortalAuth, async (req, res) => {
   try {
     const { sandboxExport, agentId } = req.body;
 
@@ -151,22 +178,55 @@ app.post("/api/execute", async (req, res) => {
       return;
     }
 
+    if (typeof agentId !== "string" || agentId.length < 3 || agentId.length > 128) {
+      res.status(400).json({ error: "agentId must be a string between 3 and 128 characters" });
+      return;
+    }
+
+    const sandboxId: string = sandboxExport?.sandboxId ?? "";
+
+    // ── Idempotency guard: deduplicate on sandboxId ────────────
+    // Prevents duplicate on-chain submissions when a client retries
+    // due to a network timeout after the pipeline already succeeded.
+    // Cached results are keyed by sandboxId with a 24h TTL.
+    const redis = getRedis();
+    if (redis && sandboxId) {
+      const idempotentKey = `x402:idempotent:${sandboxId}`;
+      try {
+        const prior = await redis.get(idempotentKey) as string | null;
+        if (prior) {
+          const cached = JSON.parse(prior);
+          res.setHeader("X-Idempotent-Replay", "true");
+          res.json(cached);
+          return;
+        }
+      } catch {
+        // Redis failure — proceed without idempotency (fail-open)
+      }
+    }
+
     const result = await executePipeline(sandboxExport, agentId);
 
     if (!result.success) {
       res.status(502).json({
         error: "Settlement pipeline failed",
         failedStage: result.failedStage,
-        detail: result.error,
       });
       return;
+    }
+
+    // Cache successful result for 24h
+    if (redis && sandboxId) {
+      redis
+        .set(`x402:idempotent:${sandboxId}`, JSON.stringify(result), { ex: 86400 })
+        .catch(() => {});
     }
 
     res.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("[execute]", message);
-    res.status(500).json({ error: "Pipeline execution failed", detail: message });
+    res.status(500).json({ error: "Pipeline execution failed" });
   }
 });
 
@@ -208,7 +268,7 @@ app.post("/api/batch-action", x402Paywall, async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("[batch-action]", message);
-    res.status(500).json({ error: "Failed to construct batched atomic group", detail: message });
+    res.status(500).json({ error: "Failed to construct batched atomic group" });
   }
 });
 
@@ -459,7 +519,14 @@ app.post("/api/portal/api-keys", requirePortalAuth, async (req, res) => {
       usageCount: 0,
       rateLimit: "100 req/min",
     };
-    await redis.hset(API_KEYS_HASH, { [id]: JSON.stringify(entry) });
+    // Write main record + secondary index for O(1) rate limiter lookups
+    const keyHash = Buffer.from(
+      await crypto.subtle.digest("SHA-256", Buffer.from(entry.key))
+    ).toString("hex");
+    await Promise.all([
+      redis.hset(API_KEYS_HASH, { [id]: JSON.stringify(entry) }),
+      redis.set(`x402:api-key-index:${keyHash}`, id),
+    ]);
     res.json(entry);
   } catch (err) {
     console.error("[portal/api-keys POST]", err);
@@ -483,7 +550,14 @@ app.patch("/api/portal/api-keys/:id/revoke", requirePortalAuth, async (req, res)
     const entry = safeParse(raw) as ApiKeyEntry | null;
     if (!entry) { res.status(500).json({ error: "Corrupted key record" }); return; }
     entry.status = "revoked";
-    await redis.hset(API_KEYS_HASH, { [id]: JSON.stringify(entry) });
+    // Delete secondary index so revoked keys fail rate limiter lookup immediately
+    const keyHash = Buffer.from(
+      await crypto.subtle.digest("SHA-256", Buffer.from(entry.key))
+    ).toString("hex");
+    await Promise.all([
+      redis.hset(API_KEYS_HASH, { [id]: JSON.stringify(entry) }),
+      redis.del(`x402:api-key-index:${keyHash}`),
+    ]);
     res.json(entry);
   } catch (err) {
     console.error("[portal/api-keys PATCH]", err);
@@ -608,20 +682,15 @@ app.get("/api/portal/stream", requirePortalAuth, (req, res) => {
 });
 
 // ── Boot ────────────────────────────────────────────────────────
-// Local dev: listen on PORT. Vercel: app is imported as a module.
-if (process.env.NODE_ENV !== "production") {
-  app.listen(config.port, () => {
-    console.log(`\n  Algo AI Agentic Wallet — Phase 3`);
-    console.log(`  x402 server listening on http://localhost:${config.port}`);
-    console.log(`  Network: algorand-${config.algorand.network}`);
-    console.log(`  Default slippage: ${DEFAULT_SLIPPAGE_BIPS} bips (${DEFAULT_SLIPPAGE_BIPS / 100}%)`);
-    console.log(`  Endpoints:`);
-    console.log(`    POST /api/agent-action  — construct atomic group (x402-gated)`);
-    console.log(`    POST /api/batch-action  — batched multiparty settlement (x402-gated)`);
-    console.log(`    POST /api/execute       — pipeline: validate → auth → sign → broadcast`);
-    console.log(`  Middleware: rate-limiter (Upstash sliding window) → x402 paywall → replay guard\n`);
-  });
+// Deployed on Railway — persistent process, always binds a port.
+const port = Number(process.env.PORT);
+
+if (!port) {
+  throw new Error("PORT not defined");
 }
 
-// Vercel Serverless: @vercel/node imports this as a module
-export default app;
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Listening on ${port}`);
+  console.log(`  Network: algorand-${config.algorand.network}`);
+  console.log(`  Default slippage: ${DEFAULT_SLIPPAGE_BIPS} bips (${DEFAULT_SLIPPAGE_BIPS / 100}%)`);
+});

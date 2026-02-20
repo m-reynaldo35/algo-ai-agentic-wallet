@@ -1,76 +1,146 @@
+import { createHash } from "crypto";
 import type { Request, Response, NextFunction } from "express";
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
+import { getRedis } from "../services/redis.js";
+
+// ── In-memory fallback rate limiter (used when Redis is unavailable) ──
+// Token bucket per IP: 30 requests per 10-second window.
+const _fallbackBuckets = new Map<string, { tokens: number; lastRefill: number }>();
+const FALLBACK_MAX = 30;
+const FALLBACK_WINDOW_MS = 10_000;
+
+function fallbackCheck(identifier: string): { limited: boolean } {
+  const now = Date.now();
+  let bucket = _fallbackBuckets.get(identifier);
+  if (!bucket || now - bucket.lastRefill > FALLBACK_WINDOW_MS) {
+    bucket = { tokens: FALLBACK_MAX, lastRefill: now };
+  }
+  if (bucket.tokens <= 0) {
+    _fallbackBuckets.set(identifier, bucket);
+    return { limited: true };
+  }
+  bucket.tokens--;
+  _fallbackBuckets.set(identifier, bucket);
+  return { limited: false };
+}
 
 /**
  * ┌─────────────────────────────────────────────────────────────────┐
  * │  Edge-Level Rate Limiting — Upstash Sliding Window              │
  * │                                                                 │
- * │  Protects the API compute layer from DDoS and aggregator spam   │
- * │  BEFORE traffic reaches x402 signature verification or the      │
- * │  execution pipeline. Uses Upstash Redis for globally consistent │
- * │  rate state across all serverless instances.                    │
+ * │  Two tiers:                                                     │
+ * │    - IP limiter: anonymous requests (default 30 req / 10s)      │
+ * │    - Platform limiter: authenticated agents (default 100 / 10s) │
  * │                                                                 │
- * │  Algorithm: Sliding Window — 50 requests per 10 seconds per     │
- * │  identifier (IP or X-Platform-Id header).                       │
+ * │  All limits are env-configurable for production tuning.         │
  * └─────────────────────────────────────────────────────────────────┘
  */
 
-// ── Rate Limiter (lazy initialization) ───────────────────────────
+// ── Config from env ─────────────────────────────────────────────
+const IP_MAX = parseInt(process.env.RATE_LIMIT_IP_MAX || "30", 10);
+const IP_WINDOW = `${process.env.RATE_LIMIT_IP_WINDOW || "10"} s`;
+const PLATFORM_MAX = parseInt(process.env.RATE_LIMIT_PLATFORM_MAX || "100", 10);
+const PLATFORM_WINDOW = `${process.env.RATE_LIMIT_PLATFORM_WINDOW || "10"} s`;
 
-let ratelimit: Ratelimit | null = null;
+// ── Rate Limiters (lazy initialization) ─────────────────────────
+
+let ipLimiter: Ratelimit | null = null;
+let platformLimiter: Ratelimit | null = null;
 let available: boolean | null = null;
 
-function getRateLimiter(): Ratelimit | null {
-  if (available === false) return null;
+function initLimiters(): boolean {
+  if (available === false) return false;
 
-  if (ratelimit === null) {
-    const url = process.env.UPSTASH_REDIS_REST_URL;
-    const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (available === true) return true;
 
-    if (!url || !token) {
-      available = false;
-      console.warn("[RateLimiter] UPSTASH credentials not set — rate limiting disabled");
-      return null;
-    }
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-    ratelimit = new Ratelimit({
-      redis: new Redis({ url, token }),
-      limiter: Ratelimit.slidingWindow(50, "10 s"),
-      prefix: "x402:ratelimit",
-    });
-    available = true;
+  if (!url || !token) {
+    available = false;
+    console.warn("[RateLimiter] UPSTASH credentials not set — rate limiting disabled");
+    return false;
   }
 
-  return ratelimit;
+  const redis = new Redis({ url, token });
+
+  ipLimiter = new Ratelimit({
+    redis,
+    limiter: Ratelimit.slidingWindow(IP_MAX, IP_WINDOW as `${number} s`),
+    prefix: "x402:ratelimit:ip",
+  });
+
+  platformLimiter = new Ratelimit({
+    redis,
+    limiter: Ratelimit.slidingWindow(PLATFORM_MAX, PLATFORM_WINDOW as `${number} s`),
+    prefix: "x402:ratelimit:platform",
+  });
+
+  available = true;
+  return true;
 }
 
 /**
- * Resolve the rate limit identifier from the request.
- * Priority: X-Platform-Id header > X-Forwarded-For > socket IP.
+ * Resolve the rate limit identifier and select the appropriate limiter.
+ *
+ * Priority:
+ *   1. x-api-key header → SHA-256 hash → Redis index lookup → platform limiter
+ *      (authenticated; only valid active keys get platform-level throughput)
+ *   2. IP fallback → IP limiter
+ *
+ * Note: The unauthenticated X-Platform-Id tier has been removed — it allowed
+ * any caller to bypass IP-level rate limits with a fabricated header value.
  */
-function resolveIdentifier(req: Request): string {
-  const platformId = req.header("X-Platform-Id");
-  if (platformId) return `platform:${platformId}`;
+async function resolveLimiter(req: Request): Promise<{ limiter: Ratelimit; identifier: string } | null> {
+  if (!initLimiters()) return null;
 
+  // ── Tier 1: Authenticated API key ────────────────────────────
+  const rawApiKey = req.header("x-api-key");
+  if (rawApiKey && platformLimiter) {
+    const keyHash = createHash("sha256").update(rawApiKey).digest("hex");
+    const redis = getRedis();
+    if (redis) {
+      try {
+        const indexEntry = await redis.get(`x402:api-key-index:${keyHash}`) as string | null;
+        if (indexEntry) {
+          // Valid active key — increment usage counter fire-and-forget
+          const API_KEYS_HASH = "x402:api-keys";
+          redis.hget(API_KEYS_HASH, indexEntry).then((raw) => {
+            if (typeof raw === "string") {
+              try {
+                const entry = JSON.parse(raw);
+                entry.usageCount = (entry.usageCount ?? 0) + 1;
+                redis.hset(API_KEYS_HASH, { [indexEntry]: JSON.stringify(entry) }).catch(() => {});
+              } catch { /* ignore */ }
+            }
+          }).catch(() => {});
+
+          return { limiter: platformLimiter, identifier: `apikey:${keyHash.slice(0, 16)}` };
+        }
+      } catch { /* Redis error — fall through */ }
+    }
+  }
+
+  // ── Tier 2: IP fallback ──────────────────────────────────────
   const forwarded = req.header("X-Forwarded-For");
-  if (forwarded) return `ip:${forwarded.split(",")[0].trim()}`;
+  const ip = forwarded ? forwarded.split(",")[0].trim() : req.ip || "unknown";
 
-  return `ip:${req.ip || "unknown"}`;
+  return { limiter: ipLimiter!, identifier: `ip:${ip}` };
 }
 
 // ── Middleware ────────────────────────────────────────────────────
 
 export async function rateLimiter(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const limiter = getRateLimiter();
+  const resolved = await resolveLimiter(req);
 
   // If Redis is not configured, pass through (local dev)
-  if (!limiter) {
+  if (!resolved) {
     next();
     return;
   }
 
-  const identifier = resolveIdentifier(req);
+  const { limiter, identifier } = resolved;
 
   try {
     const result = await limiter.limit(identifier);
@@ -83,6 +153,22 @@ export async function rateLimiter(req: Request, res: Response, next: NextFunctio
     if (!result.success) {
       const retryAfter = Math.ceil((result.reset - Date.now()) / 1000);
       res.setHeader("Retry-After", retryAfter);
+
+      // Log 429 to Redis events (fire-and-forget)
+      const redis = getRedis();
+      if (redis) {
+        const entry = {
+          event: "rate.limit",
+          identifier,
+          path: req.path,
+          timestamp: new Date().toISOString(),
+        };
+        redis
+          .zadd("x402:events", { score: Date.now(), member: JSON.stringify(entry) })
+          .then(() => redis.zremrangebyrank("x402:events", 0, -1001))
+          .catch(() => {});
+      }
+
       res.status(429).json({
         error: "Too Many Requests",
         detail: `Rate limit exceeded for ${identifier}. Try again in ${retryAfter}s.`,
@@ -95,8 +181,14 @@ export async function rateLimiter(req: Request, res: Response, next: NextFunctio
 
     next();
   } catch (err) {
-    // On Redis failure, fail open — don't block legitimate traffic
-    console.warn(`[RateLimiter] Redis error (failing open): ${err instanceof Error ? err.message : err}`);
+    // Redis failure — fall back to in-memory token bucket (fail-closed semantics)
+    console.warn(`[RateLimiter] Redis error (using in-memory fallback): ${err instanceof Error ? err.message : err}`);
+    const identifier = req.ip || req.socket.remoteAddress || "unknown";
+    const { limited } = fallbackCheck(identifier);
+    if (limited) {
+      res.status(429).json({ error: "Too Many Requests (fallback limiter)" });
+      return;
+    }
     next();
   }
 }

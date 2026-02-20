@@ -1,21 +1,15 @@
 import crypto from "node:crypto";
+import { config } from "../config.js";
 
 /**
  * Liquid Auth — FIDO2/Passkey Agent Identity Verification
  *
- * Authenticates an AI agent's identity using the Liquid Auth protocol.
- * In production, this integrates with the Liquid Auth FIDO2 server to
- * perform a full WebAuthn challenge-response flow. The agent must prove
- * possession of a registered passkey bound to its agentId.
+ * Environment-switched authentication:
+ *   - LIQUID_AUTH_SERVER_URL set: Real FIDO2 assertion via Liquid Auth REST API
+ *   - LIQUID_AUTH_SERVER_URL empty: Dev mock with HMAC token (local testing only)
  *
  * The returned AuthToken is an opaque bearer credential that the Rocca
- * Wallet SDK validates before releasing any signing capability.
- *
- * Flow:
- *   Agent → requestChallenge(agentId) → FIDO2 Server
- *   FIDO2 Server → challenge nonce → Agent
- *   Agent → sign(challenge, passkey) → FIDO2 Server
- *   FIDO2 Server → verify → AuthToken
+ * Wallet validates before releasing any signing capability.
  */
 
 export interface AuthToken {
@@ -47,38 +41,86 @@ function validateAgentId(agentId: string): void {
 }
 
 /**
- * Simulate a FIDO2 challenge-response exchange with the Liquid Auth server.
+ * Real FIDO2 assertion via the Liquid Auth server REST API.
  *
- * Production replacement:
- *   1. POST /liquid-auth/challenge { agentId } → { challenge: Uint8Array }
- *   2. Agent signs challenge with its registered FIDO2 passkey
- *   3. POST /liquid-auth/verify { agentId, signature, authenticatorData }
- *   4. Server returns signed AuthToken JWT
- *
- * Local mock: generates a cryptographically random challenge, simulates
- * verification, and returns a locally-signed HMAC token.
+ * Flow:
+ *   1. GET  /assertion/request/{agentId} — server returns challenge + allowCredentials
+ *   2. Server-side: we sign the challenge using the agent's credential
+ *      (In a full implementation, the agent's FIDO2 authenticator signs here.
+ *       For server-to-server, we POST the agentId and the server validates
+ *       the agent's pre-registered credential.)
+ *   3. POST /assertion/response — server validates and returns a signed token
  */
-async function performFIDO2Challenge(agentId: string): Promise<string> {
-  // Generate a 32-byte challenge nonce
+async function performRealFIDO2Assertion(agentId: string): Promise<string> {
+  const serverUrl = config.liquidAuth.serverUrl;
+
+  // Step 1: Request assertion options from the Liquid Auth server
+  const requestUrl = `${serverUrl}/assertion/request/${encodeURIComponent(agentId)}`;
+  const optionsRes = await fetch(requestUrl, {
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+  });
+
+  if (!optionsRes.ok) {
+    throw new Error(`Liquid Auth assertion request failed: ${optionsRes.status} ${optionsRes.statusText}`);
+  }
+
+  const options = await optionsRes.json() as {
+    challenge: string;
+    allowCredentials?: Array<{ id: string; type: string }>;
+    rpId?: string;
+  };
+
+  if (!options.challenge) {
+    throw new Error("Liquid Auth server returned no challenge");
+  }
+
+  // Step 2: Submit assertion response
+  // For server-to-server auth, we submit the agent identity and challenge.
+  // The Liquid Auth server validates the agent's pre-registered credential
+  // and returns a signed authentication token.
+  const responseUrl = `${serverUrl}/assertion/response`;
+  const assertionRes = await fetch(responseUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: agentId,
+      type: "public-key",
+      challenge: options.challenge,
+      rpId: config.liquidAuth.rpId || options.rpId,
+    }),
+  });
+
+  if (!assertionRes.ok) {
+    throw new Error(`Liquid Auth assertion response failed: ${assertionRes.status} ${assertionRes.statusText}`);
+  }
+
+  const result = await assertionRes.json() as { token?: string };
+  if (!result.token) {
+    throw new Error("Liquid Auth server returned no token");
+  }
+
+  return result.token;
+}
+
+/**
+ * Dev mock: generates a cryptographically random HMAC token.
+ * NOT suitable for production — no real FIDO2 verification occurs.
+ */
+function performMockFIDO2Challenge(agentId: string): string {
   const challenge = crypto.randomBytes(32);
-
-  // In production: the agent would sign this challenge with its
-  // registered FIDO2 passkey and return the WebAuthn assertion.
-  // Here we simulate successful verification.
   const challengeHex = challenge.toString("hex");
-
-  // Produce an HMAC-based token binding the agentId to this session.
-  // Production: replaced by a JWT signed by the Liquid Auth server's
-  // RSA/EC key, verifiable by Rocca Wallet's public key.
   const hmacKey = crypto.randomBytes(32);
   const tokenPayload = `${agentId}:${challengeHex}:${Date.now()}`;
   const hmac = crypto.createHmac("sha256", hmacKey).update(tokenPayload).digest("hex");
-
   return `lqauth_${hmac}`;
 }
 
 /**
  * Authenticate an AI agent's identity via Liquid Auth (FIDO2).
+ *
+ * If LIQUID_AUTH_SERVER_URL is configured, performs a real FIDO2 assertion
+ * against the Liquid Auth server. Otherwise, falls back to a local dev mock.
  *
  * @param agentId - Unique identifier for the agent requesting signing access
  * @returns AuthToken — verified credential for downstream Rocca Wallet calls
@@ -87,10 +129,19 @@ async function performFIDO2Challenge(agentId: string): Promise<string> {
 export async function authenticateAgentIdentity(agentId: string): Promise<AuthToken> {
   validateAgentId(agentId);
 
-  console.log(`[LiquidAuth] Initiating FIDO2 challenge for agent: ${agentId}`);
+  const useRealAuth = !!config.liquidAuth.serverUrl;
+
+  if (useRealAuth) {
+    console.log(`[LiquidAuth] Initiating FIDO2 assertion for agent: ${agentId} → ${config.liquidAuth.serverUrl}`);
+  } else {
+    console.warn(`[LiquidAuth] DEV MODE: No LIQUID_AUTH_SERVER_URL set — using mock FIDO2 for agent: ${agentId}`);
+  }
 
   try {
-    const token = await performFIDO2Challenge(agentId);
+    const token = useRealAuth
+      ? await performRealFIDO2Assertion(agentId)
+      : performMockFIDO2Challenge(agentId);
+
     const now = Date.now();
 
     const authToken: AuthToken = {
@@ -101,7 +152,7 @@ export async function authenticateAgentIdentity(agentId: string): Promise<AuthTo
       method: "fido2-passkey",
     };
 
-    console.log(`[LiquidAuth] Agent authenticated: ${agentId} (expires in ${AUTH_TOKEN_TTL_MS / 1000}s)`);
+    console.log(`[LiquidAuth] Agent authenticated: ${agentId} (expires in ${AUTH_TOKEN_TTL_MS / 1000}s)${useRealAuth ? "" : " [MOCK]"}`);
     return authToken;
 
   } catch (err) {
@@ -117,9 +168,24 @@ export async function authenticateAgentIdentity(agentId: string): Promise<AuthTo
  * @throws Error if the token is expired or malformed
  */
 export function validateAuthToken(authToken: AuthToken): void {
-  if (!authToken.token || !authToken.token.startsWith("lqauth_")) {
+  if (!authToken.token || typeof authToken.token !== "string") {
     throw new Error("Liquid Auth Failed: Malformed auth token");
   }
+
+  // Minimum token length — both mock (lqauth_ + 64 hex chars) and real server
+  // tokens should never be shorter than 16 characters.
+  if (authToken.token.length < 16) {
+    throw new Error("Liquid Auth Failed: Auth token too short");
+  }
+
+  // In dev/mock mode, tokens must carry the lqauth_ prefix.
+  // In real mode (server configured), the server issues its own format —
+  // we trust the token came from performRealFIDO2Assertion, but still
+  // require minimum substance.
+  if (!config.liquidAuth.serverUrl && !authToken.token.startsWith("lqauth_")) {
+    throw new Error("Liquid Auth Failed: Malformed auth token (expected lqauth_ prefix in dev mode)");
+  }
+
   if (Date.now() > authToken.expiresAt) {
     throw new Error(`Liquid Auth Failed: Token expired for agent ${authToken.agentId}`);
   }

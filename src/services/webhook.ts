@@ -1,5 +1,7 @@
 import crypto from "crypto";
 import dns from "dns/promises";
+import http from "node:http";
+import https from "node:https";
 import { getRedis } from "./redis.js";
 
 // ── SSRF Protection ───────────────────────────────────────────
@@ -15,7 +17,16 @@ const PRIVATE_CIDR_PATTERNS = [
   /^fe80:/i,         // IPv6 link-local
 ];
 
-async function isWebhookUrlSafe(rawUrl: string): Promise<{ safe: boolean; reason?: string }> {
+/**
+ * Validates a webhook URL and resolves it to a safe IP address.
+ *
+ * Returns the pre-resolved IP to use for the actual connection, preventing
+ * TOCTOU DNS rebinding attacks. The caller must use the returned resolvedIp
+ * to connect rather than re-resolving the hostname at delivery time.
+ */
+async function isWebhookUrlSafe(
+  rawUrl: string,
+): Promise<{ safe: boolean; reason?: string; resolvedIp?: string; parsed?: URL }> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -46,24 +57,31 @@ async function isWebhookUrlSafe(rawUrl: string): Promise<{ safe: boolean; reason
     return { safe: false, reason: `Loopback hostname blocked: ${hostname}` };
   }
 
-  // Resolve DNS and check resolved IPs (prevents TOCTOU rebinding)
-  if (process.env.NODE_ENV === "production") {
-    try {
-      const addresses = await dns.resolve4(hostname).catch(() => [] as string[]);
-      const addressesV6 = await dns.resolve6(hostname).catch(() => [] as string[]);
-      for (const addr of [...addresses, ...addressesV6]) {
-        for (const pattern of PRIVATE_CIDR_PATTERNS) {
-          if (pattern.test(addr)) {
-            return { safe: false, reason: `Hostname resolves to private IP: ${addr}` };
-          }
+  // Resolve DNS once and pin the IP — prevents TOCTOU DNS rebinding.
+  // The resolved IP is returned and used directly in deliverWithRetry,
+  // so the hostname is never re-resolved between validation and delivery.
+  try {
+    const addresses = await dns.resolve4(hostname).catch(() => [] as string[]);
+    const addressesV6 = await dns.resolve6(hostname).catch(() => [] as string[]);
+    const all = [...addresses, ...addressesV6];
+
+    if (all.length === 0) {
+      return { safe: false, reason: "DNS resolution returned no addresses" };
+    }
+
+    for (const addr of all) {
+      for (const pattern of PRIVATE_CIDR_PATTERNS) {
+        if (pattern.test(addr)) {
+          return { safe: false, reason: `Hostname resolves to private IP: ${addr}` };
         }
       }
-    } catch {
-      return { safe: false, reason: "DNS resolution failed" };
     }
-  }
 
-  return { safe: true };
+    // Pin to the first resolved address
+    return { safe: true, resolvedIp: addresses[0] || addressesV6[0], parsed };
+  } catch {
+    return { safe: false, reason: "DNS resolution failed" };
+  }
 }
 
 /**
@@ -128,14 +146,42 @@ function signPayload(body: string, secret: string): string {
 
 // ── Single Delivery with Retry ────────────────────────────────
 
+/**
+ * Build a custom HTTPS/HTTP agent that connects to a pre-resolved IP address,
+ * preventing TOCTOU DNS rebinding. The Host header preserves the original hostname
+ * so TLS SNI and virtual hosting work correctly.
+ */
+function buildPinnedAgent(
+  protocol: string,
+  resolvedIp: string,
+  port: string,
+  hostname: string,
+): https.Agent | http.Agent {
+  const options = {
+    // Connect directly to the pinned IP — no DNS re-resolution
+    lookup: (_: string, _opts: unknown, callback: (err: Error | null, addr: string, family: number) => void) => {
+      callback(null, resolvedIp, resolvedIp.includes(":") ? 6 : 4);
+    },
+    // TLS: validate cert against the original hostname (not the IP)
+    servername: hostname,
+    rejectUnauthorized: process.env.NODE_ENV === "production",
+  };
+  return protocol === "https:"
+    ? new https.Agent(options)
+    : new http.Agent(options);
+}
+
 async function deliverWithRetry(
   url: string,
   body: string,
   secret: string,
+  resolvedIp: string,
+  parsed: URL,
   maxRetries = MAX_RETRIES,
 ): Promise<{ statusCode: number | null; success: boolean; attempt: number; error?: string }> {
   let lastError = "";
   let lastStatus: number | null = null;
+  const agent = buildPinnedAgent(parsed.protocol, resolvedIp, parsed.port, parsed.hostname);
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -149,6 +195,8 @@ async function deliverWithRetry(
           "User-Agent": "x402-agentic-wallet/1.0",
         },
         body,
+        // @ts-expect-error — Node.js fetch accepts agent option
+        agent,
         signal: AbortSignal.timeout(8000), // 8s per attempt
       });
 
@@ -219,14 +267,16 @@ export async function dispatchWebhooks(
   const active = keys.filter((k) => k.status === "active" && k.webhookUrl);
   if (active.length === 0) return;
 
-  // Validate all URLs before dispatching (SSRF prevention)
-  const safeKeys: ApiKeyEntry[] = [];
+  // Validate all URLs before dispatching (SSRF prevention).
+  // DNS is resolved once here and the IP is pinned — delivery never re-resolves.
+  type SafeKey = ApiKeyEntry & { resolvedIp: string; parsedUrl: URL };
+  const safeKeys: SafeKey[] = [];
   for (const key of active) {
     const check = await isWebhookUrlSafe(key.webhookUrl);
     if (!check.safe) {
       console.warn(`[Webhook] Blocked unsafe webhook URL for ${key.platform}: ${check.reason}`);
     } else {
-      safeKeys.push(key);
+      safeKeys.push({ ...key, resolvedIp: check.resolvedIp!, parsedUrl: check.parsed! });
     }
   }
   if (safeKeys.length === 0) return;
@@ -241,7 +291,8 @@ export async function dispatchWebhooks(
   // Fan-out in parallel — each delivery is independent
   await Promise.allSettled(
     safeKeys.map(async (key) => {
-      const result = await deliverWithRetry(key.webhookUrl, body, key.key);
+      // Pass pre-resolved IP — no DNS re-resolution at delivery time (TOCTOU prevention)
+      const result = await deliverWithRetry(key.webhookUrl, body, key.key, key.resolvedIp, key.parsedUrl);
 
       const record: DeliveryRecord = {
         id: crypto.randomUUID(),

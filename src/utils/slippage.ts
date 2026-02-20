@@ -51,8 +51,8 @@ function validateSlippageBips(bips: number): void {
  *   minAmountOut = expectedAmount * (10000 - slippageBips) / 10000
  *
  * Examples (USDC, 6 decimals):
- *   calculateMinAmountOut(100_000n, 50)  →  99_500n   (0.5% slippage on $0.10)
- *   calculateMinAmountOut(100_000n, 100) →  99_000n   (1.0% slippage on $0.10)
+ *   calculateMinAmountOut(10_000n, 50)   →  9_950n    (0.5% slippage on $0.01)
+ *   calculateMinAmountOut(10_000n, 100)  →  9_900n    (1.0% slippage on $0.01)
  *   calculateMinAmountOut(1_000_000n, 50) → 995_000n  (0.5% slippage on $1.00)
  *
  * @param expectedAmount         - Expected output in micro-units (bigint)

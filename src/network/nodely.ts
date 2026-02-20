@@ -1,5 +1,6 @@
 import algosdk from "algosdk";
 import { config } from "../config.js";
+import { getRedis } from "../services/redis.js";
 
 /**
  * ┌─────────────────────────────────────────────────────────────────┐
@@ -62,21 +63,64 @@ export function getIndexerClient(): algosdk.Indexer {
   return _indexer;
 }
 
+const PARAMS_CACHE_KEY = "x402:params:suggested";
+const PARAMS_CACHE_TTL = 30; // seconds — valid for ~7 Algorand rounds
+
 /**
  * Fetch suggested transaction parameters from the Algod node.
- * Falls back to deterministic mock params for offline/sandbox use.
+ *
+ * Redis-backed cache with 30s TTL: one Algod round-trip per ~7 rounds
+ * instead of one per transaction. bigint fields are serialized as strings.
  */
 export async function getSuggestedParams(): Promise<algosdk.SuggestedParams> {
+  // ── Cache read ────────────────────────────────────────────────
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const cached = await redis.get(PARAMS_CACHE_KEY) as Record<string, string> | null;
+      if (cached) {
+        return {
+          flatFee:     cached.flatFee === "true",
+          fee:         BigInt(cached.fee),
+          minFee:      BigInt(cached.minFee),
+          firstValid:  BigInt(cached.firstValid),
+          lastValid:   BigInt(cached.lastValid),
+          genesisID:   cached.genesisID,
+          genesisHash: new Uint8Array(Buffer.from(cached.genesisHash, "base64")),
+        };
+      }
+    } catch {
+      // Cache miss or Redis error — fall through to Algod
+    }
+  }
+
+  // ── Algod fetch ───────────────────────────────────────────────
   try {
-    return await getAlgodClient().getTransactionParams().do();
+    const params = await getAlgodClient().getTransactionParams().do();
+
+    // ── Cache write (fire-and-forget) ─────────────────────────
+    if (redis) {
+      const payload: Record<string, string> = {
+        flatFee:     String(params.flatFee),
+        fee:         String(params.fee),
+        minFee:      String(params.minFee),
+        firstValid:  String(params.firstValid),
+        lastValid:   String(params.lastValid),
+        genesisID:   params.genesisID,
+        genesisHash: Buffer.from(params.genesisHash).toString("base64"),
+      };
+      redis.set(PARAMS_CACHE_KEY, JSON.stringify(payload), { ex: PARAMS_CACHE_TTL }).catch(() => {});
+    }
+
+    return params;
   } catch {
     return {
-      flatFee: true,
-      fee: BigInt(1000),
-      minFee: BigInt(1000),
-      firstValid: BigInt(1000),
-      lastValid: BigInt(2000),
-      genesisID: `${config.algorand.network}-v1.0`,
+      flatFee:     true,
+      fee:         BigInt(1000),
+      minFee:      BigInt(1000),
+      firstValid:  BigInt(1000),
+      lastValid:   BigInt(2000),
+      genesisID:   `${config.algorand.network}-v1.0`,
       genesisHash: new Uint8Array(32),
     };
   }

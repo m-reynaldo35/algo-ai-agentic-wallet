@@ -1,4 +1,15 @@
 import pino from "pino";
+import { getRedis } from "./redis.js";
+import { dispatchWebhooks } from "./webhook.js";
+
+// Lazy import to avoid circular dependency — index.ts registers the function after boot
+let _broadcastSSE: ((event: string, data: unknown) => void) | null = null;
+export function registerSSEBroadcaster(fn: (event: string, data: unknown) => void): void {
+  _broadcastSSE = fn;
+}
+function emitSSE(event: string, data: unknown): void {
+  _broadcastSSE?.(event, data);
+}
 
 // ── Logger Instance ────────────────────────────────────────────
 // Strict JSON in production for log aggregators (Datadog, ELK, etc.).
@@ -46,10 +57,13 @@ interface SettlementSuccessLog {
   oracleContext?: OracleContext;
 }
 
+type FailureReason = "VALIDATION_ERROR" | "AUTH_ERROR" | "SIGN_ERROR" | "BROADCAST_ERROR" | "POLICY_BREACH";
+
 interface ExecutionFailureLog {
   event: "execution.failure";
   agentId: string;
   failedStage: "validation" | "auth" | "sign" | "broadcast";
+  failureReason: FailureReason;
   error: string;
   timestamp: string;
   oracleContext?: OracleContext;
@@ -82,6 +96,18 @@ export function logSettlementSuccess(
     ...(oracleContext && { oracleContext }),
   };
   logger.info(entry, "x402 toll settled on-chain");
+
+  // Fire-and-forget: Redis dual-write + outbound webhooks
+  const redis = getRedis();
+  if (redis) {
+    const score = Date.now();
+    redis
+      .zadd("x402:settlements", { score, member: JSON.stringify(entry) })
+      .then(() => redis.zremrangebyrank("x402:settlements", 0, -1001))
+      .catch(() => {});
+  }
+  dispatchWebhooks("settlement.success", entry as unknown as Record<string, unknown>).catch(() => {});
+  emitSSE("settlement.success", entry);
 }
 
 /**
@@ -92,19 +118,58 @@ export function logSettlementSuccess(
  * The optional `oracleContext` records the Gora price that caused
  * or was present at the time of the rejection.
  */
+/**
+ * Detect whether an error message indicates a TEAL LogicSig policy breach.
+ * The Algod client returns these specific strings when a stateless
+ * Smart Signature rejects a transaction at the AVM consensus level.
+ */
+function detectPolicyBreach(error: string): boolean {
+  const lower = error.toLowerCase();
+  return lower.includes("logic eval failed") || lower.includes("rejected by logic");
+}
+
 export function logExecutionFailure(
   agentId: string,
   stage: "validation" | "auth" | "sign" | "broadcast",
   error: string,
   oracleContext?: OracleContext,
 ): void {
+  const isPolicyBreach = detectPolicyBreach(error);
+
+  const stageToReason: Record<typeof stage, FailureReason> = {
+    validation: "VALIDATION_ERROR",
+    auth: "AUTH_ERROR",
+    sign: "SIGN_ERROR",
+    broadcast: "BROADCAST_ERROR",
+  };
+
+  const failureReason: FailureReason = isPolicyBreach ? "POLICY_BREACH" : stageToReason[stage];
+
   const entry: ExecutionFailureLog = {
     event: "execution.failure",
     agentId,
     failedStage: stage,
+    failureReason,
     error,
     timestamp: new Date().toISOString(),
     ...(oracleContext && { oracleContext }),
   };
-  logger.error(entry, `Pipeline aborted at stage: ${stage}`);
+
+  if (isPolicyBreach) {
+    logger.error(entry, `TEAL POLICY BREACH: Agent ${agentId} exceeded LogicSig spending bounds`);
+  } else {
+    logger.error(entry, `Pipeline aborted at stage: ${stage}`);
+  }
+
+  // Fire-and-forget: Redis dual-write + outbound webhooks
+  const redis = getRedis();
+  if (redis) {
+    const score = Date.now();
+    redis
+      .zadd("x402:events", { score, member: JSON.stringify(entry) })
+      .then(() => redis.zremrangebyrank("x402:events", 0, -1001))
+      .catch(() => {});
+  }
+  dispatchWebhooks("execution.failure", entry as unknown as Record<string, unknown>).catch(() => {});
+  emitSSE("execution.failure", entry);
 }

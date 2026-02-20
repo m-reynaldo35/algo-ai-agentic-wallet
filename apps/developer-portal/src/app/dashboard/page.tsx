@@ -1,5 +1,6 @@
 import TelemetryMetrics from "@/components/TelemetryMetrics";
 import SettlementChart from "@/components/dashboard/SettlementChart";
+import HealthBanner from "@/components/dashboard/HealthBanner";
 
 export const metadata = {
   title: "Dashboard — x402 Developer Portal",
@@ -18,6 +19,7 @@ export default function DashboardPage() {
         </p>
       </div>
 
+      <HealthBanner />
       <TelemetryMetrics />
 
       <div className="mt-8">

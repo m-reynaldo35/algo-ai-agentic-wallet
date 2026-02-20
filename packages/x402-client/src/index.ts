@@ -6,6 +6,9 @@ export { requestWithPayment, X402Error } from "./interceptor.js";
 export type {
   ClientConfig,
   TradeParams,
+  BatchTradeParams,
+  BatchTradeIntent,
+  BatchActionResponse,
   TradeResult,
   PayJson,
   X402PaymentProof,
@@ -13,4 +16,9 @@ export type {
   AgentActionResponse,
   SettlementResult,
   SettlementFailure,
+  ProgressEvent,
+  ProgressCallback,
+  PipelineStage,
 } from "./types.js";
+
+export { X402ErrorCode, DestinationChain } from "./types.js";

@@ -93,6 +93,10 @@ export async function enforceReplayProtection(
     return { valid: false, error: "Missing or empty nonce in payment proof" };
   }
 
+  if (nonce.length > 256) {
+    return { valid: false, error: "Nonce exceeds maximum length of 256 characters" };
+  }
+
   // ── Time Bound: ΔT = T_current − T_signature ≤ 60 ──────────────
   const now = Math.floor(Date.now() / 1000);
   const deltaT = now - timestamp;

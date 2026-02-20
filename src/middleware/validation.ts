@@ -213,7 +213,12 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
       // Sentry not available (test environment) — warn only
     }
 
-    oraclePriceVerified = true; // Graceful degradation for testnet
+    // Fail-closed in production — oracle outage must not bypass price validation.
+    // In non-production environments (testnet, local dev), degrade gracefully.
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(`Validation Loop Failed: Gora oracle unavailable in production — ${msg}`);
+    }
+    oraclePriceVerified = true; // Graceful degradation for testnet/dev only
   }
 
   // ── Rule 4: Oracle Staleness Check (Module 3) ─────────────────

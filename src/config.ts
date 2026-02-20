@@ -25,19 +25,10 @@ export const config = {
     appId: BigInt(process.env.GORA_APP_ID || "1275319623"),
     /** Gora Oracle request fee in microAlgos */
     requestFeeMicroAlgo: BigInt(process.env.GORA_REQUEST_FEE || "100000"),
-    /** Maximum oracle data age in seconds before rejection */
-    maxStalenessSeconds: parseInt(process.env.GORA_MAX_STALENESS_SECONDS || "60", 10),
+    /** Maximum oracle data age in seconds before rejection (policy: 15s) */
+    maxStalenessSeconds: parseInt(process.env.GORA_MAX_STALENESS_SECONDS || "15", 10),
     /** USDC/ALGO price feed key (Gora feed identifier) */
     priceFeedKey: process.env.GORA_PRICE_FEED_KEY || "USDC/ALGO",
-  },
-
-  folksFinance: {
-    /** Folks Finance NTT application ID (Mainnet) */
-    nttAppId: BigInt(process.env.FOLKS_NTT_APP_ID || "0"),
-    /** Wormhole Core bridge application ID (Mainnet: 842125965) */
-    wormholeCoreAppId: BigInt(process.env.WORMHOLE_CORE_APP_ID || "842125965"),
-    /** Wormhole Token Bridge application ID (Mainnet: 842126029) */
-    wormholeTokenBridgeAppId: BigInt(process.env.WORMHOLE_TOKEN_BRIDGE_APP_ID || "842126029"),
   },
 
   liquidAuth: {

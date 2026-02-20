@@ -64,12 +64,12 @@ const TYPE_B_COUNT   = 50;   // x402 cross-chain bridges
 const HIGH_FREQ_CHAINS   = ["base", "solana"];
 const PREMIUM_CHAINS     = ["ethereum", "avalanche"];
 
-// Destination wallet addresses
+// Destination wallet addresses — generated throwaway receivers, one per chain family
 const DEST = {
-  ethereum:  "0x742d35Cc6634C0532925a3b844Bc9e7595f2bD18",
-  solana:    "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
-  base:      "0x1234567890AbcdEF1234567890aBcdef12345678",
-  avalanche: "0xAbCdEf1234567890AbCdEf1234567890AbCdEf12",
+  ethereum:  "0x4BC2b720C33de96bC161984EFB3Dc235f0690C22",  // EVM (eth/base/avax share format)
+  solana:    "BCcyPUXkLgqXnmBXVeZobgXyMUpApSSDrdHFn95HQLxy",
+  base:      "0x4BC2b720C33de96bC161984EFB3Dc235f0690C22",
+  avalanche: "0x4BC2b720C33de96bC161984EFB3Dc235f0690C22",
 };
 
 // Audit log path
@@ -252,8 +252,10 @@ async function runTypeA(
     }
 
     // --live: actually submit
+    // algosdk v3 returns { txid } (lowercase), use txn.txID() to be safe
     const signed = txn.signTxn(account.sk);
-    const { txId } = await algodClient.sendRawTransaction(signed).do();
+    const txId = txn.txID().toString();
+    await algodClient.sendRawTransaction(signed).do();
     await algosdk.waitForConfirmation(algodClient, txId, 4);
     return { success: true, txId, note };
 
@@ -277,6 +279,7 @@ interface TypeBResult {
 async function runTypeB(
   index: number,
   account: algosdk.Account,
+  algodClient: algosdk.Algodv2 | null,
 ): Promise<TypeBResult> {
   // Chain rotation: 80% high-freq (Base/Solana), 20% premium (ETH/Avalanche)
   const isHighFreq = (index % 10) < 8;
@@ -366,42 +369,41 @@ async function runTypeB(
       skipped: "sandbox mode — SandboxExport received, /api/execute not called" };
   }
 
-  // ── Step 3: Execute settlement (--live only) ──────────────────
+  // ── Step 3: Sign with user wallet + submit directly to Algod ────
+  // The SandboxExport contains unsigned txns built with senderAddress=account.addr.
+  // Sign them with the user's own key and submit — bypassing the server
+  // signing step (which would use the server's key and cause auth mismatch).
+  if (!algodClient) {
+    return { success: false, txId: "", sandboxId, chain, note,
+      skipped: "algod not configured" };
+  }
+
   try {
-    const exec = await fetch(`${API_URL}/api/execute`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sandboxExport,
-        agentId: `swarm-agent-${index}`,
-      }),
+    const atomicGroup = (sandboxExport as Record<string, unknown>).atomicGroup as Record<string, unknown>;
+    const txnBlobs = atomicGroup.transactions as string[];
+
+    // Sign each unsigned blob with the user wallet
+    const signedTxns: Uint8Array[] = txnBlobs.map((b64) => {
+      const bytes = new Uint8Array(Buffer.from(b64, "base64"));
+      const txn = algosdk.decodeUnsignedTransaction(bytes);
+      return txn.signTxn(account.sk);
     });
 
-    const result = await exec.json() as Record<string, unknown>;
+    // Use the txID from the first txn (toll) as the settlement ID
+    const firstTxn = algosdk.decodeUnsignedTransaction(
+      new Uint8Array(Buffer.from(txnBlobs[0], "base64"))
+    );
+    const txId = firstTxn.txID().toString();
 
-    if (exec.status === 200 && result.success) {
-      const settlement = result.settlement as Record<string, string>;
-      return {
-        success:   true,
-        txId:      settlement.txnId,
-        sandboxId,
-        chain,
-        note,
-      };
-    }
+    await algodClient.sendRawTransaction(signedTxns).do();
+    await algosdk.waitForConfirmation(algodClient, txId, 4);
 
-    return {
-      success:   false,
-      txId:      "",
-      sandboxId,
-      chain,
-      note,
-      skipped: `Settlement failed: stage=${result.failedStage ?? "unknown"}`,
-    };
+    return { success: true, txId, sandboxId, chain, note };
 
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     return { success: false, txId: "", sandboxId, chain, note,
-      skipped: `Execute error: ${err instanceof Error ? err.message : String(err)}` };
+      skipped: msg.slice(0, 100) };
   }
 }
 
@@ -538,7 +540,7 @@ async function runSwarm() {
 
     } else {
       // ── Type B ────────────────────────────────────────────────
-      const result = await runTypeB(idx, swarmAccount);
+      const result = await runTypeB(idx, swarmAccount, algodClient);
       const tier   = ["base","solana"].includes(result.chain) ? `${D}[high-freq]${R}` : `${M}[premium]${R}`;
 
       process.stdout.write(`  ${ts()} ${C}B${R}[${String(idx + 1).padStart(2)}] algorand→${result.chain.padEnd(9)} ${tier} ... `);
