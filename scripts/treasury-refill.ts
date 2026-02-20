@@ -3,25 +3,30 @@
  * ┌─────────────────────────────────────────────────────────────────────────┐
  * │  FLYWHEEL TREASURY REFILL DAEMON                                         │
  * │                                                                          │
- * │  Two-stage hot wallet management bridging the gap until Rocca is live.  │
+ * │  Three-stage hot wallet management bridging the gap until Rocca is live.│
  * │                                                                          │
- * │  Stage 1 — Refill (bottom pressure)                                     │
+ * │  Stage 1 — ALGO Refill (bottom pressure)                                │
  * │    When the signing wallet drops below REFILL_ALERT_THRESHOLD (40%),    │
  * │    automatically top it up from the treasury to WALLET_TARGET_ALGO.     │
  * │                                                                          │
- * │  Stage 2 — Cold Ceiling Sweep (top pressure)                            │
- * │    When the treasury exceeds TREASURY_CEILING_ALGO, sweep the excess    │
- * │    to a cold wallet address. The cold wallet address is public-only —   │
- * │    its private key never touches this process. This bounds the maximum  │
- * │    funds at risk in the hot zone to ceiling + target ALGO.              │
+ * │  Stage 2a — ALGO Cold Ceiling Sweep (top pressure)                      │
+ * │    When the treasury ALGO exceeds TREASURY_CEILING_ALGO, sweep the      │
+ * │    excess to the cold wallet. Bounds ALGO at-risk to ceiling + target.  │
+ * │                                                                          │
+ * │  Stage 2b — USDC Cold Ceiling Sweep (top pressure)                      │
+ * │    When the treasury USDC exceeds TREASURY_USDC_CEILING, sweep the      │
+ * │    excess to the cold wallet (ASA transfer, cold must be opted in).     │
+ * │    Bounds USDC at-risk to the configured ceiling.                       │
  * │                                                                          │
  * │  Flow:                                                                   │
  * │                                                                          │
- * │    Cold wallet (Ledger / paper)                                          │
- * │         ↑  auto-sweep when treasury > TREASURY_CEILING_ALGO             │
- * │    Treasury wallet  ← max at-risk = ceiling                             │
- * │         ↓  auto-refill when signer < 40% of target                      │
- * │    Signing wallet   ← max at-risk = target                              │
+ * │    Cold wallet (Ledger / paper — opted in to USDC ASA 31566704)         │
+ * │         ↑  ALGO sweep when treasury > TREASURY_CEILING_ALGO             │
+ * │         ↑  USDC sweep when treasury > TREASURY_USDC_CEILING             │
+ * │    Treasury wallet  ← max ALGO at-risk = ALGO ceiling                  │
+ * │                     ← max USDC at-risk = USDC ceiling                  │
+ * │         ↓  ALGO refill when signer < 40% of target                     │
+ * │    Signing wallet   ← max ALGO at-risk = target                        │
  * │                                                                          │
  * │  Usage:   tsx scripts/treasury-refill.ts                                 │
  * │  Daemon:  Railway / PM2 / systemd (set REFILL_CHECK_INTERVAL_S)         │
@@ -31,8 +36,9 @@
  * │    ALGO_SIGNER_MNEMONIC       25-word signing wallet mnemonic            │
  * │                                                                          │
  * │  Optional env vars:                                                      │
- * │    COLD_WALLET_ADDRESS        Cold wallet address for ceiling sweeps     │
- * │    TREASURY_CEILING_ALGO      Max ALGO to keep in treasury  (default 50)│
+ * │    COLD_WALLET_ADDRESS        Cold wallet address for all sweeps         │
+ * │    TREASURY_CEILING_ALGO      Max ALGO to keep in treasury (default 50) │
+ * │    TREASURY_USDC_CEILING      Max USDC to keep in treasury (default 100)│
  * │    WALLET_TARGET_ALGO         Target signer balance in ALGO (default 10) │
  * │    TREASURY_MIN_RESERVE_ALGO  Min ALGO kept in treasury    (default 2)  │
  * │    REFILL_ALERT_THRESHOLD     Fraction that triggers alert (default 0.40)│
@@ -52,6 +58,8 @@ import * as Sentry from "@sentry/node";
 // ── Constants ─────────────────────────────────────────────────────────────
 
 const ALGO_MICRO          = 1_000_000n;  // 1 ALGO in microALGO
+const USDC_MICRO          = 1_000_000n;  // 1 USDC in microUSDC (6 decimals)
+const USDC_ASA_ID         = 31566704n;   // Circle USDC on Algorand mainnet
 const MIN_ACCOUNT_BALANCE = 100_000n;    // 0.1 ALGO — Algorand min balance
 const TX_FEE              = 1_000n;      // 0.001 ALGO standard fee
 const CONFIRMATION_ROUNDS = 4;
@@ -65,8 +73,11 @@ const ALGOD_TOKEN = process.env.ALGORAND_NODE_TOKEN || "";
 const TARGET_MICRO = BigInt(
   Math.round(parseFloat(process.env.WALLET_TARGET_ALGO || "10") * 1_000_000),
 );
-const CEILING_MICRO = BigInt(
+const ALGO_CEILING_MICRO = BigInt(
   Math.round(parseFloat(process.env.TREASURY_CEILING_ALGO || "50") * 1_000_000),
+);
+const USDC_CEILING_MICRO = BigInt(
+  Math.round(parseFloat(process.env.TREASURY_USDC_CEILING || "100") * 1_000_000),
 );
 const MIN_RESERVE_MICRO = BigInt(
   Math.round(parseFloat(process.env.TREASURY_MIN_RESERVE_ALGO || "2") * 1_000_000),
@@ -106,11 +117,6 @@ function requireEnv(name: string): string {
 
 // ── Account Loader ────────────────────────────────────────────────────────
 
-/**
- * Load an Algorand account from a 25-word mnemonic.
- * The account object (addr + sk) lives only in process memory —
- * never written to disk or logged.
- */
 function loadAccount(mnemonic: string, label: string): algosdk.Account {
   try {
     return algosdk.mnemonicToSecretKey(mnemonic);
@@ -127,7 +133,25 @@ function buildAlgod(): algosdk.Algodv2 {
 
 // ── Balance Helpers ───────────────────────────────────────────────────────
 
-async function getBalance(algod: algosdk.Algodv2, address: string): Promise<bigint> {
+interface TreasuryBalances {
+  algo: bigint;
+  usdc: bigint;
+}
+
+async function getTreasuryBalances(
+  algod: algosdk.Algodv2,
+  address: string,
+): Promise<TreasuryBalances> {
+  const info = await algod.accountInformation(address).do();
+  const algo = BigInt(info.amount);
+  const usdcAsset = (info.assets ?? []).find(
+    (a: { assetId: bigint }) => a.assetId === USDC_ASA_ID,
+  );
+  const usdc = usdcAsset ? BigInt(usdcAsset.amount) : 0n;
+  return { algo, usdc };
+}
+
+async function getAlgoBalance(algod: algosdk.Algodv2, address: string): Promise<bigint> {
   const info = await algod.accountInformation(address).do();
   return BigInt(info.amount);
 }
@@ -136,6 +160,12 @@ function microToAlgo(micro: bigint): string {
   const whole = micro / ALGO_MICRO;
   const frac  = micro % ALGO_MICRO;
   return `${whole}.${frac.toString().padStart(6, "0")} ALGO`;
+}
+
+function microToUsdc(micro: bigint): string {
+  const whole = micro / USDC_MICRO;
+  const frac  = micro % USDC_MICRO;
+  return `$${whole}.${frac.toString().padStart(6, "0")} USDC`;
 }
 
 function pctStr(current: bigint, target: bigint): string {
@@ -176,8 +206,7 @@ async function sendAlert(message: string, fields: Record<string, string>): Promi
 }
 
 // ── Notify (info-level, no cooldown) ─────────────────────────────────────
-// Used for sweep confirmations — these are working-as-designed events,
-// not warnings. Each one carries a unique txid so there is no spam risk.
+// Used for sweep confirmations — working-as-designed events with unique txids.
 
 async function sendNotify(message: string, fields: Record<string, string>): Promise<void> {
   await postWebhook(message, fields);
@@ -195,7 +224,6 @@ async function postWebhook(message: string, fields: Record<string, string>): Pro
 
   const text = buildMessageBody(message, fields);
   try {
-    // Works with Slack (uses "text") and Discord (uses "content")
     const body = JSON.stringify({ text, content: text, username: "x402 Treasury Monitor" });
     const res  = await fetch(ALERT_WEBHOOK_URL, {
       method: "POST",
@@ -216,9 +244,9 @@ async function postWebhook(message: string, fields: Record<string, string>): Pro
   }
 }
 
-// ── Signed Payment Helper ─────────────────────────────────────────────────
+// ── Signed ALGO Payment ───────────────────────────────────────────────────
 
-async function sendPayment(
+async function sendAlgoPayment(
   algod:    algosdk.Algodv2,
   from:     algosdk.Account,
   to:       string,
@@ -242,29 +270,54 @@ async function sendPayment(
   return txid;
 }
 
-// ── Stage 1: Refill signer from treasury ─────────────────────────────────
+// ── Signed USDC (ASA) Transfer ────────────────────────────────────────────
+
+async function sendUsdcTransfer(
+  algod:    algosdk.Algodv2,
+  from:     algosdk.Account,
+  to:       string,
+  amount:   bigint,
+  noteText: string,
+): Promise<string> {
+  const params = await algod.getTransactionParams().do();
+
+  const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
+    sender:          from.addr.toString(),
+    receiver:        to,
+    amount,
+    assetIndex:      USDC_ASA_ID,
+    suggestedParams: params,
+    note:            new Uint8Array(Buffer.from(noteText)),
+  });
+
+  const signedTxn = txn.signTxn(from.sk);
+  const { txid }  = await algod.sendRawTransaction(signedTxn).do();
+  await algosdk.waitForConfirmation(algod, txid, CONFIRMATION_ROUNDS);
+
+  return txid;
+}
+
+// ── Stage 1: ALGO Refill signer from treasury ─────────────────────────────
 
 async function maybeRefillSigner(
-  algod:           algosdk.Algodv2,
-  treasury:        algosdk.Account,
-  signerAddr:      string,
-  signerBalance:   bigint,
+  algod:         algosdk.Algodv2,
+  treasury:      algosdk.Account,
+  signerAddr:    string,
+  signerBalance: bigint,
 ): Promise<void> {
   const pct      = Number(signerBalance) / Number(TARGET_MICRO);
   const pctLabel = pctStr(signerBalance, TARGET_MICRO);
 
-  if (pct > ALERT_THRESHOLD) return; // Healthy — nothing to do
+  if (pct > ALERT_THRESHOLD) return;
 
   log.warn(
     { signerBalance: microToAlgo(signerBalance), pct: pctLabel },
     `Signer wallet below ${(ALERT_THRESHOLD * 100).toFixed(0)}% threshold`,
   );
 
-  const treasuryBalance = await getBalance(algod, treasury.addr.toString());
-  const topUpMicro      = TARGET_MICRO - signerBalance;
-
-  // Guard: treasury must retain its minimum reserve + fee after refill
-  const required = topUpMicro + MIN_RESERVE_MICRO + TX_FEE + MIN_ACCOUNT_BALANCE;
+  const treasuryAlgo = await getAlgoBalance(algod, treasury.addr.toString());
+  const topUpMicro   = TARGET_MICRO - signerBalance;
+  const required     = topUpMicro + MIN_RESERVE_MICRO + TX_FEE + MIN_ACCOUNT_BALANCE;
 
   await sendAlert(
     `⚠️  x402 Signer Wallet Low — ${pctLabel} full`,
@@ -273,21 +326,21 @@ async function maybeRefillSigner(
       "Target balance":   microToAlgo(TARGET_MICRO),
       "Fill level":       pctLabel,
       "Top-up needed":    microToAlgo(topUpMicro),
-      "Treasury balance": microToAlgo(treasuryBalance),
+      "Treasury ALGO":    microToAlgo(treasuryAlgo),
     },
   );
 
-  if (treasuryBalance < required) {
+  if (treasuryAlgo < required) {
     log.error(
-      { treasuryBalance: microToAlgo(treasuryBalance), required: microToAlgo(required) },
-      "Treasury balance too low to refill — manual intervention required",
+      { treasuryAlgo: microToAlgo(treasuryAlgo), required: microToAlgo(required) },
+      "Treasury ALGO too low to refill — manual intervention required",
     );
     await sendAlert(
       `🚨  x402 Treasury Cannot Cover Refill`,
       {
-        "Treasury balance": microToAlgo(treasuryBalance),
-        "Required":         microToAlgo(required),
-        "Shortfall":        microToAlgo(required - treasuryBalance),
+        "Treasury ALGO": microToAlgo(treasuryAlgo),
+        "Required":      microToAlgo(required),
+        "Shortfall":     microToAlgo(required - treasuryAlgo),
       },
     );
     return;
@@ -295,76 +348,137 @@ async function maybeRefillSigner(
 
   log.info(
     { topUp: microToAlgo(topUpMicro), from: treasury.addr.toString(), to: signerAddr },
-    "Sending refill...",
+    "Sending ALGO refill...",
   );
 
-  const txid = await sendPayment(
+  const txid = await sendAlgoPayment(
     algod, treasury, signerAddr, topUpMicro,
     `x402:treasury-refill|${new Date().toISOString()}|${topUpMicro}uA`,
   );
 
-  const newBalance = await getBalance(algod, signerAddr);
+  const newBalance = await getAlgoBalance(algod, signerAddr);
   log.info(
-    { txid, topUp: microToAlgo(topUpMicro), newBalance: microToAlgo(newBalance), newPct: pctStr(newBalance, TARGET_MICRO) },
-    "Refill confirmed ✓",
+    {
+      txid,
+      topUp:      microToAlgo(topUpMicro),
+      newBalance: microToAlgo(newBalance),
+      newPct:     pctStr(newBalance, TARGET_MICRO),
+    },
+    "ALGO refill confirmed ✓",
   );
 }
 
-// ── Stage 2: Sweep treasury excess to cold wallet ────────────────────────
+// ── Stage 2a: ALGO cold ceiling sweep ────────────────────────────────────
 
-async function maybeSweepToCold(
+async function maybeSweepAlgoToCold(
   algod:           algosdk.Algodv2,
   treasury:        algosdk.Account,
-  treasuryBalance: bigint,
+  treasuryAlgo:    bigint,
 ): Promise<void> {
-  if (!COLD_ADDRESS) return; // Cold sweep not configured — skip silently
+  if (!COLD_ADDRESS) return;
+  if (treasuryAlgo <= ALGO_CEILING_MICRO) return;
 
-  if (treasuryBalance <= CEILING_MICRO) return; // Below ceiling — nothing to sweep
-
-  // sweepAmount: bring treasury exactly down to ceiling after paying the tx fee.
-  //   post-sweep treasury = treasuryBalance - sweepAmount - TX_FEE = CEILING_MICRO
-  //   ∴ sweepAmount = treasuryBalance - CEILING_MICRO - TX_FEE
-  const sweepAmount = treasuryBalance - CEILING_MICRO - TX_FEE;
-
+  // sweepAmount lands treasury exactly at ceiling after paying fee:
+  //   treasuryAlgo - sweepAmount - TX_FEE = ALGO_CEILING_MICRO
+  const sweepAmount = treasuryAlgo - ALGO_CEILING_MICRO - TX_FEE;
   if (sweepAmount <= 0n) {
-    // The excess is too small to cover even the fee — nothing to do.
-    log.debug({ excess: microToAlgo(treasuryBalance - CEILING_MICRO) }, "Sweep skipped — excess too small to cover fee");
+    log.debug("ALGO sweep skipped — excess too small to cover fee");
     return;
   }
 
   log.info(
     {
-      treasuryBalance: microToAlgo(treasuryBalance),
-      ceiling:         microToAlgo(CEILING_MICRO),
-      sweepAmount:     microToAlgo(sweepAmount),
-      coldAddress:     COLD_ADDRESS,
+      treasuryAlgo: microToAlgo(treasuryAlgo),
+      ceiling:      microToAlgo(ALGO_CEILING_MICRO),
+      sweepAmount:  microToAlgo(sweepAmount),
+      to:           COLD_ADDRESS,
     },
-    "Treasury above ceiling — sweeping excess to cold wallet...",
+    "ALGO above ceiling — sweeping to cold wallet...",
   );
 
-  const txid = await sendPayment(
+  const txid = await sendAlgoPayment(
     algod, treasury, COLD_ADDRESS, sweepAmount,
-    `x402:cold-sweep|${new Date().toISOString()}|${sweepAmount}uA`,
+    `x402:cold-sweep-algo|${new Date().toISOString()}|${sweepAmount}uA`,
   );
 
-  const postSweepBalance = await getBalance(algod, treasury.addr.toString());
+  const post = await getAlgoBalance(algod, treasury.addr.toString());
+  log.info({ txid, swept: microToAlgo(sweepAmount), treasuryPost: microToAlgo(post) }, "ALGO cold sweep confirmed ✓");
+
+  await sendNotify(
+    `🧊  x402 ALGO Cold Sweep — ${microToAlgo(sweepAmount)} secured`,
+    {
+      "Swept":          microToAlgo(sweepAmount),
+      "Cold wallet":    COLD_ADDRESS,
+      "Treasury after": microToAlgo(post),
+      "Txn ID":         txid,
+    },
+  );
+}
+
+// ── Stage 2b: USDC cold ceiling sweep ────────────────────────────────────
+
+async function maybeSweepUsdcToCold(
+  algod:        algosdk.Algodv2,
+  treasury:     algosdk.Account,
+  treasuryUsdc: bigint,
+  treasuryAlgo: bigint,
+): Promise<void> {
+  if (!COLD_ADDRESS) return;
+  if (treasuryUsdc <= USDC_CEILING_MICRO) return;
+
+  // Sweep all USDC above the ceiling — ASA transfers don't consume the asset,
+  // fee is paid in ALGO. Guard that treasury has enough ALGO for the fee.
+  const sweepAmount = treasuryUsdc - USDC_CEILING_MICRO;
+
+  // Ensure treasury can pay the ALGO fee for this ASA transfer
+  if (treasuryAlgo < MIN_ACCOUNT_BALANCE + TX_FEE) {
+    log.error(
+      { treasuryAlgo: microToAlgo(treasuryAlgo) },
+      "Treasury has insufficient ALGO to pay USDC sweep fee — skipping",
+    );
+    await sendAlert(
+      `🚨  x402 Treasury Cannot Pay USDC Sweep Fee`,
+      {
+        "Treasury ALGO":   microToAlgo(treasuryAlgo),
+        "Fee required":    microToAlgo(TX_FEE),
+        "USDC pending":    microToUsdc(sweepAmount),
+      },
+    );
+    return;
+  }
+
+  log.info(
+    {
+      treasuryUsdc: microToUsdc(treasuryUsdc),
+      ceiling:      microToUsdc(USDC_CEILING_MICRO),
+      sweepAmount:  microToUsdc(sweepAmount),
+      to:           COLD_ADDRESS,
+    },
+    "USDC above ceiling — sweeping to cold wallet...",
+  );
+
+  const txid = await sendUsdcTransfer(
+    algod, treasury, COLD_ADDRESS, sweepAmount,
+    `x402:cold-sweep-usdc|${new Date().toISOString()}|${sweepAmount}uUSDC`,
+  );
+
+  const postBalances = await getTreasuryBalances(algod, treasury.addr.toString());
   log.info(
     {
       txid,
-      swept:              microToAlgo(sweepAmount),
-      coldAddress:        COLD_ADDRESS,
-      treasuryPostSweep:  microToAlgo(postSweepBalance),
+      swept:            microToUsdc(sweepAmount),
+      treasuryUsdcPost: microToUsdc(postBalances.usdc),
     },
-    "Cold sweep confirmed ✓",
+    "USDC cold sweep confirmed ✓",
   );
 
   await sendNotify(
-    `🧊  x402 Cold Sweep — ${microToAlgo(sweepAmount)} secured`,
+    `🧊  x402 USDC Cold Sweep — ${microToUsdc(sweepAmount)} secured`,
     {
-      "Swept":                microToAlgo(sweepAmount),
-      "Cold wallet":          COLD_ADDRESS,
-      "Treasury post-sweep":  microToAlgo(postSweepBalance),
-      "Txn ID":               txid,
+      "Swept":          microToUsdc(sweepAmount),
+      "Cold wallet":    COLD_ADDRESS,
+      "Treasury after": microToUsdc(postBalances.usdc),
+      "Txn ID":         txid,
     },
   );
 }
@@ -372,48 +486,49 @@ async function maybeSweepToCold(
 // ── Main Check Cycle ──────────────────────────────────────────────────────
 
 async function runCycle(
-  algod:       algosdk.Algodv2,
-  treasury:    algosdk.Account,
-  signerAddr:  string,
+  algod:      algosdk.Algodv2,
+  treasury:   algosdk.Account,
+  signerAddr: string,
 ): Promise<void> {
-  // Fetch both balances in parallel — minimise algod round-trips
-  const [signerBalance, treasuryBalance] = await Promise.all([
-    getBalance(algod, signerAddr),
-    getBalance(algod, treasury.addr.toString()),
+  // Fetch treasury (ALGO + USDC) and signer (ALGO) in parallel
+  const [signerAlgo, treasuryBalances] = await Promise.all([
+    getAlgoBalance(algod, signerAddr),
+    getTreasuryBalances(algod, treasury.addr.toString()),
   ]);
 
   log.info(
     {
-      signer:   microToAlgo(signerBalance),
-      treasury: microToAlgo(treasuryBalance),
-      target:   microToAlgo(TARGET_MICRO),
-      ceiling:  COLD_ADDRESS ? microToAlgo(CEILING_MICRO) : "disabled",
-      fillPct:  pctStr(signerBalance, TARGET_MICRO),
+      signer:       microToAlgo(signerAlgo),
+      fillPct:      pctStr(signerAlgo, TARGET_MICRO),
+      treasury:     microToAlgo(treasuryBalances.algo),
+      treasuryUsdc: microToUsdc(treasuryBalances.usdc),
+      algoCeiling:  COLD_ADDRESS ? microToAlgo(ALGO_CEILING_MICRO) : "disabled",
+      usdcCeiling:  COLD_ADDRESS ? microToUsdc(USDC_CEILING_MICRO) : "disabled",
     },
     "Balance check",
   );
 
-  // Stage 1 — refill signing wallet if low
-  await maybeRefillSigner(algod, treasury, signerAddr, signerBalance);
+  // Stage 1  — refill signer ALGO if low
+  await maybeRefillSigner(algod, treasury, signerAddr, signerAlgo);
 
-  // Stage 2 — sweep treasury excess to cold if above ceiling
-  // Re-use the already-fetched treasuryBalance. If a refill just ran, treasury
-  // went DOWN, making a sweep even less likely — safe to use the pre-refill value.
-  await maybeSweepToCold(algod, treasury, treasuryBalance);
+  // Stage 2a — sweep ALGO to cold if above ceiling
+  await maybeSweepAlgoToCold(algod, treasury, treasuryBalances.algo);
+
+  // Stage 2b — sweep USDC to cold if above ceiling
+  await maybeSweepUsdcToCold(algod, treasury, treasuryBalances.usdc, treasuryBalances.algo);
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  // Validate required env vars up front — fail fast before entering the loop
   const treasuryMnemonic = requireEnv("ALGO_TREASURY_MNEMONIC");
   const signerMnemonic   = requireEnv("ALGO_SIGNER_MNEMONIC");
 
-  const treasury  = loadAccount(treasuryMnemonic, "treasury");
-  const signer    = loadAccount(signerMnemonic,   "signer");
+  const treasury   = loadAccount(treasuryMnemonic, "treasury");
+  const signer     = loadAccount(signerMnemonic,   "signer");
   const signerAddr = signer.addr.toString();
 
-  // Immediately wipe the signer secret key — only the address is needed here.
+  // Wipe the signer sk immediately — only the address is needed here.
   // The treasury sk is retained for signing refill and sweep transactions.
   signer.sk.fill(0);
 
@@ -421,18 +536,17 @@ async function main(): Promise<void> {
     throw new Error("ALGO_TREASURY_MNEMONIC and ALGO_SIGNER_MNEMONIC must be different wallets");
   }
 
-  // Validate cold wallet address if provided
   if (COLD_ADDRESS) {
     if (!algosdk.isValidAddress(COLD_ADDRESS)) {
       throw new Error(`COLD_WALLET_ADDRESS is not a valid Algorand address: ${COLD_ADDRESS}`);
     }
     if (COLD_ADDRESS === treasury.addr.toString()) {
-      throw new Error("COLD_WALLET_ADDRESS must differ from ALGO_TREASURY_MNEMONIC address");
+      throw new Error("COLD_WALLET_ADDRESS must differ from treasury address");
     }
     if (COLD_ADDRESS === signerAddr) {
-      throw new Error("COLD_WALLET_ADDRESS must differ from ALGO_SIGNER_MNEMONIC address");
+      throw new Error("COLD_WALLET_ADDRESS must differ from signer address");
     }
-    if (CEILING_MICRO < MIN_ACCOUNT_BALANCE + TX_FEE) {
+    if (ALGO_CEILING_MICRO < MIN_ACCOUNT_BALANCE + TX_FEE) {
       throw new Error(
         `TREASURY_CEILING_ALGO too low — must be at least ${microToAlgo(MIN_ACCOUNT_BALANCE + TX_FEE)}`,
       );
@@ -445,11 +559,12 @@ async function main(): Promise<void> {
     {
       treasury:        treasury.addr.toString(),
       signer:          signerAddr,
+      coldWallet:      COLD_ADDRESS || "not configured",
       targetAlgo:      microToAlgo(TARGET_MICRO),
+      algoCeiling:     COLD_ADDRESS ? microToAlgo(ALGO_CEILING_MICRO) : "disabled",
+      usdcCeiling:     COLD_ADDRESS ? microToUsdc(USDC_CEILING_MICRO) : "disabled",
       minReserveAlgo:  microToAlgo(MIN_RESERVE_MICRO),
       alertThreshold:  `${(ALERT_THRESHOLD * 100).toFixed(0)}%`,
-      ceiling:         COLD_ADDRESS ? microToAlgo(CEILING_MICRO) : "disabled (no COLD_WALLET_ADDRESS)",
-      coldWallet:      COLD_ADDRESS || "not configured",
       checkIntervalS:  CHECK_INTERVAL_MS / 1000,
       alertWebhook:    ALERT_WEBHOOK_URL ? "configured" : "not set",
       sentry:          process.env.SENTRY_DSN ? "configured" : "not set",
@@ -458,10 +573,9 @@ async function main(): Promise<void> {
   );
 
   if (!COLD_ADDRESS) {
-    log.warn("Cold ceiling sweep disabled — set COLD_WALLET_ADDRESS + TREASURY_CEILING_ALGO to enable");
+    log.warn("Cold sweeps disabled — set COLD_WALLET_ADDRESS to enable ALGO + USDC ceiling sweeps");
   }
 
-  // ── Graceful shutdown ─────────────────────────────────────────
   let running = true;
   const shutdown = (): void => {
     log.info("Shutting down treasury refill daemon");
@@ -470,7 +584,6 @@ async function main(): Promise<void> {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT",  shutdown);
 
-  // ── Main loop ─────────────────────────────────────────────────
   while (running) {
     try {
       await runCycle(algod, treasury, signerAddr);
@@ -480,7 +593,6 @@ async function main(): Promise<void> {
       Sentry.captureException(err, { tags: { component: "treasury-refill" } });
     }
 
-    // Sleep between cycles — unref so the timer doesn't block Node exit on shutdown
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, CHECK_INTERVAL_MS);
       if (typeof timer.unref === "function") timer.unref();
