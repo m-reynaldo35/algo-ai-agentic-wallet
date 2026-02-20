@@ -18,9 +18,16 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+# Keep devDependencies so tsx is available for the guardian service
+RUN npm ci --ignore-scripts && npm cache clean --force
 
 COPY --from=builder /app/dist ./dist
 COPY public/ ./public/
+COPY scripts/ ./scripts/
+COPY tsconfig.json ./
+COPY entrypoint.sh ./
+RUN chmod +x entrypoint.sh
 
-CMD ["node", "dist/index.js"]
+# SERVICE_TYPE=guardian → runs wallet-guardian.ts via tsx
+# SERVICE_TYPE unset    → runs compiled API server
+CMD ["./entrypoint.sh"]

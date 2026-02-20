@@ -29,11 +29,14 @@
  * │  Daemon:  Railway / PM2 / systemd                                        │
  * │                                                                          │
  * │  Required env vars:                                                      │
- * │    ALGO_TREASURY_MNEMONIC   25-word treasury mnemonic (signs sweeps)    │
  * │    ALGO_SIGNER_ADDRESS      Signer wallet address (monitoring only)     │
+ * │                                                                          │
+ * │  Optional env vars (sweeps only — omit for monitoring-only mode):       │
+ * │    ALGO_TREASURY_MNEMONIC   25-word treasury mnemonic (signs sweeps)    │
  * │                                                                          │
  * │  Optional env vars:                                                      │
  * │    SIGNER_LOW_ALERT_ALGO    Alert threshold in ALGO    (default 200)    │
+ * │    --test-alert             Fire a test Telegram/webhook alert and exit │
  * │    COLD_WALLET_ADDRESS      Cold wallet address for sweeps              │
  * │    TREASURY_CEILING_ALGO    Max ALGO to keep in treasury (default 1000) │
  * │    TREASURY_USDC_CEILING    Max USDC to keep in treasury (default 100)  │
@@ -54,6 +57,7 @@
  */
 
 import "dotenv/config";
+import http from "node:http";
 import algosdk from "algosdk";
 import pino from "pino";
 import * as Sentry from "@sentry/node";
@@ -113,6 +117,12 @@ function requireEnv(name: string): string {
   const val = process.env[name];
   if (!val) throw new Error(`Missing required env var: ${name}`);
   return val;
+}
+
+function optionalAccount(mnemonic: string | undefined, label: string): algosdk.Account | null {
+  if (!mnemonic) return null;
+  try { return algosdk.mnemonicToSecretKey(mnemonic); }
+  catch { throw new Error(`Invalid mnemonic for ${label} wallet`); }
 }
 
 function loadAccount(mnemonic: string, label: string): algosdk.Account {
@@ -326,32 +336,45 @@ async function sweepUsdc(
 // ── Main cycle ────────────────────────────────────────────────────────────
 
 async function runCycle(
-  algod: algosdk.Algodv2, treasury: algosdk.Account, signerAddr: string,
+  algod: algosdk.Algodv2, treasury: algosdk.Account | null, signerAddr: string,
 ): Promise<void> {
-  const [signerAlgo, treasuryBal] = await Promise.all([
-    getAlgoBalance(algod, signerAddr),
-    getBalances(algod, treasury.addr.toString()),
-  ]);
+  if (treasury) {
+    const [signerAlgo, treasuryBal] = await Promise.all([
+      getAlgoBalance(algod, signerAddr),
+      getBalances(algod, treasury.addr.toString()),
+    ]);
 
-  log.info({
-    signer:          microToAlgo(signerAlgo),
-    alertBelow:      microToAlgo(SIGNER_ALERT_MICRO),
-    treasury:        microToAlgo(treasuryBal.algo),
-    treasuryUsdc:    microToUsdc(treasuryBal.usdc),
-    algoCeiling:     COLD_ADDRESS ? microToAlgo(ALGO_CEILING_MICRO) : "disabled",
-    usdcCeiling:     COLD_ADDRESS ? microToUsdc(USDC_CEILING_MICRO) : "disabled",
-  }, "Guardian check");
+    log.info({
+      signer:          microToAlgo(signerAlgo),
+      alertBelow:      microToAlgo(SIGNER_ALERT_MICRO),
+      treasury:        microToAlgo(treasuryBal.algo),
+      treasuryUsdc:    microToUsdc(treasuryBal.usdc),
+      algoCeiling:     COLD_ADDRESS ? microToAlgo(ALGO_CEILING_MICRO) : "disabled",
+      usdcCeiling:     COLD_ADDRESS ? microToUsdc(USDC_CEILING_MICRO) : "disabled",
+    }, "Guardian check");
 
-  await checkSigner(algod, signerAddr);
-  await sweepAlgo(algod, treasury, treasuryBal.algo);
-  await sweepUsdc(algod, treasury, treasuryBal.usdc, treasuryBal.algo);
+    await checkSigner(algod, signerAddr);
+    await sweepAlgo(algod, treasury, treasuryBal.algo);
+    await sweepUsdc(algod, treasury, treasuryBal.usdc, treasuryBal.algo);
+  } else {
+    const signerAlgo = await getAlgoBalance(algod, signerAddr);
+
+    log.info({
+      signer:     microToAlgo(signerAlgo),
+      alertBelow: microToAlgo(SIGNER_ALERT_MICRO),
+      sweeps:     "disabled (no ALGO_TREASURY_MNEMONIC)",
+    }, "Guardian check");
+
+    await checkSigner(algod, signerAddr);
+  }
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const treasury   = loadAccount(requireEnv("ALGO_TREASURY_MNEMONIC"), "treasury");
+  const testAlert  = process.argv.includes("--test-alert");
   const signerAddr = requireEnv("ALGO_SIGNER_ADDRESS");
+  const treasury   = optionalAccount(process.env.ALGO_TREASURY_MNEMONIC, "treasury");
 
   if (!algosdk.isValidAddress(signerAddr)) {
     throw new Error(`ALGO_SIGNER_ADDRESS is not a valid Algorand address: ${signerAddr}`);
@@ -359,8 +382,11 @@ async function main(): Promise<void> {
   if (COLD_ADDRESS && !algosdk.isValidAddress(COLD_ADDRESS)) {
     throw new Error(`COLD_WALLET_ADDRESS is not a valid Algorand address: ${COLD_ADDRESS}`);
   }
-  if (COLD_ADDRESS && COLD_ADDRESS === treasury.addr.toString()) {
+  if (COLD_ADDRESS && treasury && COLD_ADDRESS === treasury.addr.toString()) {
     throw new Error("COLD_WALLET_ADDRESS must differ from treasury address");
+  }
+  if (COLD_ADDRESS && !treasury) {
+    throw new Error("COLD_WALLET_ADDRESS is set but ALGO_TREASURY_MNEMONIC is missing — sweeps require the treasury mnemonic");
   }
 
   const algod = buildAlgod();
@@ -368,7 +394,8 @@ async function main(): Promise<void> {
   log.info({
     signerMonitor:   signerAddr,
     alertBelow:      microToAlgo(SIGNER_ALERT_MICRO),
-    treasury:        treasury.addr.toString(),
+    mode:            treasury ? "monitor + sweeps" : "monitor-only",
+    treasury:        treasury ? treasury.addr.toString() : "not configured",
     coldWallet:      COLD_ADDRESS || "not configured",
     algoCeiling:     COLD_ADDRESS ? microToAlgo(ALGO_CEILING_MICRO) : "disabled",
     usdcCeiling:     COLD_ADDRESS ? microToUsdc(USDC_CEILING_MICRO) : "disabled",
@@ -380,13 +407,35 @@ async function main(): Promise<void> {
   if (!TG_TOKEN && !WEBHOOK_URL && !process.env.SENTRY_DSN) {
     log.warn("No alert channel configured — set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID");
   }
-  if (!COLD_ADDRESS) {
-    log.warn("Cold sweeps disabled — set COLD_WALLET_ADDRESS to enable");
+  if (!treasury) {
+    log.warn("Running in monitor-only mode — set ALGO_TREASURY_MNEMONIC to enable cold sweeps");
   }
 
+  // ── --test-alert: fire a test message and exit ──────────────────────────
+  if (testAlert) {
+    const balance = await getAlgoBalance(algod, signerAddr);
+    await notify("✅ x402 Wallet Guardian — test alert", {
+      "Mode":           treasury ? "monitor + sweeps" : "monitor-only",
+      "Signer address": signerAddr,
+      "Current balance": microToAlgo(balance),
+      "Alert threshold": microToAlgo(SIGNER_ALERT_MICRO),
+      "Telegram":       TG_TOKEN && TG_CHAT_ID ? "configured" : "not configured",
+    });
+    log.info("Test alert sent — exiting");
+    return;
+  }
+
+  // ── Health server (Railway requires a bound PORT) ───────────────────────
+  const port = parseInt(process.env.PORT || "8080", 10);
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", service: "wallet-guardian" }));
+  });
+  server.listen(port, () => log.info({ port }, "Health server listening"));
+
   let running = true;
-  process.on("SIGTERM", () => { log.info("Shutting down"); running = false; });
-  process.on("SIGINT",  () => { log.info("Shutting down"); running = false; });
+  process.on("SIGTERM", () => { log.info("Shutting down"); running = false; server.close(); });
+  process.on("SIGINT",  () => { log.info("Shutting down"); running = false; server.close(); });
 
   while (running) {
     try {

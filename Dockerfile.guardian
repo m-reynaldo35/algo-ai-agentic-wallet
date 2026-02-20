@@ -1,0 +1,14 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json ./
+# Include devDependencies — tsx and pino-pretty are needed at runtime
+RUN npm ci --ignore-scripts && npm cache clean --force
+
+COPY tsconfig.json ./
+COPY scripts/wallet-guardian.ts ./scripts/
+
+CMD ["npx", "tsx", "scripts/wallet-guardian.ts"]
