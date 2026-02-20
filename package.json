@@ -8,7 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "treasury:refill": "tsx scripts/treasury-refill.ts"
+    "guardian": "tsx scripts/wallet-guardian.ts"
   },
   "dependencies": {
     "@m-reynaldo35/x402-client": "^0.1.0",
