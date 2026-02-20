@@ -8,9 +8,9 @@ node_modules/
 .env*
 !.env.example
 
-# Tests and scripts (not needed in container)
+# Tests (not needed in container)
 tests/
-scripts/
+# scripts/ intentionally included — wallet-guardian.ts runs in container
 
 # Apps (deployed separately)
 apps/
