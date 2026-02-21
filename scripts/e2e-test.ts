@@ -12,9 +12,10 @@
 import "dotenv/config";
 import algosdk from "algosdk";
 
-const BASE_URL   = process.env.E2E_BASE_URL || "https://ai-agentic-wallet.com";
-const PORTAL_KEY = process.env.PORTAL_API_SECRET || "";
-const AGENT_ID   = `e2e-test-agent-${Date.now()}`;
+const BASE_URL    = process.env.E2E_BASE_URL || "https://ai-agentic-wallet.com";
+const PORTAL_KEY  = process.env.PORTAL_API_SECRET || "";
+const AGENT_ID    = `e2e-test-agent-${Date.now()}`;
+const SIGNER_ADDR = process.env.ALGO_SIGNER_ADDRESS || "";
 
 const ALGOD_URL  = process.env.ALGORAND_NODE_URL || "https://mainnet-api.4160.nodely.dev";
 const USDC_ID    = BigInt(process.env.X402_USDC_ASSET_ID || "31566704");
@@ -88,11 +89,14 @@ async function buildPaymentProof(): Promise<{ header: string; agentAccount: algo
 async function callAgentAction(paymentHeader: string, senderAddr: string): Promise<unknown> {
   log("Calling /api/agent-action...");
 
+  // senderAddress must be the server's Rocca signer address — it's the
+  // account that will sign and broadcast the transactions on-chain.
+  const signerAddress = SIGNER_ADDR || senderAddr;
   const body = {
-    senderAddress:        senderAddr,
+    senderAddress:        signerAddress,
     amount:               1000000,    // 1 USDC (microUSDC)
     destinationChain:     "algorand",
-    destinationRecipient: PAY_TO || senderAddr,
+    destinationRecipient: PAY_TO || signerAddress,
   };
 
   const res = await fetch(`${BASE_URL}/api/agent-action`, {

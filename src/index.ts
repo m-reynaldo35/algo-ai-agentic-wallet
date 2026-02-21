@@ -18,6 +18,8 @@ import { getRedis } from "./services/redis.js";
 import { getWebhookDeliveries } from "./services/webhook.js";
 import { registerSSEBroadcaster } from "./services/audit.js";
 import { requirePortalAuth } from "./middleware/portalAuth.js";
+import { registerAgent } from "./services/agentRegistration.js";
+import { getAgent, listAgents, updateAgentStatus } from "./services/agentRegistry.js";
 import helmet from "helmet";
 import cors from "cors";
 
@@ -678,6 +680,100 @@ app.get("/api/portal/stream", requirePortalAuth, (req, res) => {
     clearInterval(heartbeat);
     sseClients.delete(client);
   });
+});
+
+// ── Agent Registration ───────────────────────────────────────────
+//
+// POST /api/agents/register  — create a new rekeyed agent wallet
+// GET  /api/agents            — list registered agents
+// GET  /api/agents/:agentId   — fetch a single agent record
+// PATCH /api/agents/:agentId/suspend — suspend an agent
+
+app.post("/api/agents/register", requirePortalAuth, async (req, res) => {
+  try {
+    const { agentId, platform } = req.body;
+
+    if (!agentId || typeof agentId !== "string") {
+      res.status(400).json({ error: "Missing required field: agentId" });
+      return;
+    }
+
+    const result = await registerAgent(agentId, platform);
+
+    res.status(201).json({
+      status:              "registered",
+      agentId:             result.agentId,
+      address:             result.address,
+      cohort:              result.cohort,
+      authAddr:            result.authAddr,
+      registrationTxnId:  result.registrationTxnId,
+      explorerUrl:         result.explorerUrl,
+      instructions: [
+        `Agent ${result.agentId} is rekeyed to Rocca signer (auth-addr: ${result.authAddr}).`,
+        "Fund the agent address with USDC to enable x402 payments.",
+        `Explorer: ${result.explorerUrl}`,
+      ],
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+
+    if (message.includes("already registered")) {
+      res.status(409).json({ error: message });
+      return;
+    }
+    if (message.includes("Invalid agentId")) {
+      res.status(400).json({ error: message });
+      return;
+    }
+
+    console.error("[agents/register]", message);
+    res.status(500).json({ error: "Agent registration failed", detail: message });
+  }
+});
+
+app.get("/api/agents", requirePortalAuth, async (req, res) => {
+  try {
+    const limit  = Math.min(parseInt(String(req.query.limit  ?? "50"), 10), 100);
+    const offset = parseInt(String(req.query.offset ?? "0"),  10);
+    const agents = await listAgents(limit, offset);
+    res.json({ agents, count: agents.length });
+  } catch (err) {
+    console.error("[agents/list]", err);
+    res.status(500).json({ error: "Failed to list agents" });
+  }
+});
+
+app.get("/api/agents/:agentId", requirePortalAuth, async (req, res) => {
+  try {
+    const agentId = String(req.params.agentId || "");
+    const agent   = await getAgent(agentId);
+
+    if (!agent) {
+      res.status(404).json({ error: `Agent not found: ${agentId}` });
+      return;
+    }
+
+    res.json(agent);
+  } catch (err) {
+    console.error("[agents/get]", err);
+    res.status(500).json({ error: "Failed to fetch agent" });
+  }
+});
+
+app.patch("/api/agents/:agentId/suspend", requirePortalAuth, async (req, res) => {
+  try {
+    const agentId = String(req.params.agentId || "");
+    await updateAgentStatus(agentId, "suspended");
+    res.json({ agentId, status: "suspended" });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    if (message.includes("not found")) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    console.error("[agents/suspend]", err);
+    res.status(500).json({ error: "Failed to suspend agent" });
+  }
 });
 
 // ── Boot ────────────────────────────────────────────────────────
