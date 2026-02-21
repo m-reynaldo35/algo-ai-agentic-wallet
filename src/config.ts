@@ -20,17 +20,6 @@ export const config = {
     usdcAssetId: parseInt(process.env.X402_USDC_ASSET_ID || "31566704", 10),
   },
 
-  gora: {
-    /** Gora Oracle main application ID */
-    appId: BigInt(process.env.GORA_APP_ID || "1275319623"),
-    /** Gora Oracle request fee in microAlgos */
-    requestFeeMicroAlgo: BigInt(process.env.GORA_REQUEST_FEE || "100000"),
-    /** Maximum oracle data age in seconds before rejection (policy: 15s) */
-    maxStalenessSeconds: parseInt(process.env.GORA_MAX_STALENESS_SECONDS || "15", 10),
-    /** USDC/ALGO price feed key (Gora feed identifier) */
-    priceFeedKey: process.env.GORA_PRICE_FEED_KEY || "USDC/ALGO",
-  },
-
   liquidAuth: {
     /** Liquid Auth FIDO2 server URL. Empty = dev mock mode. */
     serverUrl: process.env.LIQUID_AUTH_SERVER_URL || "",

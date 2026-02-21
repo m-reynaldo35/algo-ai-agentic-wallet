@@ -1,13 +1,6 @@
 import algosdk from "algosdk";
 import { config } from "../config.js";
 import type { SandboxExport } from "../services/transaction.js";
-import type { OracleContext } from "../services/audit.js";
-import {
-  fetchGoraPriceData,
-  computeOracleExpectedOutput,
-  enforceOracleFreshness,
-  type GoraPricePayload,
-} from "../utils/gora.js";
 
 /**
  * Pre-Flight Validation Gatekeeper
@@ -24,28 +17,18 @@ import {
  *           to the TREASURY_ADDRESS exists in the group.
  *   Rule 2: All transactions in the group are from the declared
  *           requiredSigner address.
- *   Rule 3: Gora oracle price verification — the agent's requested
- *           exchange rate must not deviate beyond slippage bounds
- *           of the oracle's consensus price (Module 2).
- *   Rule 4: Oracle staleness — the oracle timestamp must be within
- *           15 seconds of current time (Module 3).
  */
 
 const TREASURY_ADDRESS = config.x402.payToAddress;
 const USDC_ASSET_ID = BigInt(config.x402.usdcAssetId);
-const EXPECTED_TOLL = BigInt(config.x402.priceMicroUsdc);
 
 export interface ValidationResult {
   valid: boolean;
   rules: {
     tollVerified: boolean;
     signerVerified: boolean;
-    oraclePriceVerified: boolean;
-    oracleFreshnessVerified: boolean;
   };
   errors: string[];
-  oracleData?: GoraPricePayload;
-  oracleContext?: OracleContext;
 }
 
 /**
@@ -142,134 +125,13 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
     }
   }
 
-  // ── Rule 3: Gora Oracle Price Verification (Module 2) ────────
-  // Fetch the current Gora oracle price assertion and verify
-  // the agent's requested exchange rate is within slippage bounds.
-  //
-  // Formula:  E_out = (T_in × P_oracle) / 10^6
-  // Reject if deviation exceeds the declared slippage tolerance.
-  let oraclePriceVerified = false;
-  let oracleData: GoraPricePayload | undefined;
-  let slippageDeltaBips = 0;
-
-  try {
-    oracleData = await fetchGoraPriceData();
-
-    const declaredExpected = BigInt(sandboxExport.slippage.expectedAmount);
-    const declaredMinOut = BigInt(sandboxExport.slippage.minAmountOut);
-
-    // Compute oracle-derived expected output using strict bigint math
-    const oracleExpected = computeOracleExpectedOutput(
-      declaredExpected,
-      oracleData.price,
-    );
-
-    // Compute the slippage delta: how far the agent's declared minAmountOut
-    // deviates from the oracle-derived expected output (in basis points).
-    // δ = |(oracleExpected − declaredMinOut) / oracleExpected| × 10000
-    if (oracleExpected > 0n) {
-      const deviation = oracleExpected > declaredMinOut
-        ? oracleExpected - declaredMinOut
-        : declaredMinOut - oracleExpected;
-      slippageDeltaBips = Number((deviation * 10_000n) / oracleExpected);
-    }
-
-    // The agent's declared minAmountOut must not be lower than what
-    // the oracle price justifies minus the declared slippage tolerance.
-    // This prevents agents from requesting artificially favorable rates.
-    const toleranceBips = BigInt(sandboxExport.slippage.toleranceBips);
-    const BIP_DENOMINATOR = 10_000n;
-    const oracleFloor = (oracleExpected * (BIP_DENOMINATOR - toleranceBips)) / BIP_DENOMINATOR;
-
-    if (declaredMinOut < oracleFloor) {
-      errors.push(
-        `Rule 3: Agent minAmountOut (${declaredMinOut}) is below oracle-derived floor (${oracleFloor}). ` +
-        `Oracle price: ${oracleData.price}, tolerance: ${toleranceBips}bips`,
-      );
-    } else {
-      oraclePriceVerified = true;
-    }
-  } catch (err) {
-    if (err instanceof Error && err.message.startsWith("Gora Price Feed Stale")) {
-      throw err; // Re-throw staleness errors immediately (Module 3)
-    }
-    // On oracle fetch failure (network issues, uninitialized oracle),
-    // log a warning but don't push to errors[] — allow offline/testnet operation.
-    // errors[] poisoning would cause valid=false despite oraclePriceVerified=true.
-    const msg = err instanceof Error ? err.message : "unknown error";
-    console.warn(`[Validation] Rule 3: Oracle fetch failed (non-fatal, degrading gracefully): ${msg}`);
-
-    // Report to Sentry so oracle degradation is visible in the dashboard.
-    // This is not a thrown error — the pipeline continues — but it must
-    // never be silent in production. Phase 2 transition requires knowing
-    // how often the oracle is unreachable.
-    try {
-      const { captureException } = await import("@sentry/node");
-      captureException(new Error(`Gora oracle degraded: ${msg}`), {
-        level: "warning",
-        tags: { module: "validation", rule: "oracle_preflight" },
-      });
-    } catch {
-      // Sentry not available (test environment) — warn only
-    }
-
-    // Fail-closed in production — oracle outage must not bypass price validation.
-    // In non-production environments (testnet, local dev), degrade gracefully.
-    if (process.env.NODE_ENV === "production") {
-      throw new Error(`Validation Loop Failed: Gora oracle unavailable in production — ${msg}`);
-    }
-    oraclePriceVerified = true; // Graceful degradation for testnet/dev only
-  }
-
-  // ── Rule 4: Oracle Staleness Check (Module 3) ─────────────────
-  // Enforce the time-weighted cryptographic decay rule:
-  //   ΔT = T_current − T_oracle ≤ 15 seconds
-  //
-  // If exceeded, the x402 gatekeeper throws a strict error and
-  // safely destroys the transaction blob.
-  let oracleFreshnessVerified = false;
-
-  if (oracleData) {
-    try {
-      enforceOracleFreshness(oracleData.timestamp);
-      oracleFreshnessVerified = true;
-    } catch (err) {
-      // Staleness error — this is fatal, destroy the transaction blob
-      if (err instanceof Error) {
-        throw new Error(err.message);
-      }
-      throw new Error("Gora Price Feed Stale: Time bounds exceeded");
-    }
-  } else {
-    // No oracle data available — skip freshness check (testnet fallback)
-    oracleFreshnessVerified = true;
-    console.warn("[Validation] Oracle data unavailable — skipping freshness check");
-  }
-
-  // ── Build Oracle Context for Audit Logging ───────────────────
-  // Maps the Gora price data into the structured OracleContext
-  // shape consumed by the pino audit logger. This object survives
-  // the pipeline handoff via the ValidationResult.
-  let oracleContext: OracleContext | undefined;
-  if (oracleData) {
-    oracleContext = {
-      assetPair: oracleData.feedKey || config.gora.priceFeedKey,
-      goraConsensusPrice: oracleData.price.toString(),
-      goraTimestamp: oracleData.timestamp,
-      goraTimestampISO: new Date(oracleData.timestamp * 1000).toISOString(),
-      slippageDelta: slippageDeltaBips,
-    };
-  }
-
   // ── Verdict ───────────────────────────────────────────────────
-  const valid = tollVerified && signerVerified && oraclePriceVerified && oracleFreshnessVerified && errors.length === 0;
+  const valid = tollVerified && signerVerified && errors.length === 0;
 
   const result: ValidationResult = {
     valid,
-    rules: { tollVerified, signerVerified, oraclePriceVerified, oracleFreshnessVerified },
+    rules: { tollVerified, signerVerified },
     errors,
-    oracleData,
-    oracleContext,
   };
 
   if (!valid) {
@@ -279,6 +141,6 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
     );
   }
 
-  console.log(`[Validation] PASSED: toll=${tollVerified}, signer=${signerVerified}, oraclePrice=${oraclePriceVerified}, oracleFresh=${oracleFreshnessVerified}`);
+  console.log(`[Validation] PASSED: toll=${tollVerified}, signer=${signerVerified}`);
   return result;
 }

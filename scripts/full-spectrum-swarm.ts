@@ -345,7 +345,6 @@ async function runTypeB(
       // Known expected failures in dev/unconfigured environments
       if (
         detail.includes("address seems to be malformed") ||
-        detail.includes("Gora") ||
         detail.includes("Wormhole") ||
         detail.includes("NTT")
       ) {

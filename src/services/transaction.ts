@@ -354,7 +354,7 @@ export async function constructDataSwapGroup(
 /**
  * Construct a batched multiparty atomic group from an array of
  * trade intents. All toll payments, bridge transactions, and the
- * Gora oracle call are cryptographically bound into a single
+ * audit ack are cryptographically bound into a single
  * irreducible group via `algosdk.assignGroupID`.
  *
  * If ANY individual intent fails slippage validation, the entire

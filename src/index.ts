@@ -364,7 +364,7 @@ app.get("/api/portal/settlements", requirePortalAuth, async (req, res) => {
     let parsed = entries.map((s: string) => safeParse(s)).filter(Boolean);
 
     // Map to portal Settlement shape
-    parsed = parsed.map((s: { txnId?: string; agentId: string; tollAmountMicroUsdc?: number; settledAt?: string; oracleContext?: { assetPair: string; goraConsensusPrice: string; goraTimestamp: number; slippageDelta: number } }, i: number) => ({
+    parsed = parsed.map((s: { txnId?: string; agentId: string; tollAmountMicroUsdc?: number; settledAt?: string }, i: number) => ({
       id: `stl-${String(i + 1).padStart(3, "0")}`,
       time: s.settledAt || new Date().toISOString(),
       agentId: s.agentId,
@@ -372,7 +372,6 @@ app.get("/api/portal/settlements", requirePortalAuth, async (req, res) => {
       amountMicroUsdc: s.tollAmountMicroUsdc || 0,
       txnId: s.txnId || "unknown",
       chain: "algorand-mainnet",
-      oracleContext: s.oracleContext,
     }));
 
     if (status !== "all") {
