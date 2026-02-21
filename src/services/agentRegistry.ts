@@ -62,14 +62,9 @@ export async function getAgent(agentId: string): Promise<AgentRecord | null> {
   const redis = getRedis();
   if (!redis) return null;
 
-  const raw = await redis.get(`${AGENTS_PREFIX}${agentId}`) as string | null;
-  if (!raw) return null;
-
-  try {
-    return JSON.parse(raw) as AgentRecord;
-  } catch {
-    return null;
-  }
+  // @upstash/redis auto-deserialises JSON on read — get<T>() returns the
+  // parsed object directly. Do NOT JSON.parse() the result.
+  return redis.get<AgentRecord>(`${AGENTS_PREFIX}${agentId}`);
 }
 
 export async function getAgentByAddress(address: string): Promise<AgentRecord | null> {
@@ -93,11 +88,8 @@ export async function listAgents(limit = 50, offset = 0): Promise<AgentRecord[]>
 
   if (!page.length) return [];
 
-  const raws = await Promise.all(page.map((k) => redis.get(k)));
-  return raws
-    .filter((r): r is string => typeof r === "string")
-    .map((r) => { try { return JSON.parse(r) as AgentRecord; } catch { return null; } })
-    .filter((r): r is AgentRecord => r !== null);
+  const raws = await Promise.all(page.map((k) => redis.get<AgentRecord>(k)));
+  return raws.filter((r): r is AgentRecord => r !== null);
 }
 
 export async function updateAgentStatus(
