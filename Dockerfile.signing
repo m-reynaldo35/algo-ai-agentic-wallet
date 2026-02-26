@@ -1,0 +1,44 @@
+# ── Rocca Signing Microservice ───────────────────────────────────────────────
+#
+# Separate container from the main API server.
+# Holds ALGO_SIGNER_MNEMONIC — never exposed to the public internet.
+#
+# Required env vars (Railway secrets):
+#   ALGO_SIGNER_MNEMONIC          — 25-word Algorand mnemonic
+#   SIGNING_SERVICE_API_KEY       — shared secret with the API server (≥ 32 chars)
+#   SIGNING_SERVICE_PORT          — default 4021
+#   UPSTASH_REDIS_REST_URL        — Upstash Redis endpoint
+#   UPSTASH_REDIS_REST_TOKEN      — Upstash Redis token
+#   UPSTASH_REDIS_REST_URL        — (rate limiter shares same Redis)
+#   UPSTASH_REDIS_REST_TOKEN
+#
+# Railway networking: set SIGNING_SERVICE_URL on the API server service to
+# http://<signing-service-private-hostname>:4021 (private network, not public).
+
+# ── Stage 1: Build ───────────────────────────────────────────────
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npm run build
+
+# ── Stage 2: Production runtime ──────────────────────────────────
+FROM node:20-alpine
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+
+COPY --from=builder /app/dist ./dist
+
+EXPOSE 4021
+
+CMD ["node", "dist/signing-service/server.js"]

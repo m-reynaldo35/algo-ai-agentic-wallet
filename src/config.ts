@@ -34,5 +34,13 @@ export const config = {
     environment: process.env.ROCCA_ENVIRONMENT || "production",
     /** Rocca webhook secret for signature confirmation callbacks */
     webhookSecret: process.env.ROCCA_WEBHOOK_SECRET || "",
+    /**
+     * Public Algorand address of the Rocca signing key.
+     * Not secret — this is an on-chain public address.
+     * Required for re-custody transaction validation: the main API
+     * must verify that a user-submitted rekey txn points to this
+     * address before accepting and broadcasting it.
+     */
+    signerAddress: process.env.ROCCA_SIGNER_ADDRESS || "",
   },
 } as const;

@@ -17,7 +17,7 @@ function emitSSE(event: string, data: unknown): void {
 const logger = pino({
   name: "x402-audit",
   level: "info",
-  ...(process.env.NODE_ENV !== "production" && {
+  ...(process.env.NODE_ENV === "development" && {
     transport: {
       target: "pino-pretty",
       options: { colorize: true, translateTime: "SYS:HH:MM:ss.l" },

@@ -1,6 +1,7 @@
 import { validateSandboxExport } from "./middleware/validation.js";
 import { authenticateAgentIdentity } from "./auth/liquidAuth.js";
 import { signAtomicGroup } from "./signer/roccaWallet.js";
+import { callSigningService } from "./signing-service/client.js";
 import { executeSettlement, type SettlementResult } from "./network/broadcaster.js";
 import { logSettlementSuccess, logExecutionFailure } from "./services/audit.js";
 import { config } from "./config.js";
@@ -106,15 +107,20 @@ export async function executePipeline(
     };
   }
 
-  // ── Stage 3: Rocca Wallet — Seedless Signing ──────────────────
-  console.log(`[Executor] Stage 3/4: Signing atomic group via Rocca Wallet...`);
+  // ── Stage 3: Sign ─────────────────────────────────────────────
+  // PRODUCTION: SIGNING_SERVICE_URL set → call isolated signing microservice
+  // DEV:        SIGNING_SERVICE_URL absent → direct call (key in same process)
+  const signingMode = process.env.SIGNING_SERVICE_URL ? "microservice" : "direct";
+  console.log(`[Executor] Stage 3/4: Signing atomic group (${signingMode})...`);
   let signedGroup;
   try {
     const unsignedBlobs = atomicGroup.transactions.map(
       (b64) => new Uint8Array(Buffer.from(b64, "base64")),
     );
 
-    signedGroup = await signAtomicGroup(unsignedBlobs, authToken);
+    signedGroup = process.env.SIGNING_SERVICE_URL
+      ? await callSigningService(unsignedBlobs, authToken, agentId)
+      : await signAtomicGroup(unsignedBlobs, authToken, agentId);
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown signing error";
     console.error(`[Executor] ABORT at Stage 3 (sign): ${error}`);

@@ -74,8 +74,15 @@ export interface SandboxExport {
   atomicGroup: UnsignedAtomicGroup;
   /** Routing metadata for the x402 validation loop */
   routing: {
-    /** The Algorand address that must sign all transactions */
+    /** The Algorand address that is the sender of all transactions (agent's on-chain address) */
     requiredSigner: string;
+    /**
+     * The Rocca cohort signer address — the auth-addr that controls requiredSigner on-chain.
+     * In Phase 1: single cohort key (ALGO_SIGNER_ADDRESS).
+     * In Phase 2+: cohort-specific key derived from agentId hash.
+     * Validation verifies: on-chain auth-addr of requiredSigner === authAddr.
+     */
+    authAddr: string;
     /** The treasury address receiving the x402 toll */
     tollReceiver: string;
     /** Destination chain for the Token Bridge leg */
@@ -149,6 +156,10 @@ export async function constructAtomicGroup(
 
   try {
     const suggestedParams = await getSuggestedParams();
+    // T2.1: Tighten validity window to ~10 rounds (~50s) to minimise the
+    // replay window. Default Algorand validity is ~1000 rounds (~50 min).
+    suggestedParams.lastValid = BigInt(suggestedParams.firstValid) + 10n;
+
     const expectedAmountBig = BigInt(amount);
     const minAmountOut = calculateMinAmountOut(expectedAmountBig, slippageBips);
 
@@ -233,6 +244,7 @@ export async function constructAtomicGroup(
       atomicGroup,
       routing: {
         requiredSigner: senderAddr,
+        authAddr: process.env.ALGO_SIGNER_ADDRESS ?? "",
         tollReceiver: TREASURY_ADDRESS,
         bridgeDestination: destinationChain === "algorand" ? "algorand" : "algorand",
         network: `algorand-${config.algorand.network}`,
@@ -313,6 +325,8 @@ export async function constructDataSwapGroup(
   }
 
   const suggestedParams = await getSuggestedParams();
+  // T2.1: Tighten validity window to ~10 rounds (~50s)
+  suggestedParams.lastValid = BigInt(suggestedParams.firstValid) + 10n;
 
   // ── Txn A: The Payment ────────────────────────────────────────
   // ASA transfer of USDC from buyer to seller. Uses the Algorand
@@ -398,6 +412,9 @@ export async function constructBatchedAtomicGroup(
 
   try {
     const suggestedParams = await getSuggestedParams();
+    // T2.1: Tighten validity window to ~10 rounds (~50s)
+    suggestedParams.lastValid = BigInt(suggestedParams.firstValid) + 10n;
+
     const tollTxns: algosdk.Transaction[] = [];
     const batchIntents: SandboxExport["batchIntents"] = [];
     let totalTollMicroUsdc = 0;
@@ -462,6 +479,7 @@ export async function constructBatchedAtomicGroup(
       atomicGroup,
       routing: {
         requiredSigner: senderAddr,
+        authAddr: process.env.ALGO_SIGNER_ADDRESS ?? "",
         tollReceiver: TREASURY_ADDRESS,
         bridgeDestination: "algorand",
         network: `algorand-${config.algorand.network}`,

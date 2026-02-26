@@ -51,6 +51,18 @@ export async function constructAtomicGroup(
   tradeParams: TradeParams,
   feeParams: FeeParams,
 ): Promise<UnsignedAtomicGroup> {
+  // Treasury address guard — reject any call that routes fees to an address
+  // other than the frozen config value. feeReceiverAddress is caller-supplied
+  // and must match exactly. This prevents injection via the parameter.
+  const frozenTreasury = config.x402.payToAddress;
+  if (frozenTreasury && feeParams.feeReceiverAddress !== frozenTreasury) {
+    throw new Error(
+      `Treasury address mismatch: feeReceiverAddress (${feeParams.feeReceiverAddress}) ` +
+      `does not match frozen treasury config (${frozenTreasury}). ` +
+      "Fee receiver cannot be overridden at runtime.",
+    );
+  }
+
   const client = getAlgodClient();
   const suggestedParams = await client.getTransactionParams().do();
 

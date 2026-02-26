@@ -1,16 +1,37 @@
 import crypto from "node:crypto";
 import { config } from "../config.js";
+import { getRedis } from "../services/redis.js";
 
 /**
  * Liquid Auth — FIDO2/Passkey Agent Identity Verification
  *
  * Environment-switched authentication:
  *   - LIQUID_AUTH_SERVER_URL set: Real FIDO2 assertion via Liquid Auth REST API
- *   - LIQUID_AUTH_SERVER_URL empty: Dev mock with HMAC token (local testing only)
+ *   - LIQUID_AUTH_SERVER_URL empty: Dev mock (local testing only — blocked in production)
  *
  * The returned AuthToken is an opaque bearer credential that the Rocca
  * Wallet validates before releasing any signing capability.
+ *
+ * Security guarantee: validateAuthToken() cryptographically verifies mock tokens
+ * via Redis (single-use). Real mode delegates to the Liquid Auth server.
  */
+
+const MOCK_TOKEN_PREFIX = "x402:mock-token:";
+const MOCK_TOKEN_TTL_S  = 300; // 5 minutes — matches AUTH_TOKEN_TTL_MS
+
+/**
+ * Asserts the process is safe to start in the current auth configuration.
+ * Call this at boot time. Throws if production is misconfigured.
+ */
+export function assertProductionAuthReady(): void {
+  if (process.env.NODE_ENV === "production" && !config.liquidAuth.serverUrl) {
+    throw new Error(
+      "SECURITY: LIQUID_AUTH_SERVER_URL must be set in production. " +
+      "Mock FIDO2 auth provides no cryptographic guarantees. " +
+      "Refusing to start. Set LIQUID_AUTH_SERVER_URL to a Liquid Auth server.",
+    );
+  }
+}
 
 export interface AuthToken {
   /** Opaque token string for downstream validation */
@@ -104,16 +125,25 @@ async function performRealFIDO2Assertion(agentId: string): Promise<string> {
 }
 
 /**
- * Dev mock: generates a cryptographically random HMAC token.
- * NOT suitable for production — no real FIDO2 verification occurs.
+ * Dev mock: generates a cryptographically random HMAC token and stores it
+ * in Redis for cross-process verification. Single-use: consumed on validation.
+ * NOT suitable for production — blocked by assertProductionAuthReady().
  */
-function performMockFIDO2Challenge(agentId: string): string {
-  const challenge = crypto.randomBytes(32);
-  const challengeHex = challenge.toString("hex");
-  const hmacKey = crypto.randomBytes(32);
-  const tokenPayload = `${agentId}:${challengeHex}:${Date.now()}`;
-  const hmac = crypto.createHmac("sha256", hmacKey).update(tokenPayload).digest("hex");
-  return `lqauth_${hmac}`;
+async function performMockFIDO2Challenge(agentId: string): Promise<string> {
+  const challenge    = crypto.randomBytes(32);
+  const hmacKey      = crypto.randomBytes(32);
+  const tokenPayload = `${agentId}:${challenge.toString("hex")}:${Date.now()}`;
+  const hmac         = crypto.createHmac("sha256", hmacKey).update(tokenPayload).digest("hex");
+  const token        = `lqauth_${hmac}`;
+
+  // Store in Redis so the signing service (separate process) can verify it.
+  // Keyed by token value; value = agentId for binding verification.
+  const redis = getRedis();
+  if (redis) {
+    await redis.set(`${MOCK_TOKEN_PREFIX}${token}`, agentId, { ex: MOCK_TOKEN_TTL_S });
+  }
+
+  return token;
 }
 
 /**
@@ -140,7 +170,7 @@ export async function authenticateAgentIdentity(agentId: string): Promise<AuthTo
   try {
     const token = useRealAuth
       ? await performRealFIDO2Assertion(agentId)
-      : performMockFIDO2Challenge(agentId);
+      : await performMockFIDO2Challenge(agentId);
 
     const now = Date.now();
 
@@ -162,31 +192,51 @@ export async function authenticateAgentIdentity(agentId: string): Promise<AuthTo
 }
 
 /**
- * Validate an existing AuthToken has not expired and is structurally sound.
+ * Validate an existing AuthToken has not expired and is cryptographically sound.
+ *
+ * Real mode:  structural + expiry check (token issued by Liquid Auth server).
+ * Mock mode:  structural + expiry + Redis single-use lookup (token consumed on use).
  *
  * @param authToken - The token to validate
- * @throws Error if the token is expired or malformed
+ * @throws Error if the token is expired, malformed, or already used
  */
-export function validateAuthToken(authToken: AuthToken): void {
+export async function validateAuthToken(authToken: AuthToken): Promise<void> {
   if (!authToken.token || typeof authToken.token !== "string") {
     throw new Error("Liquid Auth Failed: Malformed auth token");
   }
 
-  // Minimum token length — both mock (lqauth_ + 64 hex chars) and real server
-  // tokens should never be shorter than 16 characters.
   if (authToken.token.length < 16) {
     throw new Error("Liquid Auth Failed: Auth token too short");
   }
 
-  // In dev/mock mode, tokens must carry the lqauth_ prefix.
-  // In real mode (server configured), the server issues its own format —
-  // we trust the token came from performRealFIDO2Assertion, but still
-  // require minimum substance.
   if (!config.liquidAuth.serverUrl && !authToken.token.startsWith("lqauth_")) {
     throw new Error("Liquid Auth Failed: Malformed auth token (expected lqauth_ prefix in dev mode)");
   }
 
   if (Date.now() > authToken.expiresAt) {
     throw new Error(`Liquid Auth Failed: Token expired for agent ${authToken.agentId}`);
+  }
+
+  // Mock mode: verify the token was issued by us via Redis.
+  // This makes mock tokens cryptographically verifiable and single-use
+  // across processes (main API writes, signing service reads + consumes).
+  if (!config.liquidAuth.serverUrl) {
+    const redis = getRedis();
+    if (redis) {
+      const redisKey    = `${MOCK_TOKEN_PREFIX}${authToken.token}`;
+      const storedAgent = await redis.get(redisKey) as string | null;
+
+      if (!storedAgent) {
+        throw new Error("Liquid Auth Failed: Mock token not found — expired or already used");
+      }
+      if (storedAgent !== authToken.agentId) {
+        throw new Error(
+          `Liquid Auth Failed: Mock token agentId mismatch: stored=${storedAgent} provided=${authToken.agentId}`,
+        );
+      }
+      // Single-use: consume the token now
+      await redis.del(redisKey);
+    }
+    // Redis unavailable: fall through to format-only validation (degraded dev mode)
   }
 }

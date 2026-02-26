@@ -1,5 +1,6 @@
 import algosdk from "algosdk";
 import { config } from "../config.js";
+import { getAlgodClient } from "../network/nodely.js";
 import type { SandboxExport } from "../services/transaction.js";
 
 /**
@@ -27,6 +28,7 @@ export interface ValidationResult {
   rules: {
     tollVerified: boolean;
     signerVerified: boolean;
+    authAddrVerified: boolean;
   };
   errors: string[];
 }
@@ -125,12 +127,58 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
     }
   }
 
+  // ── Rule 3: Verify on-chain auth-addr (rekey relationship) ───────
+  // For every unique sender in the group, confirm that their on-chain
+  // auth-addr equals routing.authAddr (the Rocca cohort signer).
+  // This proves the sender is a registered agent rekeyed to our signer
+  // and prevents unregistered accounts from submitting payment requests.
+  //
+  // Only runs when routing.authAddr is present (set by constructAtomicGroup).
+  // Skipped silently if authAddr is missing for backwards compatibility.
+  let authAddrVerified = true;
+
+  if (routing.authAddr) {
+    const uniqueSenders = [...new Set(
+      transactions.map((txn) => txn.sender.toString()),
+    )];
+
+    for (const sender of uniqueSenders) {
+      try {
+        const accountInfo = await getAlgodClient().accountInformation(sender).do();
+        const onChainAuthAddr = accountInfo.authAddr?.toString() ?? null;
+
+        if (!onChainAuthAddr) {
+          // Account is not rekeyed — its own key would need to sign, not Rocca
+          authAddrVerified = false;
+          errors.push(
+            `Rule 3: Sender ${sender} has no auth-addr — account is not rekeyed to Rocca signer`,
+          );
+        } else if (onChainAuthAddr !== routing.authAddr) {
+          authAddrVerified = false;
+          errors.push(
+            `Rule 3: Sender ${sender} auth-addr mismatch. Expected ${routing.authAddr}, got ${onChainAuthAddr}`,
+          );
+        }
+      } catch (err) {
+        // Treat lookup failure as a hard validation error — we must not sign
+        // for an account whose rekey status we cannot confirm.
+        const msg = err instanceof Error ? err.message : "lookup error";
+        authAddrVerified = false;
+        errors.push(`Rule 3: Cannot verify auth-addr for ${sender}: ${msg}`);
+      }
+    }
+
+    console.log(`[Validation] Rule 3 (auth-addr): verified=${authAddrVerified}`);
+  } else {
+    console.warn(`[Validation] Rule 3 skipped — routing.authAddr not set`);
+  }
+
   // ── Verdict ───────────────────────────────────────────────────
-  const valid = tollVerified && signerVerified && errors.length === 0;
+  const valid = tollVerified && signerVerified && authAddrVerified && errors.length === 0;
 
   const result: ValidationResult = {
     valid,
-    rules: { tollVerified, signerVerified },
+    rules: { tollVerified, signerVerified, authAddrVerified },
     errors,
   };
 
@@ -141,6 +189,6 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
     );
   }
 
-  console.log(`[Validation] PASSED: toll=${tollVerified}, signer=${signerVerified}`);
+  console.log(`[Validation] PASSED: toll=${tollVerified}, signer=${signerVerified}, authAddr=${authAddrVerified}`);
   return result;
 }

@@ -1,0 +1,57 @@
+{
+  "name": "x402 AI Agentic Wallet",
+  "description": "Zero-trust, x402-compliant AI-to-AI financial routing and atomic settlement on Algorand. Supports AP2 mandate-gated autonomous payments and A2A agent-to-agent transactions.",
+  "url": "https://ai-agentic-wallet.com",
+  "version": "2.0.0",
+  "capabilities": [
+    "usdc-transfer",
+    "cross-chain-bridge",
+    "mandate-governance",
+    "recurring-payments",
+    "a2a-payments"
+  ],
+  "extensions": {
+    "x402": {
+      "protocol": "x402-v1",
+      "network": "algorand-mainnet",
+      "assetId": 31566704,
+      "asset": "USDC",
+      "tollAmount": "10000",
+      "payTo": "https://ai-agentic-wallet.com/api/agent-action"
+    },
+    "ap2": {
+      "protocol": "ap2-v0.1",
+      "mandateTypes": ["intent", "cart", "payment"],
+      "fido2Required": [
+        "mandate_create",
+        "mandate_revoke",
+        "custody_transition"
+      ],
+      "endpoints": {
+        "createMandate":  "/api/agents/:agentId/mandate/create",
+        "revokeMandate":  "/api/agents/:agentId/mandate/:mandateId/revoke",
+        "listMandates":   "/api/agents/:agentId/mandates",
+        "execute":        "/api/execute"
+      }
+    },
+    "a2a": {
+      "protocol": "a2a-v1",
+      "endpoint": "/a2a",
+      "messageTypes": [
+        "payment-request",
+        "payment-result",
+        "payment-error"
+      ]
+    }
+  },
+  "authentication": {
+    "mandateCreate":  "portal-auth + fido2-webauthn",
+    "mandateRevoke":  "portal-auth + fido2-webauthn",
+    "execute":        "portal-auth",
+    "a2a":            "none (mandate or velocity enforced internally)"
+  },
+  "documentation": "https://ai-agentic-wallet.com/docs/api-reference.md",
+  "contact": {
+    "developer_portal": "https://portal.ai-agentic-wallet.com"
+  }
+}

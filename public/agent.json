@@ -4,7 +4,7 @@
 
   "name": "Honda x402 Bridge",
   "agent_id": "algo-wallet-x402-router",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Zero-trust, x402-compliant AI-to-AI financial routing and atomic settlement on Algorand. Pay $0.01 USDC per request; receive cryptographically guaranteed cross-chain USDC delivery or full reversion. No partial settlement. No escrow. Sub-3-second finality.",
 
   "toll": "10000",
@@ -96,5 +96,26 @@
 
   "contact": {
     "developer_portal": "https://portal.ai-agentic-wallet.com"
+  },
+
+  "extensions": {
+    "ap2": {
+      "protocol": "ap2-v0.1",
+      "mandateTypes": ["intent", "cart", "payment"],
+      "fido2Required": ["mandate_create", "mandate_revoke", "custody_transition"],
+      "endpoints": {
+        "createMandate":  "/api/agents/:agentId/mandate/create",
+        "revokeMandate":  "/api/agents/:agentId/mandate/:mandateId/revoke",
+        "listMandates":   "/api/agents/:agentId/mandates",
+        "challenge":      "/api/agents/:agentId/mandate/challenge",
+        "execute":        "/api/execute"
+      }
+    },
+    "a2a": {
+      "protocol": "a2a-v1",
+      "endpoint": "/a2a",
+      "agentCard": "/.well-known/agent-card.json",
+      "messageTypes": ["payment-request", "payment-result", "payment-error"]
+    }
   }
 }
