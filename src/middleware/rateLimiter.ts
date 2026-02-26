@@ -5,9 +5,13 @@ import { Redis } from "@upstash/redis";
 import { getRedis } from "../services/redis.js";
 
 // ── In-memory fallback rate limiter (used when Redis is unavailable) ──
-// Token bucket per IP: 30 requests per 10-second window.
+// Token bucket per IP: conservative limit during Redis outages.
+// IMPORTANT: In multi-region deployments each instance has its own
+// fallback bucket, so the effective limit is FALLBACK_MAX × instance count.
+// The conservative default (5 req/10s) prevents a Redis outage from
+// multiplying effective throughput across many instances.
 const _fallbackBuckets = new Map<string, { tokens: number; lastRefill: number }>();
-const FALLBACK_MAX = 30;
+const FALLBACK_MAX = 5;           // intentionally conservative (was 30)
 const FALLBACK_WINDOW_MS = 10_000;
 
 function fallbackCheck(identifier: string): { limited: boolean } {
@@ -123,8 +127,25 @@ async function resolveLimiter(req: Request): Promise<{ limiter: Ratelimit; ident
   }
 
   // ── Tier 2: IP fallback ──────────────────────────────────────
+  // TRUSTED_PROXY_HOPS controls how many rightmost XFF hops to skip.
+  // Set this per-region to match the actual proxy topology:
+  //   Railway bare:        TRUSTED_PROXY_HOPS=1  (Railway's own proxy)
+  //   Cloudflare + Railway: TRUSTED_PROXY_HOPS=2  (Cloudflare egress + Railway)
+  //   Direct (no proxy):    TRUSTED_PROXY_HOPS=0  (use req.socket.remoteAddress)
+  //
+  // Leftmost hops are attacker-controlled and must never be trusted.
+  // Without this, all Cloudflare-fronted traffic shares one rate-limit
+  // bucket (Cloudflare's egress IP).
+  const trustedHopCount = parseInt(process.env.TRUSTED_PROXY_HOPS ?? "1", 10);
   const forwarded = req.header("X-Forwarded-For");
-  const ip = forwarded ? forwarded.split(",")[0].trim() : req.ip || "unknown";
+  let ip = req.socket?.remoteAddress || req.ip || "unknown";
+  if (forwarded) {
+    const hops = forwarded.split(",").map((h) => h.trim()).filter(Boolean);
+    // Pick the IP at position (hops.length - trustedHopCount) from the right.
+    // If trustedHopCount >= hops.length, use the leftmost (safest fallback).
+    const idx = Math.max(0, hops.length - trustedHopCount);
+    if (hops[idx]) ip = hops[idx];
+  }
 
   return { limiter: ipLimiter!, identifier: `ip:${ip}` };
 }

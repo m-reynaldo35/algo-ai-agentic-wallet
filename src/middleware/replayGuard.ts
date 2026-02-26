@@ -123,6 +123,27 @@ export async function enforceReplayProtection(
     return enforceViaRedis(client, nonce);
   }
 
+  // Fail CLOSED when Redis is unavailable (production path).
+  // In-memory nonce caches are per-instance and cannot prevent cross-instance
+  // replay in multi-region deployments. A Redis outage must not silently
+  // degrade replay protection for a financial signing service.
+  //
+  // Exception: allow the in-memory fallback only when NODE_ENV is not
+  // production AND RAILWAY_ENVIRONMENT is not production, so local
+  // development still works without Redis.
+  const isProd =
+    process.env.NODE_ENV === "production" ||
+    process.env.RAILWAY_ENVIRONMENT === "production";
+
+  if (isProd) {
+    return {
+      valid: false,
+      error:
+        "Replay protection temporarily unavailable — Redis is required in production. " +
+        "Retry when the Redis connection is restored.",
+    };
+  }
+
   return enforceViaMemory(nonce, now);
 }
 

@@ -19,7 +19,34 @@ import { getWebhookDeliveries } from "./services/webhook.js";
 import { registerSSEBroadcaster } from "./services/audit.js";
 import { requirePortalAuth } from "./middleware/portalAuth.js";
 import { registerAgent } from "./services/agentRegistration.js";
-import { getAgent, listAgents, updateAgentStatus } from "./services/agentRegistry.js";
+import { assertProductionAuthReady } from "./auth/liquidAuth.js";
+import { runBootGuards, assertCrossRegionTreasuryHash } from "./protection/envGuard.js";
+import { checkExecutionLimits } from "./protection/executionLimiter.js";
+import { isCircuitOpen, recordSuccess, recordFailure } from "./protection/circuitBreaker.js";
+import { logRejection } from "./protection/rejectionLogger.js";
+import {
+  getAgent, listAgents, updateAgentStatus,
+  setHalt, clearHalt, isHalted, getActiveRotation, getRotationBatch,
+  assertCustodyInvariant,
+} from "./services/agentRegistry.js";
+import {
+  issueRekeyChallenge, verifyRekeyChallenge, executeRekey,
+  executeRecustody, issueApprovalToken, decodeAxferTotal,
+} from "./services/custodyManager.js";
+import { checkAndReserveVelocity, rollbackVelocityReservation, recordGlobalOutflow, sumUsdcAxfers, getMassDrainStatus, clearMassDrain } from "./protection/velocityEngine.js";
+import { runRekeySync } from "./services/rekeySync.js";
+import { startDriftPulse }             from "./jobs/driftPulse.js";
+import { startRecurringScheduler }       from "./jobs/recurringScheduler.js";
+import {
+  createMandate, revokeMandate, listMandates,
+  registerWebAuthnCredential, issueMandateChallenge,
+}                                        from "./services/mandateService.js";
+import { evaluateMandate }               from "./services/mandateEngine.js";
+import a2aRouter                         from "./routes/a2a.js";
+import { getRecentSecurityEvents, emitSecurityEvent, querySecurityEvents } from "./services/securityAudit.js";
+import { validateAuthToken } from "./auth/liquidAuth.js";
+import { logMtlsStatus } from "./protection/mtlsConfig.js";
+import { verifyMultiSigHalt, isMultiSigConfigured } from "./protection/multiSigHalt.js";
 import helmet from "helmet";
 import cors from "cors";
 
@@ -87,6 +114,14 @@ app.use(express.json({ limit: "256kb" })); // Limit request body size
 
 // ── Serve public/skill.md and other static assets ─────────────
 app.use(express.static(path.join(__dirname, "..", "public")));
+
+// ── A2A Agent Card discovery ─────────────────────────────────────
+app.get("/.well-known/agent-card.json", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "agent-card.json"));
+});
+
+// ── A2A Agent-to-Agent endpoint (open — mandate/velocity gated internally) ──
+app.use("/a2a", a2aRouter);
 
 // ── Rate Limiting (Upstash sliding window — before all API routes) ─
 app.use("/api", rateLimiter);
@@ -173,7 +208,7 @@ app.post("/api/agent-action", x402Paywall, async (req, res) => {
 // ── Execute full pipeline: validate → auth → sign → broadcast ───
 app.post("/api/execute", requirePortalAuth, async (req, res) => {
   try {
-    const { sandboxExport, agentId } = req.body;
+    const { sandboxExport, agentId, mandateId } = req.body;
 
     if (!sandboxExport || !agentId) {
       res.status(400).json({ error: "Missing required fields: sandboxExport, agentId" });
@@ -186,6 +221,94 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
     }
 
     const sandboxId: string = sandboxExport?.sandboxId ?? "";
+
+    // ── Phase 1.5: Operational protection layer ────────────────
+    // Extract the agent's on-chain address for per-agent rate keys.
+    // Falls back to agentId string if the sandbox export is malformed.
+    const publicAddress: string =
+      (sandboxExport?.routing?.requiredSigner as string | undefined) ?? agentId;
+    const clientIp = req.ip;
+
+    // Circuit breaker — checked first so a tripped circuit never
+    // consumes agent quota and returns a clear 503 before rate checks.
+    const circuit = await isCircuitOpen();
+    if (circuit.open) {
+      await logRejection("CIRCUIT_OPEN", publicAddress, clientIp, "SIGNER_CIRCUIT_OPEN");
+      res.status(503).json({
+        error:           "SIGNER_CIRCUIT_OPEN",
+        message:         "Signing service is temporarily unavailable due to repeated failures.",
+        failureCount:    circuit.failureCount,
+      });
+      return;
+    }
+
+    // Rate limits — burst → per-agent → global (in strictness order)
+    const limit = await checkExecutionLimits(publicAddress);
+    if (!limit.allowed) {
+      const rejType =
+        limit.violation === "GLOBAL_RATE_LIMIT_EXCEEDED" ? "GLOBAL_LIMIT" :
+        limit.violation === "AGENT_BURST_LIMIT"          ? "BURST_LIMIT"  :
+                                                           "RATE_LIMIT";
+      await logRejection(rejType, publicAddress, clientIp, limit.violation!);
+
+      const httpStatus = limit.violation === "GLOBAL_RATE_LIMIT_EXCEEDED" ? 503 : 429;
+      res.setHeader("Retry-After", Math.ceil((limit.retryAfterMs ?? 60_000) / 1_000));
+      res.status(httpStatus).json({
+        error:        limit.violation,
+        retryAfterMs: limit.retryAfterMs,
+      });
+      return;
+    }
+
+    // ── Authorization: mandate path or legacy velocity path ───
+    // Decode the USDC amount from the transaction blobs server-side
+    // (never trust a caller-supplied amount field).
+    const txnBlobs = (sandboxExport?.atomicGroup?.transactions ?? []) as string[];
+    const proposedMicroUsdc = sumUsdcAxfers(txnBlobs);
+    let usedMandatePath = false;
+
+    if (mandateId && typeof mandateId === "string") {
+      // ── Mandate path: evaluate against AP2 mandate ─────────
+      // Skips velocity check; mandate rolling windows used instead.
+      const evalResult = await evaluateMandate(agentId, mandateId, txnBlobs);
+      if (!evalResult.allowed) {
+        const isVelocityCode = evalResult.code === "VELOCITY_10M_EXCEEDED" ||
+                               evalResult.code === "VELOCITY_24H_EXCEEDED" ||
+                               evalResult.code === "MAX_PER_TX_EXCEEDED";
+        res.status(isVelocityCode ? 402 : 403).json({
+          error:   evalResult.code ?? "MANDATE_REJECTED",
+          message: evalResult.message ?? "Mandate evaluation rejected",
+        });
+        return;
+      }
+      usedMandatePath = true;
+
+    } else if (proposedMicroUsdc > 0n) {
+      // ── Velocity path: atomic check+reserve ────────────────
+      // checkAndReserveVelocity atomically checks the rolling windows AND
+      // records the reservation in one Redis round-trip (Lua script).
+      // This prevents concurrent requests from both passing the check
+      // before either records its spend (multi-region race condition T1).
+      try {
+        const velocity = await checkAndReserveVelocity(agentId, proposedMicroUsdc);
+        if (velocity.requiresApproval) {
+          res.status(402).json({
+            error:            "VELOCITY_APPROVAL_REQUIRED",
+            message:          "Spend velocity exceeds threshold — submit a Tier 1 approval token",
+            tenMinTotal:      velocity.tenMinTotal.toString(),
+            dayTotal:         velocity.dayTotal.toString(),
+            threshold10m:     velocity.threshold10m.toString(),
+            threshold24h:     velocity.threshold24h.toString(),
+            proposedMicroUsdc: proposedMicroUsdc.toString(),
+          });
+          return;
+        }
+        // Attach reservation key so we can roll back on pipeline failure
+        (req as unknown as Record<string, unknown>)._velocityReservationKey = velocity.reservationKey;
+      } catch (velocityErr) {
+        console.error("[execute/velocity]", velocityErr instanceof Error ? velocityErr.message : velocityErr);
+      }
+    }
 
     // ── Idempotency guard: deduplicate on sandboxId ────────────
     // Prevents duplicate on-chain submissions when a client retries
@@ -209,12 +332,36 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
 
     const result = await executePipeline(sandboxExport, agentId);
 
+    // ── Phase 1.5: Circuit breaker feedback ───────────────────
+    if (result.success) {
+      // Any successful submission resets the failure counter immediately.
+      recordSuccess().catch(() => {});
+    } else if (result.failedStage === "sign" || result.failedStage === "broadcast") {
+      // Only signing/RPC failures feed the circuit breaker.
+      // Auth and validation failures indicate client errors, not RPC instability.
+      recordFailure(`stage=${result.failedStage}: ${result.error ?? "unknown"}`).catch(() => {});
+    }
+
     if (!result.success) {
+      // Roll back the velocity reservation so the failed attempt does not
+      // consume the agent's spend allowance.
+      const reservationKey = (req as unknown as Record<string, unknown>)._velocityReservationKey as string | undefined;
+      if (!usedMandatePath && reservationKey) {
+        rollbackVelocityReservation(agentId, reservationKey).catch(() => {});
+      }
       res.status(502).json({
         error: "Settlement pipeline failed",
         failedStage: result.failedStage,
       });
       return;
+    }
+
+    // ── Record global outflow for mass drain tracking ──────────
+    // Per-agent windows were already updated atomically by
+    // checkAndReserveVelocity. Only the global window and mass drain
+    // check remain. Skip for mandate path.
+    if (!usedMandatePath && proposedMicroUsdc > 0n) {
+      recordGlobalOutflow(agentId, proposedMicroUsdc).catch(() => {});
     }
 
     // Cache successful result for 24h
@@ -760,6 +907,18 @@ app.get("/api/agents/:agentId", requirePortalAuth, async (req, res) => {
   }
 });
 
+app.patch("/api/agents/:agentId/unsuspend", requirePortalAuth, async (req, res) => {
+  try {
+    const agentId = String(req.params.agentId || "");
+    await updateAgentStatus(agentId, "active");
+    res.json({ agentId, status: "active" });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    if (message.includes("not found")) { res.status(404).json({ error: message }); return; }
+    res.status(500).json({ error: "Failed to unsuspend agent" });
+  }
+});
+
 app.patch("/api/agents/:agentId/suspend", requirePortalAuth, async (req, res) => {
   try {
     const agentId = String(req.params.agentId || "");
@@ -776,16 +935,663 @@ app.patch("/api/agents/:agentId/suspend", requirePortalAuth, async (req, res) =>
   }
 });
 
+// ── Emergency Halt ───────────────────────────────────────────────
+// GET  /api/system/halt-status — check if halt is active
+// POST /api/system/halt        — set halt (body: { reason })
+// POST /api/system/unhalt      — clear halt
+
+app.get("/api/system/halt-status", requirePortalAuth, async (_req, res) => {
+  const haltRecord = await isHalted();
+  const batchId  = await getActiveRotation();
+  const batch    = batchId ? await getRotationBatch(batchId) : null;
+  res.json({
+    halted:          !!haltRecord,
+    haltReason:      haltRecord ?? null,
+    activeRotation:  batch ? {
+      batchId:        batch.batchId,
+      cohort:         batch.cohort,
+      status:         batch.status,
+      confirmedCount: batch.confirmedCount,
+      totalAgents:    batch.totalAgents,
+      updatedAt:      batch.updatedAt,
+    } : null,
+  });
+});
+
+app.post("/api/system/halt", requirePortalAuth, async (req, res) => {
+  // T8.2: Require HALT_OVERRIDE_KEY to prevent insider / compromised-portal abuse.
+  // Without this, any valid portal session could halt the signing pipeline.
+  const overrideKey = process.env.HALT_OVERRIDE_KEY;
+  if (overrideKey) {
+    const provided = String(req.body?.overrideKey ?? "");
+    if (provided !== overrideKey) {
+      res.status(403).json({ error: "Forbidden: invalid HALT_OVERRIDE_KEY" });
+      return;
+    }
+  }
+  const reason = String(req.body?.reason ?? "Manual halt via portal API");
+  await setHalt(reason);
+  console.error(`[system/halt] Halt set via API: ${reason}`);
+  res.json({ halted: true, reason });
+});
+
+app.post("/api/system/unhalt", requirePortalAuth, async (req, res) => {
+  // T8.2: Require HALT_OVERRIDE_KEY to resume signing after a halt.
+  const overrideKey = process.env.HALT_OVERRIDE_KEY;
+  if (overrideKey) {
+    const provided = String(req.body?.overrideKey ?? "");
+    if (provided !== overrideKey) {
+      res.status(403).json({ error: "Forbidden: invalid HALT_OVERRIDE_KEY" });
+      return;
+    }
+  }
+  await clearHalt();
+  console.log("[system/unhalt] Halt cleared via API");
+  res.json({ halted: false });
+});
+
+// ── Custody Transition Routes ─────────────────────────────────────
+//
+// These endpoints implement the rekey-to-user and re-custody flows.
+// All require portal auth (same gate as agent management routes).
+//
+// Route summary:
+//   POST /api/agents/:agentId/rekey/challenge
+//     Issue a proof-of-control challenge. User signs the returned bytes
+//     with their destination key to prove they control it before any
+//     rekey transaction is constructed.
+//
+//   POST /api/agents/:agentId/rekey/execute
+//     Execute the rekey after challenge verification. Constructs an
+//     unsigned self-payment with rekey_to = destination, routes through
+//     the signing service admin path, broadcasts, and updates the registry
+//     post-confirmation.
+//
+//   POST /api/agents/:agentId/recustody
+//     Accept a user-signed rekey transaction returning custody to Rocca.
+//     Validates structure strictly (not a blind relay), broadcasts, and
+//     updates the registry post-confirmation.
+
+app.post("/api/agents/:agentId/rekey/challenge", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  const { destinationAddress, walletId } = req.body as {
+    destinationAddress?: string;
+    walletId?: string;
+  };
+
+  if (!destinationAddress || !walletId) {
+    res.status(400).json({ error: "Missing required fields: destinationAddress, walletId" });
+    return;
+  }
+
+  try {
+    const challenge = await issueRekeyChallenge(agentId, destinationAddress, walletId);
+    res.json({ challenge, agentId, destinationAddress });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = msg.includes("not found") ? 404 : 400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.post("/api/agents/:agentId/rekey/execute", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  const { destinationAddress, signatureBase64, custodyVersion, walletId } = req.body as {
+    destinationAddress?: string;
+    signatureBase64?:    string;
+    custodyVersion?:     number;
+    walletId?:           string;
+  };
+
+  if (!destinationAddress || !signatureBase64 || typeof custodyVersion !== "number" || !walletId) {
+    res.status(400).json({
+      error: "Missing required fields: destinationAddress, signatureBase64, custodyVersion, walletId",
+    });
+    return;
+  }
+
+  try {
+    // Verify challenge before executing the rekey
+    await verifyRekeyChallenge(agentId, destinationAddress, signatureBase64, custodyVersion);
+    const result = await executeRekey(agentId, destinationAddress, custodyVersion);
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = msg.includes("not found") ? 404 : msg.includes("in progress") ? 409 : 400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.post("/api/agents/:agentId/recustody", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  const { signedTxnBase64, walletId } = req.body as {
+    signedTxnBase64?: string;
+    walletId?:        string;
+  };
+
+  if (!signedTxnBase64 || !walletId) {
+    res.status(400).json({ error: "Missing required fields: signedTxnBase64, walletId" });
+    return;
+  }
+
+  try {
+    const result = await executeRecustody(agentId, signedTxnBase64, walletId);
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = msg.includes("not found") ? 404 : 400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+// ── Tier 1 Approval Token ────────────────────────────────────────
+//
+// POST /api/agents/:agentId/approval-token
+//
+// Issues a single-use approval token for a transaction group that has
+// exceeded the agent's spend velocity threshold.
+//
+// FIDO2-bound: the caller must supply a fresh FIDO2 AuthToken proving
+// the wallet owner explicitly approved this specific action. The API
+// cannot manufacture an approval token without hardware user intent.
+//
+// Body:
+//   amount        number   — microUSDC ceiling the user is approving
+//   unsignedTxns  string[] — exact transaction blobs being approved
+//   walletId      string   — FIDO2 credential ID hash
+//   authToken     AuthToken — fresh FIDO2 assertion (expires in 5 min)
+
+app.post("/api/agents/:agentId/approval-token", requirePortalAuth, async (req, res) => {
+  const { agentId } = req.params;
+  const { amount, unsignedTxns, walletId, authToken } = req.body as {
+    amount?:       number;
+    unsignedTxns?: string[];
+    walletId?:     string;
+    authToken?:    { token: string; agentId: string; issuedAt: number; expiresAt: number; method: string };
+  };
+
+  if (typeof amount !== "number" || !Array.isArray(unsignedTxns) || !walletId || !authToken) {
+    res.status(400).json({
+      error: "Missing required fields: amount, unsignedTxns, walletId, authToken",
+    });
+    return;
+  }
+
+  // ── FIDO2 assertion validation ─────────────────────────────────
+  // The authToken must be a freshly issued FIDO2 credential for this agent.
+  // This ensures the wallet hardware device explicitly approved the action —
+  // the API cannot issue approval tokens on behalf of the user.
+  try {
+    await validateAuthToken(authToken as Parameters<typeof validateAuthToken>[0]);
+  } catch (authErr) {
+    const msg = authErr instanceof Error ? authErr.message : String(authErr);
+    res.status(401).json({ error: `FIDO2 assertion invalid: ${msg}` });
+    return;
+  }
+  if (authToken.agentId !== agentId) {
+    res.status(401).json({ error: "FIDO2 assertion agentId does not match :agentId param" });
+    return;
+  }
+
+  // ── Validate the proposed amount against decoded txn bytes ─────
+  // The stored ceiling must not be less than the actual group spend
+  // (callers cannot manufacture an inflated amount for future replays).
+  try {
+    const decodedTotal = decodeAxferTotal(unsignedTxns, "");  // address validated inside issueApprovalToken
+    if (BigInt(amount) < decodedTotal) {
+      res.status(400).json({
+        error: `Approved amount (${amount}) is less than decoded group total (${decodedTotal}) — ceiling cannot be below actual spend`,
+      });
+      return;
+    }
+  } catch {
+    // decodeAxferTotal with empty agentAddress will fail strict checks;
+    // the canonical validation happens inside consumeApprovalToken.
+    // Here we just use sumUsdcAxfers for a non-strict sanity check.
+    const looseTotalMicroUsdc = sumUsdcAxfers(unsignedTxns);
+    if (BigInt(amount) < looseTotalMicroUsdc) {
+      res.status(400).json({ error: "Approved amount is less than decoded group USDC total" });
+      return;
+    }
+  }
+
+  try {
+    const nonce = await issueApprovalToken(agentId, amount, unsignedTxns, walletId);
+
+    emitSecurityEvent({
+      type:    "TOKEN_ISSUED",
+      agentId,
+      walletId,
+      detail: {
+        amountMicroUsdc:  amount,
+        txnCount:         unsignedTxns.length,
+        fido2AgentId:     authToken.agentId,
+      },
+      timestamp: new Date().toISOString(),
+    });
+
+    res.json({ nonce, agentId, expiresInSeconds: 60 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: msg });
+  }
+});
+
+// ── AP2 Mandate Endpoints ─────────────────────────────────────────
+//
+// PATCH /api/agents/:agentId/webauthn-pubkey
+//   Register the owner's FIDO2 public key. Immutable once set.
+//
+// GET  /api/agents/:agentId/mandates
+//   List active mandates for an agent.
+//
+// POST /api/agents/:agentId/mandate/challenge
+//   Issue a single-use WebAuthn challenge for mandate operations.
+//
+// POST /api/agents/:agentId/mandate/create
+//   Create a new AP2 mandate. FIDO2 assertion required.
+//
+// POST /api/agents/:agentId/mandate/:mandateId/revoke
+//   Revoke a mandate. FIDO2 assertion required.
+
+app.patch("/api/agents/:agentId/webauthn-pubkey", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  const { ownerWalletId, credentialId, publicKeyCose, counter } = req.body as {
+    ownerWalletId?: string;
+    credentialId?:  string;
+    publicKeyCose?: string;
+    counter?:       number;
+  };
+
+  if (!ownerWalletId || !credentialId || !publicKeyCose || typeof counter !== "number") {
+    res.status(400).json({
+      error: "Missing required fields: ownerWalletId, credentialId, publicKeyCose, counter",
+    });
+    return;
+  }
+
+  try {
+    await registerWebAuthnCredential(agentId, ownerWalletId, credentialId, publicKeyCose, counter);
+    res.json({ agentId, ownerWalletId, status: "registered" });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = msg.includes("not found") ? 404 : msg.includes("mismatch") ? 403 : 400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.get("/api/agents/:agentId/mandates", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  try {
+    const mandates = await listMandates(agentId);
+    res.json({ mandates, count: mandates.length });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post("/api/agents/:agentId/mandate/challenge", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  try {
+    const challenge = await issueMandateChallenge(agentId);
+    res.json({ agentId, challenge });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post("/api/agents/:agentId/mandate/create", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+
+  const {
+    ownerWalletId, maxPerTx, maxPer10Min, maxPerDay,
+    allowedRecipients, recurring, expiresAt, webauthnAssertion,
+  } = req.body;
+
+  if (!ownerWalletId || !webauthnAssertion) {
+    res.status(400).json({
+      error: "Missing required fields: ownerWalletId, webauthnAssertion",
+    });
+    return;
+  }
+
+  try {
+    const mandate = await createMandate(agentId, {
+      ownerWalletId,
+      maxPerTx,
+      maxPer10Min,
+      maxPerDay,
+      allowedRecipients,
+      recurring,
+      expiresAt,
+      webauthnAssertion,
+    });
+    res.status(201).json(mandate);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status =
+      msg.includes("not found") ? 404 :
+      msg.includes("WebAuthn")  ? 401 :
+      msg.includes("mismatch")  ? 403 :
+      400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.post("/api/agents/:agentId/mandate/:mandateId/revoke", requirePortalAuth, async (req, res) => {
+  const agentId   = String(req.params.agentId || "");
+  const mandateId = String(req.params.mandateId || "");
+  const { ownerWalletId, webauthnAssertion } = req.body;
+
+  if (!ownerWalletId || !webauthnAssertion) {
+    res.status(400).json({
+      error: "Missing required fields: ownerWalletId, webauthnAssertion",
+    });
+    return;
+  }
+
+  try {
+    const result = await revokeMandate(agentId, mandateId, { ownerWalletId, webauthnAssertion });
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status =
+      msg.includes("not found") ? 404 :
+      msg.includes("WebAuthn")  ? 401 :
+      msg.includes("mismatch")  ? 403 :
+      400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+// ── Security Audit Log ────────────────────────────────────────────
+
+app.get("/api/portal/security-audit", requirePortalAuth, async (req, res) => {
+  try {
+    const limit  = Math.min(parseInt(String(req.query.limit  ?? "100"), 10), 1000);
+    const events = await getRecentSecurityEvents(limit);
+    res.json({ events, count: events.length });
+  } catch (err) {
+    console.error("[portal/security-audit]", err);
+    res.json({ events: [], count: 0 });
+  }
+});
+
+// ── Mass Drain Status / Admin ─────────────────────────────────────
+
+app.get("/api/system/mass-drain", requirePortalAuth, async (_req, res) => {
+  const status = await getMassDrainStatus();
+  res.json(status);
+});
+
+app.post("/api/system/mass-drain/clear", requirePortalAuth, async (req, res) => {
+  const overrideKey = process.env.HALT_OVERRIDE_KEY;
+  if (overrideKey) {
+    const provided = String(req.body?.overrideKey ?? "");
+    if (provided !== overrideKey) {
+      res.status(403).json({ error: "Forbidden: invalid HALT_OVERRIDE_KEY" });
+      return;
+    }
+  }
+  await clearMassDrain();
+  console.log("[system/mass-drain/clear] Mass drain marker cleared via API");
+  res.json({ cleared: true });
+});
+
+// ── Multi-Sig Emergency Halt ──────────────────────────────────────
+//
+// POST /api/system/multisig-halt
+//
+// Self-authenticating 2-of-3 Ed25519 multi-signature halt/unhalt.
+// Does NOT require requirePortalAuth — the admin signatures ARE the auth.
+// Rate-limited independently (5 req/min per IP) to prevent brute-force.
+//
+// Body:
+//   action:     "halt" | "unhalt"
+//   reason:     string (max 256 chars)
+//   timestamp:  number  (unix seconds at signing time, ±5 min window)
+//   signatures: Array<{ keyIndex: 1|2|3, sig: string }>  (base64)
+
+const multisigHaltCounts = new Map<string, { count: number; resetAt: number }>();
+const MULTISIG_RATE_WINDOW_MS = 60_000;
+const MULTISIG_RATE_MAX       = 5;
+
+function checkMultisigRateLimit(ip: string): boolean {
+  const now  = Date.now();
+  const slot = multisigHaltCounts.get(ip);
+  if (!slot || now > slot.resetAt) {
+    multisigHaltCounts.set(ip, { count: 1, resetAt: now + MULTISIG_RATE_WINDOW_MS });
+    return true;
+  }
+  if (slot.count >= MULTISIG_RATE_MAX) return false;
+  slot.count++;
+  return true;
+}
+
+app.post("/api/system/multisig-halt", async (req, res) => {
+  const ip = req.ip ?? "unknown";
+  if (!checkMultisigRateLimit(ip)) {
+    res.status(429).json({ error: "Rate limit exceeded — max 5 multisig-halt requests per minute per IP" });
+    return;
+  }
+
+  const { action, reason, timestamp, signatures } = req.body as {
+    action?:     unknown;
+    reason?:     unknown;
+    timestamp?:  unknown;
+    signatures?: unknown;
+  };
+
+  if (!action || !reason || typeof timestamp !== "number" || !Array.isArray(signatures)) {
+    res.status(400).json({ error: "Missing required fields: action, reason, timestamp, signatures" });
+    return;
+  }
+
+  if (action !== "halt" && action !== "unhalt") {
+    res.status(400).json({ error: 'action must be "halt" or "unhalt"' });
+    return;
+  }
+  if (typeof reason !== "string" || reason.length === 0 || reason.length > 256) {
+    res.status(400).json({ error: "reason must be a non-empty string (max 256 chars)" });
+    return;
+  }
+
+  if (!isMultiSigConfigured()) {
+    res.status(503).json({
+      error: "Multi-sig halt not configured — set HALT_ADMIN_PUBKEY_1/2/3 env vars",
+    });
+    return;
+  }
+
+  try {
+    const validCount = verifyMultiSigHalt(
+      action as "halt" | "unhalt",
+      reason as string,
+      timestamp,
+      signatures as Array<{ keyIndex: 1 | 2 | 3; sig: string }>,
+    );
+
+    if (action === "halt") {
+      await setHalt(reason as string);
+    } else {
+      await clearHalt();
+    }
+
+    emitSecurityEvent({
+      type:   "SECURITY_ALERT",
+      detail: {
+        event:      `MULTISIG_${action.toUpperCase()}`,
+        reason,
+        validSigs:  validCount,
+        ip,
+      },
+      timestamp: new Date().toISOString(),
+    });
+
+    res.json({ success: true, action, validSigs: validCount });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(403).json({ error: `Multi-sig verification failed: ${msg}` });
+  }
+});
+
+// ── Security Metrics Dashboard ────────────────────────────────────
+//
+// GET /api/portal/security-metrics
+//
+// Aggregates security events, circuit state, and mass-drain status
+// into a single response for the operator dashboard.
+
+app.get("/api/portal/security-metrics", requirePortalAuth, async (_req, res) => {
+  const redis = getRedis();
+
+  // Event catalogue for counts
+  const eventTypes = [
+    "TOKEN_ISSUED", "TOKEN_CONSUMED", "TOKEN_REJECTED",
+    "DRIFT_DETECTED", "DRIFT_RESOLVED",
+    "MASS_DRAIN_DETECTED",
+    "REKEY_INITIATED", "REKEY_CONFIRMED", "REKEY_FAILED",
+    "CUSTODY_TRANSITION",
+    "VELOCITY_APPROVAL_REQUIRED",
+    "REKEY_SYNC_CORRECTION",
+    "SECURITY_ALERT",
+  ] as const;
+
+  try {
+    // Fetch recent events (last 24h window via ZRANGEBYSCORE)
+    const now      = Date.now();
+    const dayAgo   = now - 86_400_000;
+
+    // Count events by type
+    const eventCounts: Record<string, number> = {};
+    for (const t of eventTypes) eventCounts[t] = 0;
+
+    if (redis) {
+      const members = await redis.zrange(
+        "x402:security-audit", dayAgo, now, { byScore: true },
+      ) as string[];
+
+      // Count by type and collect agentId occurrences for top-alerted
+      const agentAlerts = new Map<string, number>();
+
+      for (const m of members) {
+        try {
+          const ev = JSON.parse(m) as { type: string; agentId?: string };
+          if (ev.type in eventCounts) eventCounts[ev.type]++;
+          if (ev.agentId) {
+            agentAlerts.set(ev.agentId, (agentAlerts.get(ev.agentId) ?? 0) + 1);
+          }
+        } catch { /* skip malformed entries */ }
+      }
+
+      const topAlertedAgents = [...agentAlerts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([agentId, count]) => ({ agentId, count }));
+
+      // Circuit state
+      const [failureStr, openFlag] = await Promise.all([
+        redis.get("x402:circuit:signer:failures") as Promise<string | null>,
+        redis.get("x402:circuit:signer:open")     as Promise<string | null>,
+      ]);
+
+      // Mass drain status
+      const massDrain = await getMassDrainStatus();
+
+      res.json({
+        window:            "24h",
+        eventCounts,
+        circuitStatus: {
+          open:         !!openFlag,
+          failureCount: parseInt(failureStr ?? "0", 10),
+        },
+        massDrain: {
+          active: massDrain.active,
+          reason: massDrain.reason,
+        },
+        topAlertedAgents,
+      });
+    } else {
+      res.json({
+        window:            "24h",
+        eventCounts,
+        circuitStatus:     { open: false, failureCount: 0 },
+        massDrain:         { active: false, reason: null },
+        topAlertedAgents:  [],
+        _note:             "Redis unavailable — counts are empty",
+      });
+    }
+  } catch (err) {
+    console.error("[portal/security-metrics]", err);
+    res.status(500).json({ error: "Failed to compute security metrics" });
+  }
+});
+
 // ── Boot ────────────────────────────────────────────────────────
 // Deployed on Railway — persistent process, always binds a port.
+
+// Phase 1.5 boot guards — Redis creds, treasury address, signer env, mTLS
+runBootGuards();
+
+// Cross-region treasury hash consistency check (async — runs after Redis is reachable).
+// Fails the process if X402_PAY_TO_ADDRESS differs from what other regions registered.
+assertCrossRegionTreasuryHash().catch((err: unknown) => {
+  console.error(
+    "[Boot] FATAL: Cross-region treasury hash mismatch —",
+    err instanceof Error ? err.message : err,
+  );
+  process.exit(1);
+});
+
+// Assert auth config is safe — throws in production without LIQUID_AUTH_SERVER_URL
+assertProductionAuthReady();
+
 const port = Number(process.env.PORT);
 
 if (!port) {
   throw new Error("PORT not defined");
 }
 
-app.listen(port, "0.0.0.0", () => {
+const server = app.listen(port, "0.0.0.0", () => {
   console.log(`Listening on ${port}`);
   console.log(`  Network: algorand-${config.algorand.network}`);
   console.log(`  Default slippage: ${DEFAULT_SLIPPAGE_BIPS} bips (${DEFAULT_SLIPPAGE_BIPS / 100}%)`);
 });
+
+// Async boot assertion: custody invariant.
+// Runs after listen() so Railway health checks pass during the Redis scan.
+// If violated, the server shuts down — registry drift must not go undetected.
+// Skipped when ROCCA_SIGNER_ADDRESS is unset (legacy / first deploy without custody fields).
+const roccaSignerAddress = config.rocca.signerAddress;
+if (roccaSignerAddress) {
+  assertCustodyInvariant(roccaSignerAddress)
+    .then(() => console.log("[Boot] Custody invariant: OK"))
+    .catch((err: unknown) => {
+      console.error(
+        "[Boot] FATAL: Custody invariant violated —",
+        err instanceof Error ? err.message : err,
+      );
+      server.close(() => process.exit(1));
+    });
+}
+
+// Module 9 — Log mTLS activation status at boot
+logMtlsStatus("main-api");
+
+// Module 3 — Rekey sync: reconcile any dangling rekey-in-progress locks
+// against on-chain state before serving traffic. Runs after custody invariant
+// so a clean registry is confirmed first.
+runRekeySync()
+  .then(() => console.log("[Boot] Rekey sync: OK"))
+  .catch((err: unknown) =>
+    console.error("[Boot] Rekey sync error:", err instanceof Error ? err.message : err),
+  );
+
+// Module 5 — Drift pulse: start 60s heartbeat that samples 5% of agents
+// and orphans any whose on-chain auth-addr no longer matches the registry.
+startDriftPulse();
+
+// AP2 Module 5 — Recurring scheduler: 30s tick for due recurring mandates.
+startRecurringScheduler();

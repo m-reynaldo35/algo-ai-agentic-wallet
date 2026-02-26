@@ -1,5 +1,6 @@
 import algosdk from "algosdk";
 import { validateAuthToken, type AuthToken } from "../auth/liquidAuth.js";
+import { getAgent, assignCohort } from "../services/agentRegistry.js";
 
 /**
  * Rocca Wallet — Environment-Switched Ed25519 Signing Module
@@ -82,31 +83,56 @@ function signBlobs(
  *   1. authToken must be a valid, non-expired Liquid Auth credential
  *   2. unsignedBlobs must be algosdk.encodeUnsignedTransaction() output
  *   3. All blobs must share the same group ID (atomic binding)
+ *   4. agentId must match a registered agent in the registry
  *
  * Post-conditions:
  *   1. Returns signed blobs in the same order as input
- *   2. All blobs signed by the same Ed25519 key
+ *   2. All blobs signed by the cohort signer key for the agent's cohort
  *   3. Ready for submission via algod.sendRawTransaction()
  *
  * @param unsignedBlobs - Array of raw unsigned transaction bytes
  * @param authToken     - Verified Liquid Auth credential
+ * @param agentId       - Registered agent identifier (used for cohort routing)
  * @returns SignedGroupResult with signed blobs ready for broadcast
  */
 export async function signAtomicGroup(
   unsignedBlobs: Uint8Array[],
   authToken: AuthToken,
+  agentId: string,
 ): Promise<SignedGroupResult> {
 
+  // ── Gate 0: Emergency halt check ──────────────────────────────
+  // Checked before any signing — if the system is halted (e.g. during
+  // a signer rotation or security incident), refuse all signing requests.
+  const haltRecord = await import("../services/agentRegistry.js")
+    .then((m) => m.isHalted());
+  if (haltRecord) {
+    throw new Error(`RoccaWallet: Signing halted — ${haltRecord.reason} (region=${haltRecord.region})`);
+  }
+
   // ── Gate 1: Validate Liquid Auth token ────────────────────────
-  validateAuthToken(authToken);
+  await validateAuthToken(authToken);
   console.log(`[RoccaWallet] Auth token verified for agent: ${authToken.agentId}`);
 
-  // ── Gate 2: Validate input blobs ──────────────────────────────
+  // ── Gate 2: Cohort routing ─────────────────────────────────────
+  // Look up the agent in the registry to confirm it's registered and
+  // determine which cohort signer key controls its account.
+  // Phase 1: single cohort "A" → uses ALGO_SIGNER_MNEMONIC key.
+  // Phase 2+: cohortIndex = sha256(agentId) % totalCohorts → separate key per cohort.
+  const agent = await getAgent(agentId);
+  if (!agent) {
+    throw new Error(`RoccaWallet: Agent not registered: ${agentId}`);
+  }
+
+  const cohort = assignCohort(agentId);
+  console.log(`[RoccaWallet] Agent ${agentId} → cohort ${cohort} | on-chain addr: ${agent.address}`);
+
+  // ── Gate 3: Validate input blobs ──────────────────────────────
   if (!unsignedBlobs.length) {
     throw new Error("RoccaWallet: No transaction blobs provided");
   }
 
-  // ── Gate 3: Verify atomic group integrity before signing ──────
+  // ── Gate 4: Verify atomic group integrity before signing ──────
   // Decode all transactions and verify they share a common group ID.
   // This prevents signing a malformed or tampered group.
   let expectedGroupId: Uint8Array | undefined;
