@@ -367,19 +367,36 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
     }
 
     // ── Mark execution complete (replaces pending marker, 24h TTL) ──
-    completeReservation(sandboxId, result).catch(() => {});
+    // Awaited first so the idempotency result is durable before we mark
+    // the txnId. If this fails and the key expires, a retry can re-execute;
+    // markTxIdSettled below will then return wasNew=false (already settled)
+    // which surfaces the crash-recovery anomaly at the call site below.
+    try {
+      await completeReservation(sandboxId, result);
+    } catch (err) {
+      console.error("[execute] completeReservation failed — idempotency gap possible:", err);
+    }
 
     // ── Mark confirmed txnId as settled (7-day retention) ─────
-    // Defence-in-depth: long-lived record that this on-chain txnId was
-    // processed, outliving the 24h idempotency cache.
+    // Must run AFTER completeReservation so that if both fail in sequence,
+    // the retry can still be caught via the idempotency cache first.
+    // wasNew=false means a previous execution settled this txnId but
+    // completeReservation did not persist — log the anomaly but still succeed.
     if (result.settlement?.txnId) {
-      markTxIdSettled(result.settlement.txnId, {
+      const { wasNew } = await markTxIdSettled(result.settlement.txnId, {
         agentId,
         sandboxId,
         groupId:        result.settlement.groupId,
         confirmedRound: result.settlement.confirmedRound,
         settledAt:      result.settlement.settledAt,
-      }).catch(() => {});
+      });
+      if (!wasNew) {
+        console.warn(
+          `[execute] markTxIdSettled NX=false for txnId ${result.settlement.txnId} — ` +
+          `crash-recovery: previous execution settled this txnId but completeReservation did not persist. ` +
+          `Returning success; idempotency gap was ${sandboxId}.`,
+        );
+      }
     }
 
     res.json(result);

@@ -223,13 +223,23 @@ export async function releaseReservation(sandboxId: string): Promise<void> {
  * The Algorand blockchain itself guarantees txnId uniqueness. This is an
  * application-layer record for auditability and cross-region consistency.
  *
+ * Returns { wasNew: true } if the record was newly created, or
+ * { wasNew: false } if the txnId was already in the settled set — indicating
+ * a crash-recovery scenario where a previous execution succeeded but
+ * completeReservation did not persist the idempotency result. Callers should
+ * log this as an anomaly but still treat the settlement as successful.
+ *
+ * NOTE: All instances share a single authoritative Upstash Redis primary.
+ * SET NX is safe under this topology. If region-local Redis replicas are
+ * ever introduced, split-brain would require a distributed lock protocol.
+ *
  * Best-effort: never throws.
  */
-export async function markTxIdSettled(txnId: string, meta: TxIdMetadata): Promise<void> {
-  if (!txnId) return;
+export async function markTxIdSettled(txnId: string, meta: TxIdMetadata): Promise<{ wasNew: boolean }> {
+  if (!txnId) return { wasNew: true };
 
   const redis = getRedis();
-  if (!redis) return;
+  if (!redis) return { wasNew: true };
 
   try {
     const key = `${TXID_PREFIX}${txnId}`;
@@ -238,13 +248,16 @@ export async function markTxIdSettled(txnId: string, meta: TxIdMetadata): Promis
       markedAt: new Date().toISOString(),
       region:   REGION,
     };
-    // NX: if this txnId was already marked, do not overwrite
-    await redis.set(key, JSON.stringify(record), { nx: true, ex: TXID_TTL_S });
+    // NX: if this txnId was already marked, do not overwrite.
+    // Result is "OK" when newly set, null when key already existed.
+    const result = await redis.set(key, JSON.stringify(record), { nx: true, ex: TXID_TTL_S });
+    return { wasNew: result === "OK" };
   } catch (err) {
     console.error(
       "[ExecutionIdempotency] Failed to mark txId settled:",
       err instanceof Error ? err.message : err,
     );
+    return { wasNew: true }; // unknown — assume new; anomaly already logged
   }
 }
 

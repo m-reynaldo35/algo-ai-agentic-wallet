@@ -21,7 +21,8 @@ import type { SandboxExport } from "../services/transaction.js";
  */
 
 const TREASURY_ADDRESS = config.x402.payToAddress;
-const USDC_ASSET_ID = BigInt(config.x402.usdcAssetId);
+const USDC_ASSET_ID    = BigInt(config.x402.usdcAssetId);
+const EXPECTED_TOLL    = BigInt(config.x402.priceMicroUsdc);
 
 export interface ValidationResult {
   valid: boolean;
@@ -93,11 +94,20 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
     if (axfer.assetIndex === USDC_ASSET_ID) {
       tollCount++;
 
-      if (axfer.receiver.toString() !== TREASURY_ADDRESS) {
+      const receiverOk = axfer.receiver.toString() === TREASURY_ADDRESS;
+      const amountOk   = axfer.amount === EXPECTED_TOLL;
+
+      if (!receiverOk) {
         errors.push(
           `Rule 1: Toll receiver mismatch on txn [${i}]. Expected ${TREASURY_ADDRESS}, got ${axfer.receiver.toString()}`,
         );
-      } else {
+      }
+      if (!amountOk) {
+        errors.push(
+          `Rule 1: Toll amount mismatch on txn [${i}]. Expected ${EXPECTED_TOLL} micro-USDC, got ${axfer.amount}`,
+        );
+      }
+      if (receiverOk && amountOk) {
         tollVerifiedCount++;
       }
     }

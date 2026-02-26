@@ -88,6 +88,16 @@ export async function executeSettlement(
       const finalityMs = Date.now() - broadcastStart;
       const confirmedRound = Number(confirmation.confirmedRound ?? 0);
 
+      // Reject unconfirmed results — confirmedRound=0 means waitForConfirmation
+      // returned without a ledger commitment. Never mark a txnId as settled
+      // unless we have on-chain proof (a non-zero round number).
+      if (confirmedRound === 0) {
+        throw new Error(
+          `Broadcaster: waitForConfirmation returned confirmedRound=0 for txId ${txid} — ` +
+          `transaction not confirmed in ${CONFIRMATION_ROUNDS} rounds`,
+        );
+      }
+
       span.setAttribute("algorand.finality_ms", finalityMs);
       span.setAttribute("algorand.confirmed_round", confirmedRound);
       span.setAttribute("blockchain_consensus", "finalized");
