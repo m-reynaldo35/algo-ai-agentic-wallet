@@ -34,6 +34,7 @@ import {
   executeRecustody, issueApprovalToken, decodeAxferTotal,
 } from "./services/custodyManager.js";
 import { checkAndReserveVelocity, rollbackVelocityReservation, recordGlobalOutflow, sumUsdcAxfers, getMassDrainStatus, clearMassDrain } from "./protection/velocityEngine.js";
+import { atomicReserve, completeReservation, releaseReservation, markTxIdSettled } from "./services/executionIdempotency.js";
 import { runRekeySync } from "./services/rekeySync.js";
 import { startDriftPulse }             from "./jobs/driftPulse.js";
 import { startRecurringScheduler }       from "./jobs/recurringScheduler.js";
@@ -310,25 +311,27 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
       }
     }
 
-    // ── Idempotency guard: deduplicate on sandboxId ────────────
-    // Prevents duplicate on-chain submissions when a client retries
-    // due to a network timeout after the pipeline already succeeded.
-    // Cached results are keyed by sandboxId with a 24h TTL.
+    // ── Idempotency guard: globally-atomic sandboxId reservation ──
+    // atomicReserve() uses SET NX so only ONE region instance can win
+    // the execution slot. The old GET → execute → SET pattern was a
+    // TOCTOU race: two concurrent instances could both GET null and
+    // both execute the pipeline.
     const redis = getRedis();
-    if (redis && sandboxId) {
-      const idempotentKey = `x402:idempotent:${sandboxId}`;
-      try {
-        const prior = await redis.get(idempotentKey) as string | null;
-        if (prior) {
-          const cached = JSON.parse(prior);
-          res.setHeader("X-Idempotent-Replay", "true");
-          res.json(cached);
-          return;
-        }
-      } catch {
-        // Redis failure — proceed without idempotency (fail-open)
-      }
+    const reservation = await atomicReserve(sandboxId);
+    if (reservation.status === "completed") {
+      res.setHeader("X-Idempotent-Replay", "true");
+      res.json(reservation.cachedResult);
+      return;
     }
+    if (reservation.status === "processing") {
+      res.status(202).json({
+        status:  "processing",
+        message: "Settlement in progress — retry in a few seconds",
+        sandboxId,
+      });
+      return;
+    }
+    // status === "ok" — we hold the reservation; proceed to execute
 
     const result = await executePipeline(sandboxExport, agentId);
 
@@ -343,6 +346,8 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
     }
 
     if (!result.success) {
+      // Release the execution reservation so the client can retry
+      releaseReservation(sandboxId).catch(() => {});
       // Roll back the velocity reservation so the failed attempt does not
       // consume the agent's spend allowance.
       const reservationKey = (req as unknown as Record<string, unknown>)._velocityReservationKey as string | undefined;
@@ -357,18 +362,24 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
     }
 
     // ── Record global outflow for mass drain tracking ──────────
-    // Per-agent windows were already updated atomically by
-    // checkAndReserveVelocity. Only the global window and mass drain
-    // check remain. Skip for mandate path.
     if (!usedMandatePath && proposedMicroUsdc > 0n) {
       recordGlobalOutflow(agentId, proposedMicroUsdc).catch(() => {});
     }
 
-    // Cache successful result for 24h
-    if (redis && sandboxId) {
-      redis
-        .set(`x402:idempotent:${sandboxId}`, JSON.stringify(result), { ex: 86400 })
-        .catch(() => {});
+    // ── Mark execution complete (replaces pending marker, 24h TTL) ──
+    completeReservation(sandboxId, result).catch(() => {});
+
+    // ── Mark confirmed txnId as settled (7-day retention) ─────
+    // Defence-in-depth: long-lived record that this on-chain txnId was
+    // processed, outliving the 24h idempotency cache.
+    if (result.settlement?.txnId) {
+      markTxIdSettled(result.settlement.txnId, {
+        agentId,
+        sandboxId,
+        groupId:        result.settlement.groupId,
+        confirmedRound: result.settlement.confirmedRound,
+        settledAt:      result.settlement.settledAt,
+      }).catch(() => {});
     }
 
     res.json(result);

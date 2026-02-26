@@ -16,6 +16,7 @@ import { constructAtomicGroup } from "../services/transaction.js";
 import { executePipeline }      from "../executor.js";
 import { evaluateMandate }      from "../services/mandateEngine.js";
 import { checkAndReserveVelocity, rollbackVelocityReservation, recordGlobalOutflow, sumUsdcAxfers } from "../protection/velocityEngine.js";
+import { atomicReserve, completeReservation, releaseReservation, markTxIdSettled } from "../services/executionIdempotency.js";
 import type { A2ATask, A2APart, A2APaymentRequest } from "../types/mandate.js";
 
 const router = Router();
@@ -143,10 +144,50 @@ router.post("/", async (req, res) => {
       (req as unknown as Record<string, unknown>)._velocityReservationKey = velocity.reservationKey;
     }
 
+    // ── Idempotency guard: globally-atomic sandboxId reservation ──
+    // Mirrors the same SET NX guard in the main execute endpoint.
+    // Without this, a2a had zero pipeline-level deduplication.
+    const a2aSandboxId: string = sandboxExport?.sandboxId ?? "";
+    const reservation = await atomicReserve(a2aSandboxId);
+    if (reservation.status === "completed") {
+      // Already settled — return cached result as a completed A2A task
+      res.setHeader("X-Idempotent-Replay", "true");
+      res.json({
+        jsonrpc: "2.0",
+        id:      task.id,
+        result: {
+          id:     task.id,
+          status: { state: "completed" },
+          message: {
+            role:  "agent",
+            parts: [{ type: "idempotent-replay", data: reservation.cachedResult }],
+          },
+        },
+      });
+      return;
+    }
+    if (reservation.status === "processing") {
+      res.status(202).json({
+        jsonrpc: "2.0",
+        id:      task.id,
+        result: {
+          id:     task.id,
+          status: { state: "submitted" },
+          message: {
+            role:  "agent",
+            parts: [{ type: "status", text: "Settlement in progress — retry in a few seconds" }],
+          },
+        },
+      });
+      return;
+    }
+
     // Execute pipeline
     const result = await executePipeline(sandboxExport, pr.agentId);
 
     if (!result.success) {
+      // Release the execution reservation so the client can retry
+      releaseReservation(a2aSandboxId).catch(() => {});
       // Roll back velocity reservation so failed attempts don't consume quota
       const reservationKey = (req as unknown as Record<string, unknown>)._velocityReservationKey as string | undefined;
       if (!pr.mandateId && reservationKey) {
@@ -174,9 +215,20 @@ router.post("/", async (req, res) => {
     }
 
     // Record global outflow for mass drain tracking (non-mandate path).
-    // Per-agent windows already updated atomically by checkAndReserveVelocity.
     if (!pr.mandateId && proposedMicroUsdc > 0n) {
       recordGlobalOutflow(pr.agentId, proposedMicroUsdc).catch(() => {});
+    }
+
+    // Mark execution complete and confirmed txnId as settled
+    completeReservation(a2aSandboxId, result).catch(() => {});
+    if (result.settlement?.txnId) {
+      markTxIdSettled(result.settlement.txnId, {
+        agentId:        pr.agentId,
+        sandboxId:      a2aSandboxId,
+        groupId:        result.settlement.groupId,
+        confirmedRound: result.settlement.confirmedRound,
+        settledAt:      result.settlement.settledAt,
+      }).catch(() => {});
     }
 
     res.json({
