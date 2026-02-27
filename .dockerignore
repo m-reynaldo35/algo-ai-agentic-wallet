@@ -15,9 +15,6 @@ tests/
 # Apps (deployed separately)
 apps/
 
-# Packages (compiled into dist via src imports)
-packages/
-
 # Contracts (TEAL source — not needed at runtime)
 contracts/
 
