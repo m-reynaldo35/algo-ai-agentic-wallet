@@ -35,6 +35,7 @@
  */
 
 import express from "express";
+import http from "node:http";
 import https from "node:https";
 import algosdk from "algosdk";
 import helmet from "helmet";
@@ -598,8 +599,14 @@ app.get("/metrics", async (req, res) => {
 
 // ── Boot ──────────────────────────────────────────────────────────
 
-// Railway injects PORT; SIGNING_SERVICE_PORT is the override for standalone deploys
-const port = parseInt(process.env.PORT ?? process.env.SIGNING_SERVICE_PORT ?? "4021", 10);
+// When MTLS_ENABLED:
+//   PORT (Railway-injected, 8080) → plain HTTP, health check only
+//   SIGNING_SERVICE_PORT (default 4021) → HTTPS/mTLS, signing API
+// When plain HTTP:
+//   PORT → serves everything (Bearer token auth)
+const railwayPort      = parseInt(process.env.PORT ?? "8080", 10);
+const signingPort      = parseInt(process.env.SIGNING_SERVICE_PORT ?? "4021", 10);
+const port             = MTLS_ENABLED ? signingPort : railwayPort;
 
 // ── Boot order is security-critical. Do not reorder. ─────────────
 //
@@ -660,5 +667,24 @@ const server = httpServer.listen(port, "0.0.0.0", () => {
 // Hard request timeout — abort hung connections (DOS mitigation T8.1)
 server.setTimeout(10_000);
 server.keepAliveTimeout = 5_000;
+
+// ── Plain HTTP health probe (mTLS mode only) ──────────────────────
+// When MTLS_ENABLED=true the signing API moves to SIGNING_SERVICE_PORT
+// (4021) so the mTLS server doesn't occupy Railway's health-check port.
+// Railway checks PORT (8080) via plain HTTP; this minimal server answers
+// /health there so deployments pass the healthcheck without a client cert.
+if (MTLS_ENABLED) {
+  http.createServer((req, res) => {
+    if (req.url === "/health" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", mtls: true }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  }).listen(railwayPort, "0.0.0.0", () => {
+    console.log(`[SigningService] Health probe HTTP on ${railwayPort}`);
+  });
+}
 
 export { app };
