@@ -45,7 +45,12 @@ export type SecurityEventType =
   | "MANDATE_REJECTED"          // evaluation returned a reject code
   | "MANDATE_RETIRED_KEY"       // evaluated mandate is signed with a retired key — re-issue soon
   | "RECURRING_EXECUTED"        // recurring scheduler executed a payment
-  | "RECURRING_FAILED";         // recurring scheduler execution failed
+  | "RECURRING_FAILED"          // recurring scheduler execution failed
+  // ── Treasury hardening events ─────────────────────────────────
+  | "DAILY_CAP_BREACH"          // global daily ALGO/USDC outflow cap exceeded
+  | "RECIPIENT_ANOMALY"         // transaction recipient flagged as suspicious
+  | "DRAIN_VELOCITY_HALT"       // signer balance dropped too fast — guardian halted signing
+  | "SWEEP_ADDR_TAMPER";        // cold wallet sweep address mismatch detected
 
 // ── Event shape ────────────────────────────────────────────────────
 

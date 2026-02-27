@@ -289,6 +289,44 @@ export async function assertCrossRegionTreasuryHash(): Promise<void> {
   }
 }
 
+// ── Section 11: Treasury hardening env validation ──────────────────
+
+/**
+ * Warn if treasury hardening env vars are missing in production.
+ * These are not hard failures — the guards fail open/closed gracefully —
+ * but missing configuration in production should be visible in logs.
+ */
+export function assertTreasuryHardeningEnv(): void {
+  const isProd =
+    process.env.NODE_ENV === "production" ||
+    process.env.RAILWAY_ENVIRONMENT === "production";
+
+  if (!isProd) return;
+
+  if (!process.env.TREASURY_DAILY_CAP_ALGO || !process.env.TREASURY_DAILY_CAP_USDC) {
+    console.warn(
+      "[envGuard] WARNING: TREASURY_DAILY_CAP_ALGO / TREASURY_DAILY_CAP_USDC not set. " +
+      "Using defaults (10,000 ALGO / $50,000 USDC per day). " +
+      "Set these to match your actual expected daily volume.",
+    );
+  }
+
+  if (!process.env.VELOCITY_TVL_MICROUSDC) {
+    console.warn(
+      "[envGuard] WARNING: VELOCITY_TVL_MICROUSDC not set — mass drain circuit breaker is DISABLED. " +
+      "Set to total value locked in microUSDC to enable automatic halt on mass drain detection.",
+    );
+  }
+
+  if (process.env.VAULT_ADDR && (!process.env.VAULT_TOKEN || !process.env.VAULT_TRANSIT_KEY)) {
+    throw new Error(
+      "BOOT FAILURE: VAULT_ADDR is set but VAULT_TOKEN or VAULT_TRANSIT_KEY is missing. " +
+      "Either set all three Vault variables (VAULT_ADDR, VAULT_TOKEN, VAULT_TRANSIT_KEY) " +
+      "or remove VAULT_ADDR to fall back to the env-mnemonic signer adapter.",
+    );
+  }
+}
+
 // ── Composite boot guard ───────────────────────────────────────────
 
 /**
@@ -302,6 +340,7 @@ export function runBootGuards(): void {
   assertAndFreezeTreasury();
   assertSignerEnvironment();
   assertMtlsProduction("client");
+  assertTreasuryHardeningEnv();
   // Note: assertCrossRegionTreasuryHash() is async — call it separately
   // in the boot sequence with: await assertCrossRegionTreasuryHash();
 }

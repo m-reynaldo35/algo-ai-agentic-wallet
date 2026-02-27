@@ -1,6 +1,10 @@
 import algosdk from "algosdk";
 import { validateAuthToken, type AuthToken } from "../auth/liquidAuth.js";
 import { getAgent, assignCohort } from "../services/agentRegistry.js";
+import { checkAndRecordOutflow } from "../protection/treasuryOutflowGuard.js";
+import { checkRecipients } from "../protection/recipientAnomalyDetector.js";
+import { config } from "../config.js";
+import { getSignerAdapter } from "./adapters/signerAdapter.js";
 
 /**
  * Rocca Wallet — Environment-Switched Ed25519 Signing Module
@@ -33,47 +37,46 @@ export interface SignedGroupResult {
   signerAddress: string;
   /** Number of transactions signed */
   txnCount: number;
+  /**
+   * Opaque key for the treasury outflow reservation made during signing.
+   * Pass to rollbackOutflow() if the broadcast stage fails so the daily
+   * cap tracks actual settled volume rather than attempted volume.
+   */
+  outflowReservationKey?: string;
 }
 
-// ── Signer Account (lazy-initialized) ────────────────────────────
-
-let _signerAccount: algosdk.Account | null = null;
-
-function getSignerAccount(): algosdk.Account {
-  if (_signerAccount) return _signerAccount;
-
-  const mnemonic = process.env.ALGO_SIGNER_MNEMONIC;
-
-  if (mnemonic) {
-    _signerAccount = algosdk.mnemonicToSecretKey(mnemonic);
-    console.log(`[RoccaWallet] Persistent signer loaded: ${_signerAccount.addr}`);
-    console.log(`[RoccaWallet] Ensure this address is funded before broadcasting transactions.`);
-  } else {
-    _signerAccount = algosdk.generateAccount();
-    console.warn(`[RoccaWallet] DEV MODE: Ephemeral signer created: ${_signerAccount.addr}`);
-    console.warn(`[RoccaWallet] Set ALGO_SIGNER_MNEMONIC for a persistent, funded signer.`);
-  }
-
-  return _signerAccount;
-}
+// ── Signing via adapter (HSM-ready) ───────────────────────────────
+//
+// getSignerAdapter() selects the correct backend at runtime:
+//   VAULT_ADDR + VAULT_TOKEN + VAULT_TRANSIT_KEY set → HashiCorp Vault Transit
+//   ALGO_SIGNER_MNEMONIC set                        → env-var mnemonic (default)
+//   Neither                                         → ephemeral dev account
+//
+// See src/signer/adapters/ for adapter implementations.
 
 /**
- * Sign an array of unsigned transaction blobs.
- * Uses the environment-selected signer account.
+ * Sign an array of unsigned transaction blobs via the active signer adapter.
+ *
+ * Uses algosdk v3 APIs:
+ *   txn.bytesToSign()              — raw bytes to send to external signer / HSM
+ *   txn.attachSignature(addr, sig) — attach 64-byte raw signature and encode
  */
-function signBlobs(
+async function signBlobs(
   unsignedBlobs: Uint8Array[],
-): { signedBlobs: Uint8Array[]; signerAddr: string } {
-  const account = getSignerAccount();
+): Promise<{ signedBlobs: Uint8Array[]; signerAddr: string }> {
+  const adapter = getSignerAdapter();
+  const signerAddr = await adapter.getPublicAddress();
   const signedBlobs: Uint8Array[] = [];
 
   for (const blob of unsignedBlobs) {
     const txn = algosdk.decodeUnsignedTransaction(blob);
-    const signedTxn = txn.signTxn(account.sk);
+    const bytesToSign = txn.bytesToSign();
+    const rawSig = await adapter.signRawBytes(bytesToSign);
+    const signedTxn = txn.attachSignature(signerAddr, rawSig);
     signedBlobs.push(signedTxn);
   }
 
-  return { signedBlobs, signerAddr: account.addr.toString() };
+  return { signedBlobs, signerAddr };
 }
 
 /**
@@ -134,8 +137,14 @@ export async function signAtomicGroup(
 
   // ── Gate 4: Verify atomic group integrity before signing ──────
   // Decode all transactions and verify they share a common group ID.
-  // This prevents signing a malformed or tampered group.
+  // While decoding, also accumulate outflow amounts and non-treasury
+  // recipients for Gates 5 and 6.
   let expectedGroupId: Uint8Array | undefined;
+  let totalMicroAlgo = 0n;
+  let totalMicroUsdc = 0n;
+  const nonTreasuryRecipients: string[] = [];
+  const usdcAssetId = BigInt(config.x402.usdcAssetId);
+  const treasuryAddr = config.x402.payToAddress;
 
   for (let i = 0; i < unsignedBlobs.length; i++) {
     const txn = algosdk.decodeUnsignedTransaction(unsignedBlobs[i]);
@@ -154,12 +163,50 @@ export async function signAtomicGroup(
         throw new Error(`RoccaWallet: Transaction [${i}] has mismatched group ID — atomic integrity violated`);
       }
     }
+
+    // Accumulate outflow amounts and non-treasury recipients
+    if (txn.type === algosdk.TransactionType.pay && txn.payment) {
+      totalMicroAlgo += txn.payment.amount;
+      const receiver = txn.payment.receiver.toString();
+      if (receiver !== treasuryAddr) nonTreasuryRecipients.push(receiver);
+    } else if (txn.type === algosdk.TransactionType.axfer && txn.assetTransfer) {
+      if (txn.assetTransfer.assetIndex === usdcAssetId && txn.assetTransfer.amount > 0n) {
+        totalMicroUsdc += txn.assetTransfer.amount;
+      }
+      const receiver = txn.assetTransfer.receiver.toString();
+      if (receiver !== treasuryAddr) nonTreasuryRecipients.push(receiver);
+    }
   }
 
   console.log(`[RoccaWallet] Group integrity verified: ${unsignedBlobs.length} txns, groupId=${Buffer.from(expectedGroupId!).toString("base64").slice(0, 12)}...`);
 
-  // ── Sign via environment-selected signer ───────────────────────
-  const { signedBlobs, signerAddr } = signBlobs(unsignedBlobs);
+  // ── Gate 5: Global daily treasury outflow cap ──────────────────
+  // Blocks signing if cumulative ALGO or USDC signed today exceeds
+  // the configured daily ceiling. Auto-halts the system on breach.
+  const outflowResult = await checkAndRecordOutflow(totalMicroAlgo, totalMicroUsdc);
+  if (!outflowResult.allowed) {
+    if (outflowResult.serviceUnavailable) {
+      throw new Error(`RoccaWallet: Treasury outflow guard unavailable — Redis is down and spend exceeds fail-closed threshold`);
+    }
+    throw new Error(
+      `RoccaWallet: Global daily signing cap exceeded — ` +
+      `ALGO: ${outflowResult.todayAlgo}/${outflowResult.capAlgo} microALGO, ` +
+      `USDC: ${outflowResult.todayUsdc}/${outflowResult.capUsdc} microUSDC. ` +
+      `Signing halted. Admin override required.`,
+    );
+  }
+
+  // ── Gate 6: Recipient anomaly detection ────────────────────────
+  // Flags non-treasury recipients that are new, high-value, or match
+  // a scattershot drain pattern. Best-effort: never blocks signing.
+  if (nonTreasuryRecipients.length > 0) {
+    checkRecipients(nonTreasuryRecipients, totalMicroAlgo, totalMicroUsdc, agentId).catch(
+      (err) => console.error("[RoccaWallet] Recipient anomaly check error:", err instanceof Error ? err.message : err),
+    );
+  }
+
+  // ── Sign via adapter (env mnemonic, Vault Transit, or future HSM) ─
+  const { signedBlobs, signerAddr } = await signBlobs(unsignedBlobs);
 
   console.log(`[RoccaWallet] Atomic group signed by: ${signerAddr}`);
 
@@ -167,5 +214,6 @@ export async function signAtomicGroup(
     signedTransactions: signedBlobs,
     signerAddress: signerAddr,
     txnCount: signedBlobs.length,
+    outflowReservationKey: outflowResult.reservationKey,
   };
 }

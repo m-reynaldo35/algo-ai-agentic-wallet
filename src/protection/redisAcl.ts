@@ -74,6 +74,9 @@ const MAIN_API_KEY_PREFIXES = [
   "x402:api-key-index:",
   "x402:custody-audit",
   "x402:mandate:",
+  "x402:treasury:",
+  "x402:recipient:",
+  "x402:guardian:",
 ] as const;
 
 // ── Service role type ─────────────────────────────────────────────

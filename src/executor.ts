@@ -5,6 +5,7 @@ import { callSigningService } from "./signing-service/client.js";
 import { executeSettlement, type SettlementResult } from "./network/broadcaster.js";
 import { logSettlementSuccess, logExecutionFailure } from "./services/audit.js";
 import { extendReservationTTL } from "./services/executionIdempotency.js";
+import { rollbackOutflow } from "./protection/treasuryOutflowGuard.js";
 import { config } from "./config.js";
 import type { SandboxExport } from "./services/transaction.js";
 import { Sentry } from "./lib/sentry.js";
@@ -121,14 +122,19 @@ export async function executePipeline(
   await extendReservationTTL(sandboxId);
 
   let signedGroup;
+  let outflowReservationKey: string | undefined;
   try {
     const unsignedBlobs = atomicGroup.transactions.map(
       (b64) => new Uint8Array(Buffer.from(b64, "base64")),
     );
 
-    signedGroup = process.env.SIGNING_SERVICE_URL
-      ? await callSigningService(unsignedBlobs, authToken, agentId)
-      : await signAtomicGroup(unsignedBlobs, authToken, agentId);
+    if (process.env.SIGNING_SERVICE_URL) {
+      signedGroup = await callSigningService(unsignedBlobs, authToken, agentId);
+    } else {
+      const result = await signAtomicGroup(unsignedBlobs, authToken, agentId);
+      outflowReservationKey = result.outflowReservationKey;
+      signedGroup = result;
+    }
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown signing error";
     console.error(`[Executor] ABORT at Stage 3 (sign): ${error}`);
@@ -164,6 +170,10 @@ export async function executePipeline(
     settlement = await executeSettlement(signedGroup.signedTransactions);
   } catch (err) {
     clearInterval(ttlHeartbeat);
+    // Release the treasury outflow reservation — broadcast failed so no funds
+    // actually moved. Cap should reflect settled volume, not attempted volume.
+    rollbackOutflow(outflowReservationKey).catch(() => {});
+
     const error = err instanceof Error ? err.message : "Unknown broadcast error";
     const errorLower = error.toLowerCase();
     const isPolicyBreach = errorLower.includes("logic eval failed") || errorLower.includes("rejected by logic");

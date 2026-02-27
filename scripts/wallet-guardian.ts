@@ -58,9 +58,11 @@
 
 import "dotenv/config";
 import http from "node:http";
+import { createHash } from "node:crypto";
 import algosdk from "algosdk";
 import pino from "pino";
 import * as Sentry from "@sentry/node";
+import { Redis } from "@upstash/redis";
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -92,6 +94,19 @@ const TG_TOKEN          = process.env.TELEGRAM_BOT_TOKEN  || "";
 const TG_CHAT_ID        = process.env.TELEGRAM_CHAT_ID    || "";
 const WEBHOOK_URL       = process.env.ALERT_WEBHOOK_URL   || "";
 
+// ── Module 2: Drain velocity auto-halt ───────────────────────────
+// If signer balance drops faster than SIGNER_DRAIN_VELOCITY_ALGO
+// microALGO per SIGNER_DRAIN_WINDOW_S seconds, trigger an emergency halt.
+const DRAIN_VELOCITY_MICRO = BigInt(
+  Math.round(parseFloat(process.env.SIGNER_DRAIN_VELOCITY_ALGO || "50") * 1_000_000),
+); // default: 50 ALGO per window = suspicious
+const DRAIN_WINDOW_S = parseInt(process.env.SIGNER_DRAIN_WINDOW_S || "60", 10);
+
+// ── Module 5: Sweep destination anchoring ────────────────────────
+// SHA-256 of COLD_WALLET_ADDRESS stored in Redis at first boot.
+// Any subsequent mismatch → abort sweep + alert + halt.
+const COLD_WALLET_HASH_KEY = "x402:config:cold-wallet-hash";
+
 // ── Logger ────────────────────────────────────────────────────────────────
 
 const log = pino({
@@ -109,6 +124,58 @@ const log = pino({
 
 if (process.env.SENTRY_DSN) {
   Sentry.init({ dsn: process.env.SENTRY_DSN, tracesSampleRate: 0 });
+}
+
+// ── Redis ─────────────────────────────────────────────────────────────────
+
+let _redis: Redis | null = null;
+
+function getGuardianRedis(): Redis | null {
+  if (_redis) return _redis;
+  const url   = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  _redis = new Redis({ url, token });
+  return _redis;
+}
+
+/**
+ * Set the emergency halt flag in Redis directly using NX semantics.
+ *
+ * NX (first halt wins): if the system is already halted for a different
+ * reason, this call is a no-op — the original halt context is preserved.
+ * The detection event is always logged regardless of whether the flag was
+ * written, so alerts fire even when signing is already blocked.
+ *
+ * Mirrors the behaviour of setHalt() in agentRegistry.ts without
+ * importing the full service layer into this standalone script.
+ */
+async function setHaltFlag(reason: string): Promise<void> {
+  const redis = getGuardianRedis();
+  if (!redis) {
+    log.error("Cannot set halt flag — Redis not configured");
+    return;
+  }
+  const haltRecord = {
+    reason,
+    region:     process.env.RAILWAY_REGION ?? process.env.FLY_REGION ?? "guardian",
+    instanceId: "wallet-guardian",
+    timestamp:  new Date().toISOString(),
+  };
+
+  // NX — only write if no halt is already active (first halt wins)
+  const wrote = await redis.set("x402:halt", JSON.stringify(haltRecord), { nx: true });
+
+  if (wrote !== null) {
+    log.error({ haltRecord }, "Emergency halt flag SET in Redis — signing blocked system-wide");
+  } else {
+    // Already halted — log the new detection but preserve the original context
+    const existing = await redis.get("x402:halt") as string | null;
+    log.error(
+      { newReason: reason, existingHalt: existing ? JSON.parse(existing) : null },
+      "Drain detected but halt flag already set — signing already blocked",
+    );
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -256,6 +323,98 @@ async function sendUsdc(
 async function checkSigner(algod: algosdk.Algodv2, signerAddr: string): Promise<void> {
   const balance = await getAlgoBalance(algod, signerAddr);
 
+  // ── Module 2: Drain velocity check ────────────────────────────
+  //
+  // Uses a Redis ZSET (x402:guardian:signer-bal-history) to store a
+  // rolling window of balance readings with millisecond timestamps as
+  // scores. On each cycle, we:
+  //   1. ZADD the current balance at score=nowMs
+  //   2. Prune entries older than 2× the window
+  //   3. ZRANGEBYSCORE to find the entry nearest to (nowMs - DRAIN_WINDOW_MS)
+  //      with a ±(2 × CHECK_INTERVAL_MS) tolerance — robust to timing jitter
+  //      from slow algod responses, process restarts, or variable load
+  //   4. If oldest candidate's balance > current + DRAIN_VELOCITY_MICRO → halt
+  //
+  // Why ZSET instead of exact-second key lookup:
+  //   Exact keys fail when cycle timing has >1s jitter (slow algod, GC pauses).
+  //   ZSET nearest-neighbor is monotonic: the correct comparison point is
+  //   always found as long as the guardian ran at least once in the window,
+  //   regardless of when exactly.
+  //
+  // Monotonicity note: balance readings are from the Algorand chain. Chain
+  // balances can only decrease (spending) or increase (deposits) — they do
+  // not oscillate rapidly. A comparison point from ±tolerance of the target
+  // window boundary gives a conservative (slightly under-counts drops) result,
+  // which is correct: we would rather miss a slow drain than halt on noise.
+  const DRAIN_HISTORY_KEY = "x402:guardian:signer-bal-history";
+  const redis = getGuardianRedis();
+  if (redis) {
+    try {
+      const nowMs       = Date.now();
+      const windowMs    = DRAIN_WINDOW_S * 1_000;
+      const toleranceMs = CHECK_INTERVAL_MS * 2; // robust to 2× normal cycle jitter
+      const historyTtlS = Math.ceil((windowMs * 2) / 1_000);
+
+      // Record current reading: score = timestamp, member = "{balance}:{nowMs}"
+      const member = `${balance.toString()}:${nowMs}`;
+      await redis.zadd(DRAIN_HISTORY_KEY, { score: nowMs, member });
+      await redis.expire(DRAIN_HISTORY_KEY, historyTtlS);
+
+      // Prune entries older than 2× the window
+      await redis.zremrangebyscore(DRAIN_HISTORY_KEY, 0, nowMs - windowMs * 2);
+
+      // Find entries nearest to the target comparison point (nowMs - windowMs)
+      const targetMin = nowMs - windowMs - toleranceMs;
+      const targetMax = nowMs - windowMs + toleranceMs;
+      const candidates = await redis.zrangebyscore(DRAIN_HISTORY_KEY, targetMin, targetMax) as string[];
+
+      if (candidates.length > 0) {
+        // Take the oldest candidate in the tolerance window — most conservative comparison
+        const oldestMember = candidates[0];
+        const oldBalStr    = oldestMember.split(":")[0];
+        const oldBal       = BigInt(oldBalStr);
+        const drop         = oldBal - balance; // positive = balance dropped
+
+        if (drop > DRAIN_VELOCITY_MICRO) {
+          const reason =
+            `DRAIN_VELOCITY: signer balance dropped ${microToAlgo(drop)} ` +
+            `in ~${DRAIN_WINDOW_S}s (threshold: ${microToAlgo(DRAIN_VELOCITY_MICRO)}). ` +
+            `From ${microToAlgo(oldBal)} → ${microToAlgo(balance)}. ` +
+            `Active drain suspected — signing halted by wallet guardian.`;
+
+          log.error(
+            { drop: microToAlgo(drop), from: microToAlgo(oldBal), to: microToAlgo(balance) },
+            "DRAIN VELOCITY EXCEEDED — triggering emergency halt",
+          );
+
+          // Critical alert — no cooldown (this is an emergency, fire unconditionally)
+          const body = buildBody(`🚨🚨 x402 DRAIN DETECTED — Signing HALTED`, {
+            "Balance drop":   microToAlgo(drop),
+            "Window":         `${DRAIN_WINDOW_S}s`,
+            "Threshold":      microToAlgo(DRAIN_VELOCITY_MICRO),
+            "Balance before": microToAlgo(oldBal),
+            "Balance now":    microToAlgo(balance),
+            "Signer":         signerAddr,
+            "Action":         "Signing halted. POST /api/system/unhalt to resume.",
+          });
+          await Promise.allSettled([sendTelegram(body), sendWebhook(body)]);
+          if (process.env.SENTRY_DSN) {
+            Sentry.captureMessage(reason, {
+              level: "fatal",
+              tags: { component: "wallet-guardian", event: "DRAIN_VELOCITY_HALT" },
+            });
+          }
+
+          await setHaltFlag(reason);
+          return;
+        }
+      }
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, "Drain velocity check error — skipping");
+    }
+  }
+
+  // ── Low balance alert ──────────────────────────────────────────
   if (balance >= SIGNER_ALERT_MICRO) return; // Healthy
 
   await alert(
@@ -269,12 +428,85 @@ async function checkSigner(algod: algosdk.Algodv2, signerAddr: string): Promise<
   );
 }
 
+// ── Module 5: Sweep destination hash anchor ───────────────────────────────
+
+/**
+ * Anchor the cold wallet address as a SHA-256 hash in Redis on first boot.
+ * On every subsequent call, compare the current COLD_ADDRESS against the
+ * stored hash. A mismatch means the cold wallet address has been changed
+ * (env var tampered, misconfiguration, or active attack) — abort all sweeps
+ * and trigger an emergency halt.
+ *
+ * Uses the same pattern as assertCrossRegionTreasuryHash() in envGuard.ts.
+ * Returns true if the address is verified safe, false if compromised/error.
+ */
+async function verifyColdWalletAnchor(coldAddr: string): Promise<boolean> {
+  const redis = getGuardianRedis();
+  if (!redis) {
+    log.warn("Redis not configured — skipping cold wallet hash anchor verification");
+    return true; // cannot verify but not blocking sweeps in non-Redis mode
+  }
+
+  try {
+    const actualHash = createHash("sha256").update(coldAddr).digest("hex");
+
+    // SET NX — first writer wins; subsequent instances compare
+    const wrote = await redis.set(COLD_WALLET_HASH_KEY, actualHash, { nx: true });
+
+    if (wrote !== null) {
+      // We just wrote it — this instance established the reference
+      log.info({ coldAddr, hash: actualHash.slice(0, 16) + "…" }, "Cold wallet hash anchored in Redis");
+      return true;
+    }
+
+    // Key already exists — compare with stored hash
+    const storedHash = await redis.get(COLD_WALLET_HASH_KEY) as string | null;
+    if (!storedHash) return true; // key expired between SET and GET — harmless
+
+    if (storedHash !== actualHash) {
+      const reason =
+        `SWEEP_ADDR_TAMPER: COLD_WALLET_ADDRESS hash mismatch. ` +
+        `Expected ${storedHash.slice(0, 16)}… but this instance has ${actualHash.slice(0, 16)}…. ` +
+        `Possible env var tampering or misconfiguration. All sweeps blocked.`;
+
+      log.fatal({ storedHash: storedHash.slice(0, 16), actualHash: actualHash.slice(0, 16) },
+        "COLD WALLET ADDRESS TAMPERED — sweeps blocked, halt triggered");
+
+      const body = buildBody(`🚨🚨 x402 COLD WALLET TAMPERED — Sweeps BLOCKED`, {
+        "Stored hash (first 16)":  storedHash.slice(0, 16) + "…",
+        "Current hash (first 16)": actualHash.slice(0, 16) + "…",
+        "COLD_WALLET_ADDRESS":     coldAddr,
+        "Action": "All sweeps blocked. Investigate immediately. POST /api/system/unhalt to resume.",
+      });
+      await Promise.allSettled([sendTelegram(body), sendWebhook(body)]);
+      if (process.env.SENTRY_DSN) {
+        Sentry.captureMessage(reason, { level: "fatal", tags: { component: "wallet-guardian", event: "SWEEP_ADDR_TAMPER" } });
+      }
+
+      await setHaltFlag(reason);
+      return false;
+    }
+
+    return true; // hash matches — address is verified
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Cold wallet hash anchor check error — allowing sweep");
+    return true; // fail open on Redis error
+  }
+}
+
 // ── Job 2a: Treasury ALGO cold sweep ──────────────────────────────────────
 
 async function sweepAlgo(
   algod: algosdk.Algodv2, treasury: algosdk.Account, treasuryAlgo: bigint,
 ): Promise<void> {
   if (!COLD_ADDRESS || treasuryAlgo <= ALGO_CEILING_MICRO) return;
+
+  // Module 5: verify cold wallet address hasn't been tampered
+  const anchorOk = await verifyColdWalletAnchor(COLD_ADDRESS);
+  if (!anchorOk) {
+    log.error("Sweep aborted — cold wallet address anchor verification failed");
+    return;
+  }
 
   // Sweep brings treasury exactly to ceiling; fee is taken from the excess.
   //   treasuryAlgo - sweepAmount - TX_FEE = ALGO_CEILING_MICRO
@@ -304,6 +536,13 @@ async function sweepUsdc(
   treasuryUsdc: bigint, treasuryAlgo: bigint,
 ): Promise<void> {
   if (!COLD_ADDRESS || treasuryUsdc <= USDC_CEILING_MICRO) return;
+
+  // Module 5: verify cold wallet address hasn't been tampered
+  const anchorOk = await verifyColdWalletAnchor(COLD_ADDRESS);
+  if (!anchorOk) {
+    log.error("USDC sweep aborted — cold wallet address anchor verification failed");
+    return;
+  }
 
   const sweepAmount = treasuryUsdc - USDC_CEILING_MICRO;
 
