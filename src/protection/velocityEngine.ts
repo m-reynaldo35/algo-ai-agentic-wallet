@@ -67,6 +67,14 @@ const MASS_DRAIN_PERCENT = BigInt(
   process.env.VELOCITY_MASS_DRAIN_PERCENT ?? "10",
 );
 
+// Amounts above this threshold require Redis to be reachable before proceeding.
+// Amounts at or below it may pass through when Redis is unavailable so that
+// automated test traffic and micro-payments survive a transient Redis outage.
+// Default: 1_000_000 micro-USDC = $1.00.
+const VELOCITY_FAIL_CLOSED_THRESHOLD = BigInt(
+  process.env.VELOCITY_FAIL_CLOSED_THRESHOLD_MICROUSDC ?? "1000000",  // $1.00
+);
+
 // ── Redis key prefixes ─────────────────────────────────────────────
 
 const KEY_10M     = "x402:vel:10m:";
@@ -79,6 +87,12 @@ const KEY_DRAIN   = "x402:vel:mass-drain";
 export interface VelocityResult {
   /** true = this spend, added to the window, would cross the threshold */
   requiresApproval:  boolean;
+  /**
+   * true = Redis was unreachable AND the proposed amount exceeds
+   * VELOCITY_FAIL_CLOSED_THRESHOLD. Caller must return HTTP 503.
+   * Never set when requiresApproval is true.
+   */
+  serviceUnavailable?: boolean;
   /** Current 10-minute window total BEFORE this proposed spend */
   tenMinTotal:       bigint;
   /** Current 24-hour window total BEFORE this proposed spend */
@@ -269,7 +283,24 @@ export async function checkAndReserveVelocity(
 ): Promise<VelocityResult> {
   const redis = getRedis();
   if (!redis) {
-    console.warn("[VelocityEngine] Redis unavailable — skipping velocity check");
+    if (proposedMicroUsdc > VELOCITY_FAIL_CLOSED_THRESHOLD) {
+      console.error(
+        `[VelocityEngine] Redis unavailable and proposed spend ${proposedMicroUsdc} micro-USDC ` +
+        `exceeds fail-closed threshold ${VELOCITY_FAIL_CLOSED_THRESHOLD} — returning 503`,
+      );
+      return {
+        requiresApproval:  false,
+        serviceUnavailable: true,
+        tenMinTotal:       0n,
+        dayTotal:          0n,
+        threshold10m:      THRESHOLD_10M,
+        threshold24h:      THRESHOLD_24H,
+      };
+    }
+    console.warn(
+      `[VelocityEngine] Redis unavailable — skipping velocity check ` +
+      `(amount ${proposedMicroUsdc} within micro-threshold ${VELOCITY_FAIL_CLOSED_THRESHOLD})`,
+    );
     return {
       requiresApproval: false,
       tenMinTotal:      0n,
@@ -341,9 +372,19 @@ export async function checkAndReserveVelocity(
 
   } catch (err) {
     console.error(
-      "[VelocityEngine] Lua eval error — failing open:",
+      "[VelocityEngine] Lua eval error:",
       err instanceof Error ? err.message : err,
     );
+    if (proposedMicroUsdc > VELOCITY_FAIL_CLOSED_THRESHOLD) {
+      return {
+        requiresApproval:  false,
+        serviceUnavailable: true,
+        tenMinTotal:       0n,
+        dayTotal:          0n,
+        threshold10m:      THRESHOLD_10M,
+        threshold24h:      THRESHOLD_24H,
+      };
+    }
     return {
       requiresApproval: false,
       tenMinTotal:      0n,

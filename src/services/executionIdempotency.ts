@@ -61,6 +61,12 @@ const TXID_TTL_S      = 604_800;   // 7 days — well beyond Algorand's max txn 
 const IDEMPOTENT_PREFIX = "x402:idempotent:";
 const TXID_PREFIX       = "x402:settled:txid:";
 
+// ── Environment ────────────────────────────────────────────────────
+
+const IS_PROD =
+  process.env.NODE_ENV === "production" ||
+  process.env.RAILWAY_ENVIRONMENT === "production";
+
 // ── Types ──────────────────────────────────────────────────────────
 
 interface PendingMarker {
@@ -70,10 +76,11 @@ interface PendingMarker {
 }
 
 export interface ReserveResult {
-  /** "ok"         — reservation won; proceed to execute              */
-  /** "processing" — another instance holds the lock; return 202      */
-  /** "completed"  — result already cached; return cachedResult        */
-  status:       "ok" | "processing" | "completed";
+  /** "ok"          — reservation won; proceed to execute              */
+  /** "processing"  — another instance holds the lock; return 202      */
+  /** "completed"   — result already cached; return cachedResult        */
+  /** "unavailable" — Redis unreachable in production; caller returns 503 */
+  status:       "ok" | "processing" | "completed" | "unavailable";
   cachedResult?: unknown;
 }
 
@@ -89,6 +96,22 @@ export interface TxIdMetadata {
 
 const REGION = process.env.RAILWAY_REGION ?? process.env.FLY_REGION ?? "default";
 
+// ── TTL extension Lua script ───────────────────────────────────────
+//
+// Extends the TTL of a pending reservation key without reading or
+// overwriting its value. Only operates when the key contains "_pending":true
+// so a completed result (which carries its own 24h TTL) is never shortened.
+// Uses a substring search rather than JSON decode to avoid cjson dependency.
+const EXTEND_PENDING_LUA = `
+local val = redis.call('GET', KEYS[1])
+if not val then return 0 end
+if string.find(val, '"_pending":true', 1, true) then
+  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+  return 1
+end
+return 0
+`;
+
 // ── Public API ────────────────────────────────────────────────────
 
 /**
@@ -98,17 +121,24 @@ const REGION = process.env.RAILWAY_REGION ?? process.env.FLY_REGION ?? "default"
  * Only one instance across all regions can win this SET NX.
  *
  * Returns:
- *   "ok"         — caller should proceed to execute + call completeReservation()
- *   "processing" — caller should return 202 (another instance is executing)
- *   "completed"  — caller should return the cachedResult (already done)
- *
- * Fails OPEN on Redis error — returns "ok" so signing is not blocked.
+ *   "ok"          — caller should proceed to execute + call completeReservation()
+ *   "processing"  — caller should return 202 (another instance is executing)
+ *   "completed"   — caller should return the cachedResult (already done)
+ *   "unavailable" — Redis unreachable in production; caller should return 503.
+ *                   Availability loss is preferred over silent double-spend risk.
+ *                   In development (non-production) Redis errors fail open as before.
  */
 export async function atomicReserve(sandboxId: string): Promise<ReserveResult> {
   if (!sandboxId) return { status: "ok" }; // no sandboxId = no deduplication
 
   const redis = getRedis();
-  if (!redis) return { status: "ok" }; // fail open
+  if (!redis) {
+    if (IS_PROD) {
+      console.error("[ExecutionIdempotency] Redis unavailable in production — returning 503 (fail-closed)");
+      return { status: "unavailable" };
+    }
+    return { status: "ok" }; // fail open in development
+  }
 
   const key: string = `${IDEMPOTENT_PREFIX}${sandboxId}`;
 
@@ -146,10 +176,11 @@ export async function atomicReserve(sandboxId: string): Promise<ReserveResult> {
 
   } catch (err) {
     console.error(
-      "[ExecutionIdempotency] Redis error in atomicReserve — failing open:",
+      "[ExecutionIdempotency] Redis error in atomicReserve:",
       err instanceof Error ? err.message : err,
     );
-    return { status: "ok" }; // fail open
+    if (IS_PROD) return { status: "unavailable" }; // fail-closed
+    return { status: "ok" }; // fail open in development
   }
 }
 
@@ -277,5 +308,39 @@ export async function getTxIdSettlement(txnId: string): Promise<TxIdMetadata | n
     return JSON.parse(raw) as TxIdMetadata;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Extend the TTL of a pending reservation back to PENDING_TTL_S.
+ *
+ * Call this at long-running stage boundaries (before signing, before
+ * broadcast, and periodically during waitForConfirmation) so that a
+ * slow pipeline does not let the pending marker expire and open a
+ * structural double-spend window.
+ *
+ * Only extends keys that still contain "_pending":true — a completed
+ * result (which carries a 24h TTL) is never shortened.  Uses a Lua
+ * script for atomicity: the check and EXPIRE execute in one round-trip
+ * with no TOCTOU gap.
+ *
+ * Best-effort: never throws.
+ */
+export async function extendReservationTTL(sandboxId: string): Promise<void> {
+  if (!sandboxId) return;
+
+  const redis = getRedis();
+  if (!redis) return;
+
+  try {
+    const key = `${IDEMPOTENT_PREFIX}${sandboxId}`;
+    await (redis as unknown as {
+      eval(script: string, keys: string[], args: (string | number)[]): Promise<unknown>;
+    }).eval(EXTEND_PENDING_LUA, [key], [PENDING_TTL_S]);
+  } catch (err) {
+    console.error(
+      "[ExecutionIdempotency] Failed to extend reservation TTL:",
+      err instanceof Error ? err.message : err,
+    );
   }
 }

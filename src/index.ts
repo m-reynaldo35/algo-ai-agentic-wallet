@@ -292,6 +292,14 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
       // before either records its spend (multi-region race condition T1).
       try {
         const velocity = await checkAndReserveVelocity(agentId, proposedMicroUsdc);
+        if (velocity.serviceUnavailable) {
+          res.status(503).json({
+            error:      "SERVICE_UNAVAILABLE",
+            message:    "Velocity enforcement store unreachable — cannot verify spend limits above micro-threshold. Retry when Redis is restored.",
+            retryAfter: 30,
+          });
+          return;
+        }
         if (velocity.requiresApproval) {
           res.status(402).json({
             error:            "VELOCITY_APPROVAL_REQUIRED",
@@ -328,6 +336,14 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
         status:  "processing",
         message: "Settlement in progress — retry in a few seconds",
         sandboxId,
+      });
+      return;
+    }
+    if (reservation.status === "unavailable") {
+      res.status(503).json({
+        error:      "SERVICE_UNAVAILABLE",
+        message:    "Idempotency store unreachable — cannot guarantee safe execution. Retry when Redis is restored.",
+        retryAfter: 30,
       });
       return;
     }

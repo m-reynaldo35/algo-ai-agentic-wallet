@@ -4,6 +4,7 @@ import { signAtomicGroup } from "./signer/roccaWallet.js";
 import { callSigningService } from "./signing-service/client.js";
 import { executeSettlement, type SettlementResult } from "./network/broadcaster.js";
 import { logSettlementSuccess, logExecutionFailure } from "./services/audit.js";
+import { extendReservationTTL } from "./services/executionIdempotency.js";
 import { config } from "./config.js";
 import type { SandboxExport } from "./services/transaction.js";
 import { Sentry } from "./lib/sentry.js";
@@ -112,6 +113,13 @@ export async function executePipeline(
   // DEV:        SIGNING_SERVICE_URL absent → direct call (key in same process)
   const signingMode = process.env.SIGNING_SERVICE_URL ? "microservice" : "direct";
   console.log(`[Executor] Stage 3/4: Signing atomic group (${signingMode})...`);
+
+  // Extend the pending reservation TTL before entering the signing stage.
+  // Signing via a remote microservice can take several seconds; without this
+  // a slow signer could let the 5-min pending marker expire and open a
+  // double-spend window for a concurrent request.
+  await extendReservationTTL(sandboxId);
+
   let signedGroup;
   try {
     const unsignedBlobs = atomicGroup.transactions.map(
@@ -141,10 +149,21 @@ export async function executePipeline(
   // the Algod node returns "logic eval failed" or "rejected by logic".
   // We trap these specifically and classify them as POLICY_BREACH.
   console.log(`[Executor] Stage 4/4: Broadcasting to ${routing.network}...`);
+
+  // Extend again immediately before broadcast, then maintain a heartbeat
+  // for the duration of waitForConfirmation (up to ~15s under normal
+  // conditions, but potentially longer on a degraded node). The interval
+  // is well under PENDING_TTL_S so the marker never expires mid-wait.
+  await extendReservationTTL(sandboxId);
+  const ttlHeartbeat = setInterval(() => {
+    extendReservationTTL(sandboxId).catch(() => {});
+  }, 60_000);
+
   let settlement;
   try {
     settlement = await executeSettlement(signedGroup.signedTransactions);
   } catch (err) {
+    clearInterval(ttlHeartbeat);
     const error = err instanceof Error ? err.message : "Unknown broadcast error";
     const errorLower = error.toLowerCase();
     const isPolicyBreach = errorLower.includes("logic eval failed") || errorLower.includes("rejected by logic");
@@ -169,6 +188,7 @@ export async function executePipeline(
       sandboxId,
     };
   }
+  clearInterval(ttlHeartbeat);
 
   // ── Success ───────────────────────────────────────────────────
   console.log(`\n[Executor] ═══════════════════════════════════════════`);
