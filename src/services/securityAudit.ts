@@ -50,7 +50,9 @@ export type SecurityEventType =
   | "DAILY_CAP_BREACH"          // global daily ALGO/USDC outflow cap exceeded
   | "RECIPIENT_ANOMALY"         // transaction recipient flagged as suspicious
   | "DRAIN_VELOCITY_HALT"       // signer balance dropped too fast — guardian halted signing
-  | "SWEEP_ADDR_TAMPER";        // cold wallet sweep address mismatch detected
+  | "SWEEP_ADDR_TAMPER"         // cold wallet sweep address mismatch detected
+  // ── On-chain monitor events (Module 9) ───────────────────────
+  | "SIGNER_KEY_COMPROMISE";    // on-chain outflows exceed Gate 5 authorized total — key compromise suspected
 
 // ── Event shape ────────────────────────────────────────────────────
 

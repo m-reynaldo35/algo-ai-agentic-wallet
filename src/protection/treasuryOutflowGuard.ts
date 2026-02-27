@@ -280,6 +280,18 @@ export async function checkAndRecordOutflow(
 
     // Admitted — return a reservation key for potential rollback
     const reservationKey = `${aKey}:${microAlgo}|${uKey}:${microUsdc}`;
+
+    // Fire-and-forget: increment running totals for the on-chain monitor (Module 9).
+    // These counters (x402:guardian:authorized:algo/usdc) are compared against
+    // Algorand Indexer outflows to detect signing key compromise.
+    // No TTL — running totals reset only by admin on incident.
+    if (microAlgo > 0n) {
+      redis.incrby("x402:guardian:authorized:algo", Number(microAlgo)).catch(() => {});
+    }
+    if (microUsdc > 0n) {
+      redis.incrby("x402:guardian:authorized:usdc", Number(microUsdc)).catch(() => {});
+    }
+
     return { allowed: true, todayAlgo, todayUsdc, capAlgo: DAILY_CAP_ALGO, capUsdc: DAILY_CAP_USDC, reservationKey };
 
   } catch (err) {

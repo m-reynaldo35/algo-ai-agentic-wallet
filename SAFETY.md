@@ -157,6 +157,9 @@ x402:signing-replay:{requestId}  STRING Signing nonce            TTL: 300s (exis
 | `CIRCUIT_FAILURE_MAX`    | 10      | Failures before circuit opens |
 | `CIRCUIT_WINDOW_S`       | 60      | Failure measurement window |
 | `CIRCUIT_COOLDOWN_S`     | 60      | How long circuit stays open |
+| `ONCHAIN_MONITOR_ENABLED`        | true | Set `false` to disable on-chain reconciliation |
+| `ONCHAIN_ALGO_TOLERANCE_MICRO`   | 10000000 | µALGO tolerance for tx fees (10 ALGO) |
+| `ONCHAIN_USDC_TOLERANCE_MICRO`   | 0 | µUSDC tolerance — zero means any unexplained USDC outflow halts |
 
 ---
 
@@ -249,6 +252,32 @@ DEL "burst:agent:{publicAddress}"
 ZRANGE x402:rejection-log -20 -1
 ```
 
+### Reset on-chain monitor baseline (after incident investigation)
+
+The on-chain monitor accumulates running totals in Redis. After investigating
+and resolving a SIGNER_KEY_COMPROMISE halt, reset the counters so the next
+reconciliation cycle starts from a clean baseline:
+
+```bash
+DEL x402:guardian:onchain:last-round
+DEL x402:guardian:onchain:algo-seen
+DEL x402:guardian:onchain:usdc-seen
+DEL x402:guardian:authorized:algo
+DEL x402:guardian:authorized:usdc
+```
+
+On next guardian cycle the monitor will re-bootstrap from the current round.
+
+### View on-chain reconciliation state
+
+```bash
+GET x402:guardian:onchain:last-round    # last Algorand round checked
+GET x402:guardian:onchain:algo-seen     # cumulative µALGO seen on-chain
+GET x402:guardian:onchain:usdc-seen     # cumulative µUSDC seen on-chain
+GET x402:guardian:authorized:algo       # cumulative µALGO Gate 5 authorized
+GET x402:guardian:authorized:usdc       # cumulative µUSDC Gate 5 authorized
+```
+
 ### Adjust limits without redeploying
 
 All tunable limits are environment variables. Update them in Railway and
@@ -261,5 +290,5 @@ redeploy — the new values take effect at the next boot without code changes.
 - Queuing or backpressure (out of scope)
 - Per-route limits on other endpoints (only `/api/execute` is protected)
 - DDoS at the network layer (use Railway's edge / Cloudflare for that)
-- Key compromise (handled by the existing rekey rotation system)
+- Key compromise — **partially covered by Module 9** (on-chain reconciliation detects unauthorized on-chain USDC/ALGO outflows from the treasury address; post-compromise signing by a leaked key will trigger SIGNER_KEY_COMPROMISE halt within ~60 s)
 - FIDO2 / Liquid Auth bypass (handled by the existing auth layer)

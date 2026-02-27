@@ -63,6 +63,10 @@ import algosdk from "algosdk";
 import pino from "pino";
 import * as Sentry from "@sentry/node";
 import { Redis } from "@upstash/redis";
+import {
+  runOnChainReconciliation,
+  ONCHAIN_MONITOR_ENABLED,
+} from "../src/protection/onChainMonitor.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -630,17 +634,30 @@ async function main(): Promise<void> {
 
   const algod = buildAlgod();
 
+  // ── Module 9: on-chain reconciliation address ──────────────────────────
+  // Prefer the explicit X402_PAY_TO_ADDRESS env var (the hot treasury that
+  // receives x402 tolls and whose outflows Gate 5 tracks). Fall back to the
+  // treasury mnemonic-derived address if the env var is absent.
+  const onchainAddr =
+    process.env.X402_PAY_TO_ADDRESS ??
+    (treasury ? treasury.addr.toString() : null);
+
   log.info({
-    signerMonitor:   signerAddr,
-    alertBelow:      microToAlgo(SIGNER_ALERT_MICRO),
-    mode:            treasury ? "monitor + sweeps" : "monitor-only",
-    treasury:        treasury ? treasury.addr.toString() : "not configured",
-    coldWallet:      COLD_ADDRESS || "not configured",
-    algoCeiling:     COLD_ADDRESS ? microToAlgo(ALGO_CEILING_MICRO) : "disabled",
-    usdcCeiling:     COLD_ADDRESS ? microToUsdc(USDC_CEILING_MICRO) : "disabled",
-    checkIntervalS:  CHECK_INTERVAL_MS / 1000,
-    telegram:        TG_TOKEN && TG_CHAT_ID ? `configured (chat ${TG_CHAT_ID})` : "not configured",
-    webhook:         WEBHOOK_URL ? "configured" : "not set",
+    signerMonitor:      signerAddr,
+    alertBelow:         microToAlgo(SIGNER_ALERT_MICRO),
+    mode:               treasury ? "monitor + sweeps" : "monitor-only",
+    treasury:           treasury ? treasury.addr.toString() : "not configured",
+    coldWallet:         COLD_ADDRESS || "not configured",
+    algoCeiling:        COLD_ADDRESS ? microToAlgo(ALGO_CEILING_MICRO) : "disabled",
+    usdcCeiling:        COLD_ADDRESS ? microToUsdc(USDC_CEILING_MICRO) : "disabled",
+    checkIntervalS:     CHECK_INTERVAL_MS / 1000,
+    telegram:           TG_TOKEN && TG_CHAT_ID ? `configured (chat ${TG_CHAT_ID})` : "not configured",
+    webhook:            WEBHOOK_URL ? "configured" : "not set",
+    onchainMonitor:     ONCHAIN_MONITOR_ENABLED && onchainAddr
+                          ? `enabled (watching ${onchainAddr})`
+                          : ONCHAIN_MONITOR_ENABLED
+                            ? "enabled but no treasury address configured"
+                            : "disabled",
   }, "Wallet guardian starting");
 
   if (!TG_TOKEN && !WEBHOOK_URL && !process.env.SENTRY_DSN) {
@@ -672,17 +689,51 @@ async function main(): Promise<void> {
   });
   server.listen(port, () => log.info({ port }, "Health server listening"));
 
-  let running = true;
+  let running    = true;
+  let cycleCount = 0;
   process.on("SIGTERM", () => { log.info("Shutting down"); running = false; server.close(); });
   process.on("SIGINT",  () => { log.info("Shutting down"); running = false; server.close(); });
 
   while (running) {
+    cycleCount++;
+
     try {
       await runCycle(algod, treasury, signerAddr);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error({ err: msg }, "Cycle error — retrying next interval");
       Sentry.captureException(err, { tags: { component: "wallet-guardian" } });
+    }
+
+    // ── Module 9: on-chain reconciliation ────────────────────────────────
+    // Run every 6 cycles (~60 s at default 10 s interval) to keep indexer
+    // lag low without hammering the endpoint on every tick.
+    if (ONCHAIN_MONITOR_ENABLED && onchainAddr && cycleCount % 6 === 0) {
+      try {
+        const rec = await runOnChainReconciliation(onchainAddr);
+        if (rec.haltTriggered) {
+          // haltTriggered already set the Redis halt flag — alert the operator
+          await notify("🚨 x402 Wallet Guardian — KEY COMPROMISE SUSPECTED", {
+            "Reason":         "On-chain outflows exceed authorized total",
+            "ALGO excess":    rec.algoDiscrepancy.toString() + " µALGO",
+            "USDC excess":    rec.usdcDiscrepancy.toString() + " µUSDC",
+            "On-chain ALGO":  rec.totalAlgoSeen.toString() + " µALGO",
+            "On-chain USDC":  rec.totalUsdcSeen.toString() + " µUSDC",
+            "Authorized ALGO": rec.totalAlgoAuthorized.toString() + " µALGO",
+            "Authorized USDC": rec.totalUsdcAuthorized.toString() + " µUSDC",
+            "Treasury":       onchainAddr,
+            "Action":         "Signing halted. Investigate key material immediately.",
+          });
+        } else if (rec.newTxnCount > 0) {
+          log.debug(
+            { rounds: rec.checkedRounds, txns: rec.newTxnCount },
+            "On-chain reconciliation: clean",
+          );
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn({ err: msg }, "On-chain reconciliation error — skipping cycle (fail-open)");
+      }
     }
 
     await new Promise<void>((resolve) => {
