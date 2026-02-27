@@ -13,7 +13,7 @@
     "e2e": "tsx scripts/e2e-test.ts"
   },
   "dependencies": {
-    "@m-reynaldo35/x402-client": "^0.2.0",
+    "@m-reynaldo35/x402-client": "file:./packages/x402-client",
     "@sentry/node": "^9.20.0",
     "@simplewebauthn/server": "^13.2.3",
     "@types/cors": "^2.8.19",

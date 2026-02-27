@@ -5,6 +5,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
+COPY packages/ ./packages/
 # Include devDependencies — tsx and pino-pretty are needed at runtime
 RUN npm ci --ignore-scripts && npm cache clean --force
 

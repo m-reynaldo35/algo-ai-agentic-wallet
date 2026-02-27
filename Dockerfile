@@ -4,6 +4,7 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+COPY packages/ ./packages/
 RUN npm ci --ignore-scripts
 
 COPY tsconfig.json ./
@@ -18,6 +19,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
+COPY packages/ ./packages/
 # Keep devDependencies so tsx is available for the guardian service
 RUN npm ci --ignore-scripts && npm cache clean --force
 
