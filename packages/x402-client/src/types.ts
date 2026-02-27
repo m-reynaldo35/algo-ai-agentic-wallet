@@ -16,10 +16,14 @@ export interface ClientConfig {
 // ── Cross-chain Destinations ───────────────────────────────────
 
 export const DestinationChain = {
-  ETHEREUM: "ethereum",
-  SOLANA: "solana",
-  BASE: "base",
-  ALGORAND: "algorand",
+  ETHEREUM:  "ethereum",
+  SOLANA:    "solana",
+  BASE:      "base",
+  ALGORAND:  "algorand",
+  AVALANCHE: "avalanche",
+  POLYGON:   "polygon",
+  ARBITRUM:  "arbitrum",
+  OPTIMISM:  "optimism",
 } as const;
 
 export type DestinationChain = (typeof DestinationChain)[keyof typeof DestinationChain];
@@ -35,6 +39,12 @@ export interface TradeParams {
   destinationChain?: DestinationChain | string;
   /** Recipient address on the destination chain */
   destinationRecipient?: string;
+  /**
+   * Enable Circle CCTP managed relaying (recommended for ethereum & avalanche).
+   * When true, Circle relayers automatically call receiveMessage() on the
+   * destination chain — the agent does not need to hold destination gas.
+   */
+  automatic?: boolean;
 }
 
 export interface BatchTradeIntent {

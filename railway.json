@@ -3,5 +3,71 @@
   "deploy": {
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
+  },
+  "services": {
+    "main-api": {
+      "dockerfilePath": "Dockerfile",
+      "healthcheckPath": "/health",
+      "healthcheckTimeout": 30,
+      "envVars": [
+        "NODE_ENV",
+        "PORT",
+        "ALGORAND_NETWORK",
+        "NODELY_API_KEY",
+        "MNEMONIC",
+        "X402_PAY_TO_ADDRESS",
+        "USDC_ASSET_ID",
+        "UPSTASH_REDIS_REST_URL",
+        "UPSTASH_REDIS_REST_TOKEN",
+        "SENTRY_DSN",
+        "PORTAL_API_SECRET",
+        "MTLS_ENABLED",
+        "MTLS_CA_CERT",
+        "MTLS_SERVER_CERT",
+        "MTLS_SERVER_KEY",
+        "SIGNING_SERVICE_URL",
+        "ONCHAIN_MONITOR_ENABLED",
+        "ONCHAIN_ALGO_TOLERANCE_MICRO",
+        "ONCHAIN_USDC_TOLERANCE_MICRO"
+      ]
+    },
+    "signing-service": {
+      "dockerfilePath": "Dockerfile.signing",
+      "healthcheckPath": "/health",
+      "healthcheckTimeout": 30,
+      "envVars": [
+        "NODE_ENV",
+        "PORT",
+        "MNEMONIC",
+        "VAULT_ADDR",
+        "VAULT_TOKEN",
+        "VAULT_TRANSIT_KEY",
+        "MTLS_ENABLED",
+        "MTLS_CA_CERT",
+        "MTLS_CLIENT_CERT",
+        "MTLS_CLIENT_KEY",
+        "SENTRY_DSN"
+      ]
+    },
+    "wallet-guardian": {
+      "dockerfilePath": "Dockerfile.guardian",
+      "healthcheckPath": "/",
+      "healthcheckTimeout": 10,
+      "envVars": [
+        "NODE_ENV",
+        "ALGORAND_NETWORK",
+        "NODELY_API_KEY",
+        "MNEMONIC",
+        "X402_PAY_TO_ADDRESS",
+        "COLD_WALLET_ADDRESS",
+        "UPSTASH_REDIS_REST_URL",
+        "UPSTASH_REDIS_REST_TOKEN",
+        "ALERT_WEBHOOK_URL",
+        "ONCHAIN_MONITOR_ENABLED",
+        "ONCHAIN_ALGO_TOLERANCE_MICRO",
+        "ONCHAIN_USDC_TOLERANCE_MICRO",
+        "GUARDIAN_INTERVAL_MS"
+      ]
+    }
   }
 }

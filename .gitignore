@@ -16,3 +16,4 @@ testnet-wallet.txt
 # QR code images for wallet addresses
 *-qr.png
 *-qr.jpg
+certs/
