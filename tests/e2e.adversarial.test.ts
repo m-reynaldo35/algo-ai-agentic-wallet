@@ -336,18 +336,17 @@ describe("Halt flag — lifecycle via agentRegistry", async () => {
     assert.equal(result, null, "isHalted must return null when no halt record exists");
   });
 
-  it("18. setHalt() + isHalted(): halt becomes detectable and truthy", { skip: !redisAvailable && "Redis not available" }, async () => {
+  it("18. setHalt() + isHalted(): stores HaltRecord with correct fields", { skip: !redisAvailable && "Redis not available" }, async () => {
     await clearHalt();
     await setHalt("test-key-compromise");
 
     const record = await isHalted();
-    // The halt record must be truthy — this is what Gate 0 in roccaWallet.ts
-    // checks: `if (haltRecord) { throw ... }`. Shape assertions are omitted
-    // here because the Upstash REST client auto-parses the stored JSON,
-    // causing the backwards-compat path to wrap the object in the reason
-    // field. That is a pre-existing quirk; the important invariant is that
-    // isHalted() returns a truthy value when a halt is set.
-    assert.ok(record !== null, "isHalted() must return a truthy HaltRecord after setHalt()");
+    assert.ok(record !== null, "HaltRecord must be returned after setHalt");
+    assert.equal(typeof record!.reason, "string", "reason must be a string");
+    assert.ok(record!.reason.length > 0, "reason must be non-empty");
+    assert.ok(typeof record!.setAt === "string" && record!.setAt.includes("T"), "setAt must be ISO 8601");
+    assert.ok(typeof record!.region === "string", "region must be present");
+    assert.ok(typeof record!.instanceId === "string", "instanceId must be present");
 
     await clearHalt();                   // cleanup
   });
@@ -368,12 +367,8 @@ describe("Halt flag — lifecycle via agentRegistry", async () => {
     await setHalt("second-halt");       // NX — must be ignored
 
     const record = await isHalted();
-    // Verify halt is still active after two setHalt calls (NX worked)
     assert.ok(record !== null, "Halt must still be active after second setHalt() attempt");
-    // The stored value should contain 'first-halt' somewhere (not 'second-halt')
-    const serialised = JSON.stringify(record);
-    assert.ok(serialised.includes("first-halt"), "Stored record must contain 'first-halt'");
-    assert.ok(!serialised.includes("second-halt"), "Stored record must NOT contain 'second-halt'");
+    assert.equal(record!.reason, "first-halt", "First halt reason must be preserved (NX semantics)");
 
     await clearHalt();                   // cleanup
   });

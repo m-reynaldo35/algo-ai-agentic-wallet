@@ -365,19 +365,28 @@ export async function isHalted(): Promise<HaltRecord | null> {
   const redis = getRedis();
   if (!redis) return null;
 
-  const raw = await redis.get(HALT_KEY) as string | null;
+  const raw = await redis.get(HALT_KEY) as unknown;
   if (!raw) return null;
 
+  // Upstash REST client auto-deserialises JSON, so `raw` may already be a
+  // parsed HaltRecord object rather than a JSON string. Handle both shapes.
+  if (typeof raw === "object") {
+    return raw as HaltRecord;
+  }
+
   // Handle plain-string halt records written before this migration
-  if (raw[0] !== "{") {
+  if (typeof raw === "string") {
+    if (raw[0] === "{") {
+      try {
+        return JSON.parse(raw) as HaltRecord;
+      } catch {
+        // fall through to plain-string wrap
+      }
+    }
     return { reason: raw, setAt: "unknown", region: "unknown", instanceId: "unknown" };
   }
 
-  try {
-    return JSON.parse(raw) as HaltRecord;
-  } catch {
-    return { reason: raw, setAt: "unknown", region: "unknown", instanceId: "unknown" };
-  }
+  return null;
 }
 
 // ── Drift Records ─────────────────────────────────────────────────
