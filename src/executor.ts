@@ -47,7 +47,7 @@ export interface ExecutionResult {
  *   3.   Sign atomic group via Rocca Wallet (seedless Ed25519)
  *   4.   Broadcast signed group to Algorand network
  *
- * @param sandboxExport - Sealed envelope from the VibeKit sandbox
+ * @param sandboxExport - Sealed envelope from the local sandbox
  * @param agentId       - Unique identifier for the requesting agent
  * @returns ExecutionResult with settlement details or failure info
  */

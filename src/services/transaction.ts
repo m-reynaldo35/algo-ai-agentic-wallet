@@ -2,14 +2,14 @@ import algosdk from "algosdk";
 import { config } from "../config.js";
 import { getSuggestedParams } from "../network/nodely.js";
 import { calculateMinAmountOut, DEFAULT_SLIPPAGE_BIPS } from "../utils/slippage.js";
-import { initSandbox, sealSandbox } from "../sandbox/vibekit.js";
-import type { SandboxContext } from "../sandbox/vibekit.js";
+import { initSandbox, sealSandbox } from "../sandbox/localSandbox.js";
+import type { SandboxContext } from "../sandbox/localSandbox.js";
 
 /**
  * ┌─────────────────────────────────────────────────────────────────────────┐
- * │  ZERO-TRUST TRANSACTION BUILDER — VIBEKIT SANDBOX BOUNDARY             │
+ * │  ZERO-TRUST TRANSACTION BUILDER — LOCAL SANDBOX BOUNDARY               │
  * │                                                                         │
- * │  This module executes INSIDE the VibeKit sandbox. It produces a         │
+ * │  This module executes INSIDE the local sandbox. It produces a           │
  * │  sealed, unsigned atomic group and exports it as a SandboxExport        │
  * │  envelope. The envelope crosses the sandbox boundary back to the        │
  * │  Express server, which forwards it to the client for Rocca signing.     │
@@ -61,7 +61,7 @@ export interface UnsignedAtomicGroup {
 }
 
 /**
- * The sealed envelope that crosses the VibeKit sandbox boundary.
+ * The sealed envelope that crosses the local sandbox boundary.
  * This is the ONLY object the Express server receives — it contains
  * no executable code, no keys, only inert unsigned bytes.
  */
@@ -118,7 +118,7 @@ export interface SandboxExport {
 
 /**
  * Construct a two-transaction Algorand atomic group inside the
- * VibeKit sandbox and return a sealed SandboxExport envelope.
+ * local sandbox and return a sealed SandboxExport envelope.
  *
  * Atomic Group Layout:
  *   ┌─────────────────────────────────────────────────────────┐

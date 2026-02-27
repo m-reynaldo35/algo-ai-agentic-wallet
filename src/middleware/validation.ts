@@ -6,7 +6,7 @@ import type { SandboxExport } from "../services/transaction.js";
 /**
  * Pre-Flight Validation Gatekeeper
  *
- * Analyzes a SandboxExport AFTER it leaves the VibeKit sandbox
+ * Analyzes a SandboxExport AFTER it leaves the local sandbox
  * but BEFORE it reaches Liquid Auth and Rocca Wallet signing.
  *
  * This is the last line of defense: if a malicious or buggy sandbox
@@ -41,7 +41,7 @@ export interface ValidationResult {
  * applies deterministic validation rules. If any rule fails,
  * the entire validation fails — no partial passes.
  *
- * @param sandboxExport - The sealed envelope from VibeKit
+ * @param sandboxExport - The sealed envelope from the local sandbox
  * @returns ValidationResult with per-rule status and errors
  * @throws Error('Validation Loop Failed: ...') if critical rules fail
  */

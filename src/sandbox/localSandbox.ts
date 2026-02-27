@@ -1,5 +1,5 @@
 /**
- * VibeKit Sandbox Integration
+ * Local Sandbox Isolation
  *
  * ┌─────────────────────────────────────────────────────────────────┐
  * │  ZERO-TRUST CONSTRAINT                                         │
@@ -28,25 +28,22 @@ export interface SandboxContext {
 }
 
 /**
- * Initialize a fresh VibeKit sandbox scoped to a single request.
+ * Initialize a fresh sandbox scoped to a single request.
  *
- * Phase 1: Local isolation via closure.
- * Phase 2+: Replace with actual VibeKit sandbox API call.
- *
- * @returns A new, independent SandboxContext — never shared between requests.
+ * Each call returns an independent SandboxContext — never shared between requests.
  */
 export function initSandbox(): SandboxContext {
   const sandbox: SandboxContext = {
-    id: `vk-sandbox-${crypto.randomUUID()}`,
+    id: `sandbox-${crypto.randomUUID()}`,
     createdAt: Date.now(),
     sealed: false,
     seal() {
       this.sealed = true;
-      console.log(`[VibeKit] Sandbox sealed: ${this.id}`);
+      console.log(`[Sandbox] Sealed: ${this.id}`);
     },
   };
 
-  console.log(`[VibeKit] Sandbox initialized: ${sandbox.id}`);
+  console.log(`[Sandbox] Initialized: ${sandbox.id}`);
   return sandbox;
 }
 

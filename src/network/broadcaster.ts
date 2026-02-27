@@ -10,7 +10,7 @@ import { Sentry } from "../lib/sentry.js";
  * waits for block confirmation (sub-3s finality).
  *
  * The broadcaster is the final stage in the pipeline:
- *   VibeKit Sandbox (unsigned) → Rocca Wallet (signed) → Broadcaster (on-chain)
+ *   Local Sandbox (unsigned) → Rocca Wallet (signed) → Broadcaster (on-chain)
  */
 
 export interface SettlementResult {
