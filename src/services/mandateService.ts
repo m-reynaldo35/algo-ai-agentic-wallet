@@ -31,6 +31,7 @@ import {
 import { getRedis }                            from "./redis.js";
 import { getAgent, updateAgentRecord }         from "./agentRegistry.js";
 import { emitSecurityEvent }                   from "./securityAudit.js";
+import { consumeVerifiedSession }              from "../auth/humanAuth.js";
 import type { Mandate, RecurringConfig }       from "../types/mandate.js";
 
 // ── Redis key constants ───────────────────────────────────────────
@@ -308,100 +309,164 @@ export async function registerWebAuthnCredential(
   await updateAgentRecord(updated);
 }
 
+// ── Algorand address registration (Liquid Auth governance path) ────
+
+/**
+ * Register an Algorand address as the governance credential for an agent.
+ * This is the Liquid Auth equivalent of registerWebAuthnCredential().
+ *
+ * Consumes a verified Liquid Auth session — the operator must have already
+ * scanned the QR code and signed the challenge with their wallet.
+ *
+ * Once set, ownerWalletId is immutable (same rule as WebAuthn path).
+ *
+ * @param agentId   — The agent being registered
+ * @param sessionId — Verified Liquid Auth session (consumed atomically)
+ */
+export async function registerAlgorandAddress(
+  agentId:   string,
+  sessionId: string,
+): Promise<{ ownerWalletId: string }> {
+  const agent = await getAgent(agentId);
+  if (!agent) throw new Error(`Agent not found: ${agentId}`);
+
+  const { address } = await consumeVerifiedSession(sessionId, agentId, "register");
+
+  // Reject if ownerWalletId already set to a DIFFERENT address
+  if (agent.ownerWalletId && agent.ownerWalletId !== address) {
+    throw new Error("ownerWalletId already registered — lateral ownership transfer denied");
+  }
+
+  if (!algosdk.isValidAddress(address)) {
+    throw new Error(`Invalid Algorand address from session: ${address}`);
+  }
+
+  await updateAgentRecord({ ...agent, ownerWalletId: address });
+
+  console.log(`[MandateService] Algorand address registered: agent=${agentId} address=${address}`);
+  return { ownerWalletId: address };
+}
+
 // ── Mandate CRUD ───────────────────────────────────────────────────
 
 export interface CreateMandateInput {
-  ownerWalletId:      string;
-  maxPerTx?:          string;
-  maxPer10Min?:       string;
-  maxPerDay?:         string;
-  allowedRecipients?: string[];
-  recurring?:         { amount: string; intervalSeconds: number };
-  expiresAt?:         number;
-  webauthnAssertion:  AuthenticationResponseJSON;
+  ownerWalletId:       string;
+  maxPerTx?:           string;
+  maxPer10Min?:        string;
+  maxPerDay?:          string;
+  allowedRecipients?:  string[];
+  recurring?:          { amount: string; intervalSeconds: number };
+  expiresAt?:          number;
+  // Auth — provide exactly one:
+  webauthnAssertion?:  AuthenticationResponseJSON;   // Standard WebAuthn (device passkey)
+  liquidAuthSessionId?: string;                       // Liquid Auth (Algorand wallet QR)
 }
 
 /**
- * Create a new mandate. FIDO2 assertion required.
+ * Create a new mandate. Human auth required — exactly one of:
+ *   - webauthnAssertion   (Standard WebAuthn / device passkey)
+ *   - liquidAuthSessionId (Liquid Auth / Algorand wallet QR)
  *
  * Steps:
- *   1. Load agent; verify ownerWalletId binding
- *   2. Check webauthnPublicKey is registered
- *   3. Validate constraint rules
- *   4. Reconstruct canonical JSON = challenge the client signed
- *   5. Verify WebAuthn assertion
- *   6. Update counter (anti-replay)
- *   7. Compute HMAC, store in Redis, add to index
- *   8. Emit MANDATE_CREATED
+ *   1. Validate constraints (fast, no I/O)
+ *   2. Validate exactly one auth method provided
+ *   3. Load agent
+ *   4. Auth path — WebAuthn: verify assertion + update counter
+ *               — Liquid Auth: consume verified session, check address binding
+ *   5. Build mandate, HMAC-sign, store in Redis, emit event
  */
 export async function createMandate(
   agentId: string,
   input:   CreateMandateInput,
 ): Promise<Omit<Mandate, "hmac">> {
-  // ── Step 0: Validate constraint rules (fast, no I/O) ──────────
-  // Done first so invalid inputs are rejected before any Redis/DB call.
+  // ── Step 1: Validate constraint rules (fast, no I/O) ──────────
   validateMandateConstraints(input);
+
+  // ── Step 2: Validate exactly one auth method ──────────────────
+  const isWebAuthn   = !!input.webauthnAssertion;
+  const isLiquidAuth = !!input.liquidAuthSessionId;
+  if (!isWebAuthn && !isLiquidAuth) {
+    throw new Error("Provide webauthnAssertion or liquidAuthSessionId for mandate creation");
+  }
+  if (isWebAuthn && isLiquidAuth) {
+    throw new Error("Provide only one auth method: webauthnAssertion or liquidAuthSessionId");
+  }
 
   const redis = getRedis();
   if (!redis) throw new Error("Redis not available");
 
-  // ── Step 1: Load agent + ownerWalletId check ──────────────────
+  // ── Step 3: Load agent ────────────────────────────────────────
   const agent = await getAgent(agentId);
   if (!agent) throw new Error(`Agent not found: ${agentId}`);
 
-  if (!agent.ownerWalletId || !agent.webauthnPublicKey) {
-    throw new Error(
-      "No WebAuthn credential registered for this agent. " +
-      "Call PATCH /api/agents/:agentId/webauthn-pubkey first.",
+  if (isWebAuthn) {
+    // ── Standard WebAuthn path ─────────────────────────────────
+    if (!agent.ownerWalletId || !agent.webauthnPublicKey) {
+      throw new Error(
+        "No WebAuthn credential registered for this agent. " +
+        "Call PATCH /api/agents/:agentId/webauthn-pubkey first.",
+      );
+    }
+    if (agent.ownerWalletId !== input.ownerWalletId) {
+      throw new Error("ownerWalletId mismatch — not the registered owner of this agent");
+    }
+
+    // Consume single-use nonce + bind to canonical payload.
+    // Client signs SHA256(nonce ":" canonical-payload-json) with their FIDO2 device.
+    const nonce = await consumeMandateChallenge(agentId);
+    const canonicalJson = JSON.stringify(buildCanonicalPayload(agentId, input));
+    const expectedChallenge = isoBase64URL.fromBuffer(
+      createHash("sha256").update(`${nonce}:${canonicalJson}`).digest(),
     );
-  }
 
-  if (agent.ownerWalletId !== input.ownerWalletId) {
-    throw new Error("ownerWalletId mismatch — not the registered owner of this agent");
-  }
+    const { rpId, origin } = getWebAuthnConfig();
+    let verification;
+    try {
+      verification = await verifyAuthenticationResponse({
+        response:            input.webauthnAssertion!,
+        expectedChallenge,
+        expectedOrigin:      origin,
+        expectedRPID:        rpId,
+        credential: {
+          id:        input.webauthnAssertion!.id,
+          publicKey: isoBase64URL.toBuffer(agent.webauthnPublicKey),
+          counter:   agent.webauthnCounter ?? 0,
+        },
+      });
+    } catch (err) {
+      throw new Error(
+        `WebAuthn assertion verification failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!verification.verified) {
+      throw new Error("WebAuthn assertion not verified");
+    }
 
-  // ── Step 3: Consume single-use nonce + bind to canonical payload ─
-  // The client must call POST /mandate/challenge first to get the nonce,
-  // then sign SHA256(nonce ":" canonical-payload-json) with their FIDO2 device.
-  // GETDEL makes the nonce single-use; 300s TTL prevents stale reuse.
-  const nonce = await consumeMandateChallenge(agentId);
-  const canonicalJson = JSON.stringify(buildCanonicalPayload(agentId, input));
-  const expectedChallenge = isoBase64URL.fromBuffer(
-    createHash("sha256").update(`${nonce}:${canonicalJson}`).digest(),
-  );
+    // Update counter (anti-replay)
+    await updateAgentRecord({ ...agent, webauthnCounter: verification.authenticationInfo.newCounter });
 
-  // ── Step 4: Verify WebAuthn assertion ─────────────────────────
-  const { rpId, origin } = getWebAuthnConfig();
+  } else {
+    // ── Liquid Auth path (Algorand wallet QR) ─────────────────
+    if (!agent.ownerWalletId) {
+      throw new Error(
+        "No owner address registered for this agent. " +
+        "Call POST /api/agents/:agentId/auth/liquid-register first.",
+      );
+    }
+    if (agent.ownerWalletId !== input.ownerWalletId) {
+      throw new Error("ownerWalletId mismatch — not the registered owner of this agent");
+    }
 
-  let verification;
-  try {
-    verification = await verifyAuthenticationResponse({
-      response:            input.webauthnAssertion,
-      expectedChallenge,
-      expectedOrigin:      origin,
-      expectedRPID:        rpId,
-      credential: {
-        id:        input.webauthnAssertion.id,
-        publicKey: isoBase64URL.toBuffer(agent.webauthnPublicKey),
-        counter:   agent.webauthnCounter ?? 0,
-      },
-    });
-  } catch (err) {
-    throw new Error(
-      `WebAuthn assertion verification failed: ${err instanceof Error ? err.message : String(err)}`,
+    // consumeVerifiedSession: atomically GETDEL, checks agentId + intent binding
+    const { address } = await consumeVerifiedSession(
+      input.liquidAuthSessionId!,
+      agentId,
+      "mandate-create",
     );
+    if (address !== agent.ownerWalletId) {
+      throw new Error("Liquid Auth session address does not match registered owner");
+    }
   }
-
-  if (!verification.verified) {
-    throw new Error("WebAuthn assertion not verified");
-  }
-
-  // ── Step 5: Update counter ────────────────────────────────────
-  const newCounter = verification.authenticationInfo.newCounter;
-  await updateAgentRecord({
-    ...agent,
-    webauthnCounter: newCounter,
-  });
 
   // ── Step 6: Build mandate ─────────────────────────────────────
   const mandateId = randomUUID();
@@ -484,8 +549,10 @@ export async function createMandate(
 // ── Mandate revocation ─────────────────────────────────────────────
 
 export interface RevokeMandateInput {
-  ownerWalletId:     string;
-  webauthnAssertion: AuthenticationResponseJSON;
+  ownerWalletId:        string;
+  // Auth — provide exactly one:
+  webauthnAssertion?:   AuthenticationResponseJSON;   // Standard WebAuthn (device passkey)
+  liquidAuthSessionId?: string;                        // Liquid Auth (Algorand wallet QR)
 }
 
 /**
@@ -498,13 +565,23 @@ export async function revokeMandate(
   mandateId: string,
   input:     RevokeMandateInput,
 ): Promise<{ mandateId: string; status: "revoked" }> {
+  // Validate exactly one auth method
+  const isWebAuthn   = !!input.webauthnAssertion;
+  const isLiquidAuth = !!input.liquidAuthSessionId;
+  if (!isWebAuthn && !isLiquidAuth) {
+    throw new Error("Provide webauthnAssertion or liquidAuthSessionId for mandate revocation");
+  }
+  if (isWebAuthn && isLiquidAuth) {
+    throw new Error("Provide only one auth method: webauthnAssertion or liquidAuthSessionId");
+  }
+
   const redis = getRedis();
   if (!redis) throw new Error("Redis not available");
 
   // Load agent
   const agent = await getAgent(agentId);
   if (!agent) throw new Error(`Agent not found: ${agentId}`);
-  if (!agent.webauthnPublicKey) {
+  if (isWebAuthn && !agent.webauthnPublicKey) {
     throw new Error("No WebAuthn credential registered for this agent");
   }
   if (agent.ownerWalletId !== input.ownerWalletId) {
@@ -526,41 +603,49 @@ export async function revokeMandate(
     return { mandateId, status: "revoked" };
   }
 
-  // Consume single-use nonce + bind to revoke intent.
-  // Client signs SHA256(nonce ":" mandateId ":revoke") after calling /mandate/challenge.
-  const nonce = await consumeMandateChallenge(agentId);
-  const expectedChallenge = isoBase64URL.fromBuffer(
-    createHash("sha256").update(`${nonce}:${mandateId}:revoke`).digest(),
-  );
-
-  const { rpId, origin } = getWebAuthnConfig();
-
-  let verification;
-  try {
-    verification = await verifyAuthenticationResponse({
-      response:         input.webauthnAssertion,
-      expectedChallenge,
-      expectedOrigin:   origin,
-      expectedRPID:     rpId,
-      credential: {
-        id:        input.webauthnAssertion.id,
-        publicKey: isoBase64URL.toBuffer(agent.webauthnPublicKey),
-        counter:   agent.webauthnCounter ?? 0,
-      },
-    });
-  } catch (err) {
-    throw new Error(
-      `WebAuthn assertion verification failed: ${err instanceof Error ? err.message : String(err)}`,
+  if (isWebAuthn) {
+    // ── Standard WebAuthn path ────────────────────────────────
+    // Client signs SHA256(nonce ":" mandateId ":revoke") after calling /mandate/challenge.
+    const nonce = await consumeMandateChallenge(agentId);
+    const expectedChallenge = isoBase64URL.fromBuffer(
+      createHash("sha256").update(`${nonce}:${mandateId}:revoke`).digest(),
     );
+
+    const { rpId, origin } = getWebAuthnConfig();
+    let verification;
+    try {
+      verification = await verifyAuthenticationResponse({
+        response:         input.webauthnAssertion!,
+        expectedChallenge,
+        expectedOrigin:   origin,
+        expectedRPID:     rpId,
+        credential: {
+          id:        input.webauthnAssertion!.id,
+          publicKey: isoBase64URL.toBuffer(agent.webauthnPublicKey!),
+          counter:   agent.webauthnCounter ?? 0,
+        },
+      });
+    } catch (err) {
+      throw new Error(
+        `WebAuthn assertion verification failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!verification.verified) throw new Error("WebAuthn assertion not verified");
+
+    // Update counter (anti-replay)
+    await updateAgentRecord({ ...agent, webauthnCounter: verification.authenticationInfo.newCounter });
+
+  } else {
+    // ── Liquid Auth path (Algorand wallet QR) ─────────────────
+    const { address } = await consumeVerifiedSession(
+      input.liquidAuthSessionId!,
+      agentId,
+      "mandate-revoke",
+    );
+    if (address !== agent.ownerWalletId) {
+      throw new Error("Liquid Auth session address does not match registered owner");
+    }
   }
-
-  if (!verification.verified) throw new Error("WebAuthn assertion not verified");
-
-  // Update counter
-  await updateAgentRecord({
-    ...agent,
-    webauthnCounter: verification.authenticationInfo.newCounter,
-  });
 
   // Mark revoked — kid preserved from original so HMAC verifies against same key version.
   const updatedMandate: Mandate = {

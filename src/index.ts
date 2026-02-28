@@ -40,8 +40,11 @@ import { startDriftPulse }             from "./jobs/driftPulse.js";
 import { startRecurringScheduler }       from "./jobs/recurringScheduler.js";
 import {
   createMandate, revokeMandate, listMandates,
-  registerWebAuthnCredential, issueMandateChallenge,
+  registerWebAuthnCredential, issueMandateChallenge, registerAlgorandAddress,
 }                                        from "./services/mandateService.js";
+import {
+  issueAlgorandChallenge, submitAlgorandSignature, getLiquidAuthStatus,
+}                                        from "./auth/humanAuth.js";
 import { evaluateMandate }               from "./services/mandateEngine.js";
 import a2aRouter                         from "./routes/a2a.js";
 import { getRecentSecurityEvents, emitSecurityEvent, querySecurityEvents } from "./services/securityAudit.js";
@@ -1227,19 +1230,21 @@ app.post("/api/agents/:agentId/approval-token", requirePortalAuth, async (req, r
 // ── AP2 Mandate Endpoints ─────────────────────────────────────────
 //
 // PATCH /api/agents/:agentId/webauthn-pubkey
-//   Register the owner's FIDO2 public key. Immutable once set.
+//   Register the owner's FIDO2 public key (Standard WebAuthn path). Immutable once set.
 //
 // GET  /api/agents/:agentId/mandates
 //   List active mandates for an agent.
 //
 // POST /api/agents/:agentId/mandate/challenge
-//   Issue a single-use WebAuthn challenge for mandate operations.
+//   Issue a single-use WebAuthn challenge for mandate operations (Standard WebAuthn path).
 //
 // POST /api/agents/:agentId/mandate/create
-//   Create a new AP2 mandate. FIDO2 assertion required.
+//   Create a new AP2 mandate.
+//   Auth: webauthnAssertion (Standard WebAuthn) | liquidAuthSessionId (Liquid Auth QR).
 //
 // POST /api/agents/:agentId/mandate/:mandateId/revoke
-//   Revoke a mandate. FIDO2 assertion required.
+//   Revoke a mandate.
+//   Auth: webauthnAssertion (Standard WebAuthn) | liquidAuthSessionId (Liquid Auth QR).
 
 app.patch("/api/agents/:agentId/webauthn-pubkey", requirePortalAuth, async (req, res) => {
   const agentId = String(req.params.agentId || "");
@@ -1294,12 +1299,13 @@ app.post("/api/agents/:agentId/mandate/create", requirePortalAuth, async (req, r
 
   const {
     ownerWalletId, maxPerTx, maxPer10Min, maxPerDay,
-    allowedRecipients, recurring, expiresAt, webauthnAssertion,
+    allowedRecipients, recurring, expiresAt,
+    webauthnAssertion, liquidAuthSessionId,
   } = req.body;
 
-  if (!ownerWalletId || !webauthnAssertion) {
+  if (!ownerWalletId || (!webauthnAssertion && !liquidAuthSessionId)) {
     res.status(400).json({
-      error: "Missing required fields: ownerWalletId, webauthnAssertion",
+      error: "Missing required fields: ownerWalletId and one of (webauthnAssertion | liquidAuthSessionId)",
     });
     return;
   }
@@ -1314,13 +1320,14 @@ app.post("/api/agents/:agentId/mandate/create", requirePortalAuth, async (req, r
       recurring,
       expiresAt,
       webauthnAssertion,
+      liquidAuthSessionId,
     });
     res.status(201).json(mandate);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const status =
       msg.includes("not found") ? 404 :
-      msg.includes("WebAuthn")  ? 401 :
+      msg.includes("WebAuthn") || msg.includes("Liquid Auth") ? 401 :
       msg.includes("mismatch")  ? 403 :
       400;
     res.status(status).json({ error: msg });
@@ -1330,24 +1337,130 @@ app.post("/api/agents/:agentId/mandate/create", requirePortalAuth, async (req, r
 app.post("/api/agents/:agentId/mandate/:mandateId/revoke", requirePortalAuth, async (req, res) => {
   const agentId   = String(req.params.agentId || "");
   const mandateId = String(req.params.mandateId || "");
-  const { ownerWalletId, webauthnAssertion } = req.body;
+  const { ownerWalletId, webauthnAssertion, liquidAuthSessionId } = req.body;
 
-  if (!ownerWalletId || !webauthnAssertion) {
+  if (!ownerWalletId || (!webauthnAssertion && !liquidAuthSessionId)) {
     res.status(400).json({
-      error: "Missing required fields: ownerWalletId, webauthnAssertion",
+      error: "Missing required fields: ownerWalletId and one of (webauthnAssertion | liquidAuthSessionId)",
     });
     return;
   }
 
   try {
-    const result = await revokeMandate(agentId, mandateId, { ownerWalletId, webauthnAssertion });
+    const result = await revokeMandate(agentId, mandateId, {
+      ownerWalletId,
+      webauthnAssertion,
+      liquidAuthSessionId,
+    });
     res.json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const status =
       msg.includes("not found") ? 404 :
-      msg.includes("WebAuthn")  ? 401 :
+      msg.includes("WebAuthn") || msg.includes("Liquid Auth") ? 401 :
       msg.includes("mismatch")  ? 403 :
+      400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+// ── Liquid Auth (Algorand wallet QR) ─────────────────────────────
+//
+// POST /api/agents/:agentId/auth/liquid-challenge
+//   Issue a QR challenge for operator Algorand wallet sign-in.
+//   Returns { sessionId, qrPayload, expiresAt }.
+//   Operator scans QR with Pera / Defly → wallet calls liquid-sign.
+//
+// POST /api/agents/:agentId/auth/liquid-sign  (NO portal auth — called by wallet app)
+//   Wallet submits Ed25519 signature. Marks session "verified".
+//
+// GET  /api/agents/:agentId/auth/liquid-status/:sessionId
+//   Poll from frontend every ~2 s until status === "verified".
+//
+// POST /api/agents/:agentId/auth/liquid-register
+//   Consume a verified session to register the Algorand address as ownerWalletId.
+
+app.post("/api/agents/:agentId/auth/liquid-challenge", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  const intent  = String(req.body?.intent ?? "register");
+  const baseUrl = String(req.body?.baseUrl ?? process.env.API_BASE_URL ?? "https://api.ai-agentic-wallet.com");
+
+  const validIntents = ["register", "mandate-create", "mandate-revoke"];
+  if (!validIntents.includes(intent)) {
+    res.status(400).json({ error: `Invalid intent. Must be one of: ${validIntents.join(", ")}` });
+    return;
+  }
+
+  try {
+    const result = await issueAlgorandChallenge(agentId, intent as "register" | "mandate-create" | "mandate-revoke", baseUrl);
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// No requirePortalAuth — this endpoint is called by the wallet app, not the browser
+app.post("/api/agents/:agentId/auth/liquid-sign", async (req, res) => {
+  const { sessionId, address, signatureBase64 } = req.body as {
+    sessionId?:       string;
+    address?:         string;
+    signatureBase64?: string;
+  };
+
+  if (!sessionId || !address || !signatureBase64) {
+    res.status(400).json({
+      error: "Missing required fields: sessionId, address, signatureBase64",
+    });
+    return;
+  }
+
+  try {
+    const result = await submitAlgorandSignature(sessionId, address, signatureBase64);
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status =
+      msg.includes("not found") || msg.includes("expired") ? 404 :
+      msg.includes("Invalid signature") || msg.includes("verification") ? 401 :
+      400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.get("/api/agents/:agentId/auth/liquid-status/:sessionId", requirePortalAuth, async (req, res) => {
+  const sessionId = String(req.params.sessionId || "");
+  try {
+    const status = await getLiquidAuthStatus(sessionId);
+    if (!status) {
+      res.status(404).json({ error: "Session not found — expired or invalid sessionId" });
+      return;
+    }
+    res.json(status);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post("/api/agents/:agentId/auth/liquid-register", requirePortalAuth, async (req, res) => {
+  const agentId   = String(req.params.agentId || "");
+  const sessionId = String(req.body?.sessionId ?? "");
+
+  if (!sessionId) {
+    res.status(400).json({ error: "Missing required field: sessionId" });
+    return;
+  }
+
+  try {
+    const result = await registerAlgorandAddress(agentId, sessionId);
+    res.json({ agentId, ...result, status: "registered" });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status =
+      msg.includes("not found") ? 404 :
+      msg.includes("mismatch") || msg.includes("denied") ? 403 :
+      msg.includes("Liquid Auth") ? 401 :
       400;
     res.status(status).json({ error: msg });
   }
