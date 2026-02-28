@@ -36,7 +36,7 @@ import algosdk from "algosdk";
 const account = algosdk.generateAccount();
 
 const client = new AlgoAgentClient({
-  baseUrl: "https://ai-agentic-wallet.com",
+  baseUrl: "https://api.ai-agentic-wallet.com",
   privateKey: account.sk,               // 64-byte Uint8Array
   slippageBips: 50,                     // 0.5% — safe default
   maxRetries: 2,
@@ -120,7 +120,7 @@ If the developer cannot use the SDK, build the handshake manually:
 ### Step 1 — Get the 402 Challenge
 
 ```typescript
-const bounce = await fetch("https://ai-agentic-wallet.com/api/agent-action", {
+const bounce = await fetch("https://api.ai-agentic-wallet.com/api/agent-action", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ senderAddress: algoAddress }),
@@ -177,7 +177,7 @@ const xPaymentHeader = Buffer.from(JSON.stringify(proof)).toString("base64");
 ### Step 4 — Replay the Request
 
 ```typescript
-const response = await fetch("https://ai-agentic-wallet.com/api/agent-action", {
+const response = await fetch("https://api.ai-agentic-wallet.com/api/agent-action", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
@@ -193,7 +193,7 @@ const { export: sandboxExport } = await response.json();
 ### Step 5 — Execute Settlement
 
 ```typescript
-const settlement = await fetch("https://ai-agentic-wallet.com/api/execute", {
+const settlement = await fetch("https://api.ai-agentic-wallet.com/api/execute", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ sandboxExport, agentId: "my-agent-001" }),
@@ -265,9 +265,9 @@ console.log(`Verified on-chain settlements: ${transactions.length}`);
 **Machine-readable discovery:**
 
 ```
-GET https://ai-agentic-wallet.com/agent.json   → full capability manifest
-GET https://ai-agentic-wallet.com/api/info      → programmatic endpoint listing
-GET https://ai-agentic-wallet.com/health        → live status
+GET https://api.ai-agentic-wallet.com/agent.json   → full capability manifest
+GET https://api.ai-agentic-wallet.com/api/info      → programmatic endpoint listing
+GET https://api.ai-agentic-wallet.com/health        → live status
 ```
 
 ---
@@ -310,7 +310,7 @@ GET https://ai-agentic-wallet.com/health        → live status
 
 ```typescript
 // With automatic=true: Circle relayers handle destination execution
-const response = await fetch("https://ai-agentic-wallet.com/api/agent-action", {
+const response = await fetch("https://api.ai-agentic-wallet.com/api/agent-action", {
   method: "POST",
   headers: { "Content-Type": "application/json", "X-PAYMENT": xPaymentHeader },
   body: JSON.stringify({
@@ -389,15 +389,68 @@ GET https://mainnet-idx.algonode.cloud/v2/transactions?note-prefix=aG9uZGFfdjE=
 
 **Live audit log (updated after each swarm run):**
 ```
-GET https://ai-agentic-wallet.com/global-audit.json
+GET https://api.ai-agentic-wallet.com/global-audit.json
 ```
 
 ---
 
-## 10. Quick Reference
+## 10. Agent Registration
+
+Before an agent can make x402 payments, it must be registered with the system so its address is tracked and cohort-assigned.
+
+**One registration endpoint:**
+
+```
+POST /api/agents/register-existing
+```
+
+You supply a funded wallet mnemonic. The wallet is rekeyed on-chain to the Rocca signer (auth-addr). You retain the private key to sign x402 payment proofs. Mandates (AP2) can be layered on top of any registered agent for recurring/autonomous payments without repeated x402 handshakes.
+
+**Registration:**
+
+```typescript
+const response = await fetch("https://api.ai-agentic-wallet.com/api/agents/register-existing", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Portal-Key": PORTAL_API_KEY,
+  },
+  body: JSON.stringify({
+    agentId:  "my-agent-001",          // unique ID, alphanumeric + hyphens
+    mnemonic: "word1 word2 ... word25", // 25-word Algorand mnemonic of funded wallet
+    platform: "openai",                // optional: "openai" | "anthropic" | "custom"
+  }),
+});
+
+const { agentId, address, authAddr, registrationTxnId } = await response.json();
+// address    → the agent's Algorand address (your wallet)
+// authAddr   → Rocca signer address (rekeyed auth-addr)
+// The original mnemonic signs x402 payment proofs going forward.
+```
+
+**Requirements before registering:**
+- The wallet must hold ≥ 0.1 ALGO (Algorand minimum balance)
+- The wallet must be opted into USDC ASA 31566704
+- The wallet must hold ≥ 0.01 USDC (10,000 micro-USDC) for the first toll
+
+**Signing key split after rekeying:**
+- On-chain transactions FROM the agent's address → Rocca signs (as auth-addr)
+- Off-chain x402 payment proofs (`algosdk.signBytes`) → original mnemonic signs
+- These do not conflict — `algosdk.verifyBytes` checks against the agent's address, not the auth-addr
+
+**AP2 mandates (optional, for recurring/autonomous payments):**
+```
+POST /api/agents/:agentId/mandate/create (FIDO2-authenticated) → define spend limits
+Rocca evaluates mandate + signs all transactions — no x402 proof required per-request
+```
+
+---
+
+## 11. Quick Reference
 
 | Task | Method | Path |
 |---|---|---|
+| Register agent (with your own wallet) | POST | `/api/agents/register-existing` |
 | Single cross-chain bridge | POST | `/api/agent-action` then `/api/execute` |
 | Atomic batch (≤16 chains) | POST | `/api/batch-action` then `/api/execute` |
 | Health check | GET | `/health` |
@@ -409,6 +462,57 @@ GET https://ai-agentic-wallet.com/global-audit.json
 **Toll:** 0.01 USDC (10,000 micro-USDC) per request, ASA ID 31566704 on Algorand mainnet
 
 **Registry listings:**
-- OpenClaw: `https://ai-agentic-wallet.com/openclaw-registry.json`
-- Moltbook: `https://ai-agentic-wallet.com/moltbook-agent.json`
-- Skill manifest: `https://ai-agentic-wallet.com/skill.md`
+- OpenClaw: `https://api.ai-agentic-wallet.com/openclaw-registry.json`
+- Moltbook: `https://api.ai-agentic-wallet.com/moltbook-agent.json`
+- Skill manifest: `https://api.ai-agentic-wallet.com/skill.md`
+
+---
+
+## 11. Mandate Secret Rotation
+
+The mandate signing key (HMAC-SHA256) can be rotated without revoking existing mandates.
+Existing mandates remain verifiable during the transition window.
+
+### Step-by-step rotation (v1 → v2)
+
+**1. Generate a new secret:**
+```bash
+openssl rand -hex 32
+```
+
+**2. Add the new secret to your environment without removing the old one:**
+```
+MANDATE_SECRET_v2=<new-secret>
+MANDATE_SECRET_v1=<old-secret>   # keep — needed to verify existing mandates
+MANDATE_SECRET_KID=v2            # switch signing to v2
+```
+
+> Note: `MANDATE_SECRET` (no suffix) is treated as `kid=v1` for backwards compatibility
+> with deployments predating the rotation system.
+
+**3. Deploy.** New mandates will be signed with `v2`. Existing `v1` mandates remain verifiable
+(status: `retired` — verify-only, no new mandates signed with it).
+
+**4. Wait** for all `v1` mandates to expire naturally (check their `expiresAt` field in Redis),
+or revoke them manually:
+```
+POST /api/agents/:agentId/mandate/:id/revoke
+```
+
+**5. Once no `v1` mandates remain active**, remove `MANDATE_SECRET_v1` from the environment
+and redeploy. Any remaining `v1` mandates will be blocked (fail-closed) — callers will see
+a `kid not in registry` error prompting them to re-issue the mandate.
+
+### Key lifecycle states
+
+| State | Behaviour |
+|-------|-----------|
+| `active` | Signs new mandates; used for HMAC verification |
+| `retired` | Verify-only; no new mandates signed with it |
+| absent | Verification throws → mandate blocked (fail-closed) |
+
+### Security invariant
+
+Only one key may be `active` at a time. The key whose suffix matches `MANDATE_SECRET_KID`
+is active. All others in the registry are `retired`. The system throws at boot if this
+invariant is violated — multiple active keys or a missing active key are both hard failures.

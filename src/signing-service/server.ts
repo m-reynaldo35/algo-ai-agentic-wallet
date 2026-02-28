@@ -688,3 +688,10 @@ if (MTLS_ENABLED) {
 }
 
 export { app };
+
+/** Test-only exports — never call from production code */
+export const _signingServiceTestExports = {
+  verifyBearer,
+  checkAndConsumeRequestId,
+  checkGroupIdNotSeen,
+};

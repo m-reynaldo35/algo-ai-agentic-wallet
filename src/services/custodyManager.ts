@@ -828,3 +828,6 @@ export async function consumeApprovalToken(
     );
   }
 }
+
+/** Test-only exports — never call from production code */
+export const _custodyTestExports = { computeApprovalHmac, computeGroupIdHash };

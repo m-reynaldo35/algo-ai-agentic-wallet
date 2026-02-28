@@ -23,3 +23,9 @@ export function getRedis(): Redis | null {
   checked = true;
   return redis;
 }
+
+/** Test-only — replace the Redis singleton with a mock. Never call from production code. */
+export function _setRedisForTest(mock: Redis | null): void {
+  redis = mock;
+  checked = true;
+}
