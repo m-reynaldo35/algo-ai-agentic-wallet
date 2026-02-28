@@ -312,9 +312,10 @@ export function assertTreasuryHardeningEnv(): void {
   }
 
   if (!process.env.VELOCITY_TVL_MICROUSDC) {
-    console.warn(
-      "[envGuard] WARNING: VELOCITY_TVL_MICROUSDC not set — mass drain circuit breaker is DISABLED. " +
-      "Set to total value locked in microUSDC to enable automatic halt on mass drain detection.",
+    throw new Error(
+      "BOOT FAILURE: VELOCITY_TVL_MICROUSDC is required in production. " +
+      "Set to the total value locked in microUSDC (e.g. 10000000000 = $10,000 USDC). " +
+      "Without this, the mass drain circuit breaker is completely disabled.",
     );
   }
 

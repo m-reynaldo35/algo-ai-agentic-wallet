@@ -18,7 +18,7 @@ import { getRedis } from "./services/redis.js";
 import { getWebhookDeliveries } from "./services/webhook.js";
 import { registerSSEBroadcaster } from "./services/audit.js";
 import { requirePortalAuth } from "./middleware/portalAuth.js";
-import { registerAgent } from "./services/agentRegistration.js";
+import { registerExistingAgent } from "./services/agentRegistration.js";
 import { assertProductionAuthReady } from "./auth/liquidAuth.js";
 import { runBootGuards, assertCrossRegionTreasuryHash } from "./protection/envGuard.js";
 import { checkExecutionLimits } from "./protection/executionLimiter.js";
@@ -134,8 +134,8 @@ app.get("/api/info", (_req, res) => {
     protocol: "x402-v1",
     network: "algorand-mainnet",
     docs: {
-      manifest: "https://ai-agentic-wallet.com/moltbook-agent.json",
-      registry: "https://ai-agentic-wallet.com/openclaw-registry.json",
+      manifest: "https://api.ai-agentic-wallet.com/moltbook-agent.json",
+      registry: "https://api.ai-agentic-wallet.com/openclaw-registry.json",
     },
     endpoints: {
       health: "GET /health",
@@ -354,21 +354,21 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
     // ── Phase 1.5: Circuit breaker feedback ───────────────────
     if (result.success) {
       // Any successful submission resets the failure counter immediately.
-      recordSuccess().catch(() => {});
+      recordSuccess().catch((e) => console.warn("[execute] recordSuccess failed:", e));
     } else if (result.failedStage === "sign" || result.failedStage === "broadcast") {
       // Only signing/RPC failures feed the circuit breaker.
       // Auth and validation failures indicate client errors, not RPC instability.
-      recordFailure(`stage=${result.failedStage}: ${result.error ?? "unknown"}`).catch(() => {});
+      recordFailure(`stage=${result.failedStage}: ${result.error ?? "unknown"}`).catch((e) => console.warn("[execute] recordFailure failed:", e));
     }
 
     if (!result.success) {
       // Release the execution reservation so the client can retry
-      releaseReservation(sandboxId).catch(() => {});
+      releaseReservation(sandboxId).catch((e) => console.warn("[execute] releaseReservation failed:", e));
       // Roll back the velocity reservation so the failed attempt does not
       // consume the agent's spend allowance.
       const reservationKey = (req as unknown as Record<string, unknown>)._velocityReservationKey as string | undefined;
       if (!usedMandatePath && reservationKey) {
-        rollbackVelocityReservation(agentId, reservationKey).catch(() => {});
+        rollbackVelocityReservation(agentId, reservationKey).catch((e) => console.warn("[execute] rollbackVelocity failed:", e));
       }
       res.status(502).json({
         error: "Settlement pipeline failed",
@@ -379,7 +379,7 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
 
     // ── Record global outflow for mass drain tracking ──────────
     if (!usedMandatePath && proposedMicroUsdc > 0n) {
-      recordGlobalOutflow(agentId, proposedMicroUsdc).catch(() => {});
+      recordGlobalOutflow(agentId, proposedMicroUsdc).catch((e) => console.warn("[execute] recordGlobalOutflow failed:", e));
     }
 
     // ── Mark execution complete (replaces pending marker, 24h TTL) ──
@@ -875,39 +875,43 @@ app.get("/api/portal/stream", requirePortalAuth, (req, res) => {
 
 // ── Agent Registration ───────────────────────────────────────────
 //
-// POST /api/agents/register  — create a new rekeyed agent wallet
-// GET  /api/agents            — list registered agents
-// GET  /api/agents/:agentId   — fetch a single agent record
+// POST /api/agents/register-existing — rekey a funded wallet to Rocca
+// GET  /api/agents                   — list registered agents
+// GET  /api/agents/:agentId          — fetch a single agent record
 // PATCH /api/agents/:agentId/suspend — suspend an agent
 
-app.post("/api/agents/register", requirePortalAuth, async (req, res) => {
+// Register an existing funded wallet by rekeying it to Rocca.
+app.post("/api/agents/register-existing", requirePortalAuth, async (req, res) => {
   try {
-    const { agentId, platform } = req.body;
+    const { agentId, mnemonic, platform } = req.body;
 
     if (!agentId || typeof agentId !== "string") {
       res.status(400).json({ error: "Missing required field: agentId" });
       return;
     }
+    if (!mnemonic || typeof mnemonic !== "string") {
+      res.status(400).json({ error: "Missing required field: mnemonic (25-word Algorand mnemonic)" });
+      return;
+    }
 
-    const result = await registerAgent(agentId, platform);
+    const result = await registerExistingAgent(agentId, mnemonic, platform);
 
     res.status(201).json({
-      status:              "registered",
-      agentId:             result.agentId,
-      address:             result.address,
-      cohort:              result.cohort,
-      authAddr:            result.authAddr,
-      registrationTxnId:  result.registrationTxnId,
-      explorerUrl:         result.explorerUrl,
+      status:             "registered",
+      agentId:            result.agentId,
+      address:            result.address,
+      cohort:             result.cohort,
+      authAddr:           result.authAddr,
+      registrationTxnId: result.registrationTxnId,
+      explorerUrl:        result.explorerUrl,
       instructions: [
         `Agent ${result.agentId} is rekeyed to Rocca signer (auth-addr: ${result.authAddr}).`,
-        "Fund the agent address with USDC to enable x402 payments.",
+        "Use the original mnemonic to sign x402 payment proofs.",
         `Explorer: ${result.explorerUrl}`,
       ],
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-
     if (message.includes("already registered")) {
       res.status(409).json({ error: message });
       return;
@@ -916,8 +920,7 @@ app.post("/api/agents/register", requirePortalAuth, async (req, res) => {
       res.status(400).json({ error: message });
       return;
     }
-
-    console.error("[agents/register]", message);
+    console.error("[agents/register-existing]", message);
     res.status(500).json({ error: "Agent registration failed", detail: message });
   }
 });
@@ -1571,6 +1574,28 @@ app.get("/api/portal/security-metrics", requirePortalAuth, async (_req, res) => 
     console.error("[portal/security-metrics]", err);
     res.status(500).json({ error: "Failed to compute security metrics" });
   }
+});
+
+// ── Global error handler ─────────────────────────────────────────
+// Must be registered after all routes (Express requires the 4-arg signature).
+// Catches any error passed to next(err) or thrown synchronously in a route.
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error("[Express] Unhandled error:", message);
+  if (!res.headersSent) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── Process-level safety nets ─────────────────────────────────────
+// Catch async errors that escape route handlers entirely.
+process.on("unhandledRejection", (reason) => {
+  console.error("[Process] Unhandled promise rejection:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[Process] Uncaught exception:", err);
+  process.exit(1);
 });
 
 // ── Boot ────────────────────────────────────────────────────────
