@@ -20,11 +20,18 @@ export const config = {
     usdcAssetId: parseInt(process.env.X402_USDC_ASSET_ID || "31566704", 10),
   },
 
-  liquidAuth: {
-    /** Liquid Auth FIDO2 server URL. Empty = dev mock mode. */
-    serverUrl: process.env.LIQUID_AUTH_SERVER_URL || "",
-    /** FIDO2 Relying Party identifier */
-    rpId: process.env.FIDO2_RP_ID || "",
+  /**
+   * Human governance auth configuration.
+   * Operators choose between Standard WebAuthn (device passkeys) or
+   * Liquid Auth (Algorand wallet QR — Pera, Defly, etc.).
+   */
+  humanAuth: {
+    /** FIDO2 Relying Party ID for Standard WebAuthn (e.g. "api.ai-agentic-wallet.com") */
+    rpId:   process.env.FIDO2_RP_ID   || "",
+    /** FIDO2 Relying Party display name (e.g. "Algo Wallet") */
+    rpName: process.env.FIDO2_RP_NAME || "Algo Wallet",
+    /** Expected WebAuthn origin. Defaults to https://{rpId} */
+    origin: process.env.WEBAUTHN_ORIGIN || "",
   },
 
   rocca: {

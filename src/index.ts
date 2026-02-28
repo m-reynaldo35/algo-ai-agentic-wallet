@@ -1614,7 +1614,7 @@ assertCrossRegionTreasuryHash().catch((err: unknown) => {
   process.exit(1);
 });
 
-// Assert auth config is safe — throws in production without LIQUID_AUTH_SERVER_URL
+// Log active auth mode at boot (embedded HMAC or external Liquid Auth server)
 assertProductionAuthReady();
 
 const port = Number(process.env.PORT);

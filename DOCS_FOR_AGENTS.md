@@ -516,3 +516,146 @@ a `kid not in registry` error prompting them to re-issue the mandate.
 Only one key may be `active` at a time. The key whose suffix matches `MANDATE_SECRET_KID`
 is active. All others in the registry are `retired`. The system throws at boot if this
 invariant is violated — multiple active keys or a missing active key are both hard failures.
+
+---
+
+## 12. Authentication Layers
+
+The system uses two completely independent authentication mechanisms with separate threat
+models. They share no code paths and cannot be used to bypass each other.
+
+---
+
+### Layer 1 — Human Governance (mandate create/revoke, custody transitions)
+
+Human operators authenticate before making any governance change to an agent's mandate or
+custody. Two equivalent options are offered — both result in a verified public key stored
+against the agent record.
+
+#### Option A — Standard WebAuthn (device passkeys)
+
+Web2-style biometric auth. Works with any FIDO2 authenticator: Touch ID, Face ID,
+Windows Hello, or a hardware key (YubiKey).
+
+**Flow:**
+1. Browser calls `navigator.credentials.create(...)` to generate a passkey
+2. `PATCH /api/agents/:agentId/webauthn-pubkey` registers the credential:
+   ```json
+   {
+     "ownerWalletId": "your-wallet-id",
+     "credentialId":  "<base64url — from navigator.credentials.create()>",
+     "publicKeyCose": "<base64url COSE public key>",
+     "counter":       0
+   }
+   ```
+3. Future governance calls (mandate create/revoke) include a `webauthnAssertion` signed
+   by this credential — validated server-side by `@simplewebauthn/server`
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FIDO2_RP_ID` | `api.ai-agentic-wallet.com` | Relying Party ID — must match your domain |
+| `FIDO2_RP_NAME` | `"Algo Wallet"` | Name shown in the passkey prompt |
+| `WEBAUTHN_ORIGIN` | `https://{FIDO2_RP_ID}` | Expected browser origin |
+
+---
+
+#### Option B — Liquid Auth (Algorand wallet QR)
+
+Web3-style auth. The operator scans a QR code with their Algorand wallet app (Pera,
+Defly, or any wallet supporting the Liquid Auth protocol) and signs a challenge with their
+Algorand account private key. No browser passkey or biometric device required.
+
+**Flow:**
+1. `POST /api/agents/:agentId/auth/liquid-challenge` — backend generates a random challenge
+   and returns a QR code URL
+2. Operator opens Pera/Defly, scans the QR — wallet signs the challenge with their
+   Algorand account key
+3. `POST /api/agents/:agentId/auth/liquid-verify` — backend verifies the Ed25519 signature
+   against the operator's Algorand address (via `algosdk.verifyBytes`)
+4. Algorand address is stored as `ownerWalletId` — used to authorize future mandate changes
+
+**Why this works:** Every Algorand address *is* an Ed25519 public key. Signature verification
+is a single `verifyBytes()` call with no external server. The wallet handles the UX.
+
+**No extra environment variables required** — verification is fully on-chain key math.
+
+---
+
+### Layer 2 — AI Agent Execution (`/api/execute`)
+
+Once a mandate is in place, the AI agent takes over. Agents authenticate via short-lived,
+Redis-backed HMAC-SHA256 tokens. This path is 100% embedded — zero external dependencies,
+zero network hops, microsecond validation.
+
+**Token properties:**
+- 32-byte cryptographically random challenge per issuance
+- HMAC-SHA256 bound to `agentId` + timestamp
+- Stored in Redis: single-use, 5-minute TTL, cross-process (main API issues, signing
+  service validates via shared Redis)
+- Consumed and deleted atomically on first use (replay-protected)
+
+**No environment variables required** — the embedded path needs nothing beyond the existing
+Upstash Redis connection.
+
+**Token lifecycle:**
+
+```
+Agent → POST /api/execute
+  ↓
+authenticateAgentIdentity(agentId)   ← issues lqauth_<hmac> token, writes to Redis
+  ↓
+[velocity, mandate, treasury gates]
+  ↓
+validateAuthToken(authToken)          ← verifies + consumes token from Redis
+  ↓
+Rocca Wallet signs + broadcasts
+```
+
+---
+
+### Security invariants
+
+| # | Invariant |
+|---|-----------|
+| 1 | Only a WebAuthn- or Liquid Auth-authenticated human can create or modify a mandate |
+| 2 | Only mandate-valid transactions pass the signing gate |
+| 3 | Only Rocca signs on-chain |
+| 4 | No single service can bypass velocity constraints |
+| 5 | All governance operations are auditable (Redis + telemetry sink) |
+| 6 | Agent execution tokens are single-use and expire in 5 minutes |
+| 7 | Layer 1 (human) and Layer 2 (agent) credentials cannot be exchanged or escalated |
+
+---
+
+### Code refactoring guide (for contributors)
+
+**`src/auth/liquidAuth.ts` (done):**
+- External server path removed entirely
+- `authenticateAgentIdentity()` → pure embedded HMAC token, no env vars needed
+- `validateAuthToken()` → Redis single-use lookup with legacy-prefix fallback
+
+**`src/config.ts` (done):**
+- Renamed `config.liquidAuth` → `config.humanAuth`
+- Removed `serverUrl` / `LIQUID_AUTH_SERVER_URL`
+- Added `rpName` and `origin` for WebAuthn RP configuration
+
+**`src/auth/humanAuth.ts` (planned — Liquid Auth QR path):**
+```typescript
+// New file — Web3 governance auth via Algorand wallet signing
+issueAlgorandChallenge(agentId): Promise<{ challenge: string; qrUrl: string }>
+verifyAlgorandSignature(agentId, challenge, signature, address): Promise<void>
+// Uses algosdk.verifyBytes(challenge, sig, address) — no external service
+```
+
+**`src/index.ts` — new routes (planned):**
+```
+POST /api/agents/:agentId/auth/liquid-challenge  → issueAlgorandChallenge()
+POST /api/agents/:agentId/auth/liquid-verify     → verifyAlgorandSignature() + store ownerWalletId
+```
+
+**`src/services/mandateService.ts` — planned update:**
+- Accept either `webauthnAssertion` (Option A) OR `algorandSignature` (Option B) in
+  `createMandate()` and `revokeMandate()`
+- Both paths verify the operator controls the registered `ownerWalletId` before proceeding
