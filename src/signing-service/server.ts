@@ -391,6 +391,8 @@ app.post("/sign", async (req, res) => {
   )];
 
   for (const sender of uniqueSenders) {
+    // Allow the Rocca signer itself as a first-party sender (no agent rekey required).
+    if (sender === signerAddress) continue;
     if (sender !== agent.address) {
       await reject(
         400,
