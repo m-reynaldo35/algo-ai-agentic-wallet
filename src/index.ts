@@ -38,9 +38,12 @@ import { atomicReserve, completeReservation, releaseReservation, markTxIdSettled
 import { runRekeySync } from "./services/rekeySync.js";
 import { startDriftPulse }             from "./jobs/driftPulse.js";
 import { startRecurringScheduler }       from "./jobs/recurringScheduler.js";
+import { runWorker }                     from "./queue/settlementWorker.js";
 import {
   createMandate, revokeMandate, listMandates,
   registerWebAuthnCredential, issueMandateChallenge, registerAlgorandAddress,
+  issueWebAuthnRegistrationChallenge, verifyAndRegisterWebAuthn,
+  issueWebAuthnLoginChallenge, verifyWebAuthnLoginAssertion,
 }                                        from "./services/mandateService.js";
 import {
   issueAlgorandChallenge, submitAlgorandSignature, getLiquidAuthStatus,
@@ -385,6 +388,22 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
       recordGlobalOutflow(agentId, proposedMicroUsdc).catch((e) => console.warn("[execute] recordGlobalOutflow failed:", e));
     }
 
+    // ── Async path: job queued, return immediately ─────────────
+    if (result.queued) {
+      res.json({
+        success:              true,
+        queued:               true,
+        jobId:                result.jobId,
+        status:               "queued",
+        agentId:              result.agentId,
+        sandboxId:            result.sandboxId,
+        estimatedConfirmMs:   4000,
+        pollUrl:              `/api/jobs/${result.jobId}`,
+        streamUrl:            `/api/jobs/${result.jobId}/stream`,
+      });
+      return;
+    }
+
     // ── Mark execution complete (replaces pending marker, 24h TTL) ──
     // Awaited first so the idempotency result is durable before we mark
     // the txnId. If this fails and the key expires, a retry can re-execute;
@@ -397,10 +416,6 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
     }
 
     // ── Mark confirmed txnId as settled (7-day retention) ─────
-    // Must run AFTER completeReservation so that if both fail in sequence,
-    // the retry can still be caught via the idempotency cache first.
-    // wasNew=false means a previous execution settled this txnId but
-    // completeReservation did not persist — log the anomaly but still succeed.
     if (result.settlement?.txnId) {
       const { wasNew } = await markTxIdSettled(result.settlement.txnId, {
         agentId,
@@ -466,6 +481,95 @@ app.post("/api/batch-action", x402Paywall, async (req, res) => {
     console.error("[batch-action]", message);
     res.status(500).json({ error: "Failed to construct batched atomic group" });
   }
+});
+
+// ── Job Status Routes ───────────────────────────────────────────
+// Poll or stream the status of an async settlement job.
+
+app.get("/api/jobs/:jobId", requirePortalAuth, async (req, res) => {
+  try {
+    const { getJob } = await import("./queue/jobStore.js");
+    const job = await getJob(String(req.params.jobId));
+    if (!job) { res.status(404).json({ error: "Job not found" }); return; }
+    res.json({
+      jobId:          job.jobId,
+      status:         job.status,
+      agentId:        job.agentId,
+      sandboxId:      job.sandboxId,
+      enqueuedAt:     job.enqueuedAt,
+      updatedAt:      job.updatedAt,
+      txnId:          job.txnId,
+      confirmedRound: job.confirmedRound,
+      settledAt:      job.settledAt,
+      error:          job.error,
+      ...(job.txnId ? { explorerUrl: `https://allo.info/tx/${job.txnId}` } : {}),
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch job" });
+  }
+});
+
+// SSE stream — pushes a single event when the job completes, then closes.
+app.get("/api/jobs/:jobId/stream", requirePortalAuth, async (req, res) => {
+  const jobId = String(req.params.jobId);
+
+  res.setHeader("Content-Type",  "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection",    "keep-alive");
+  res.flushHeaders();
+
+  const send = (event: string, data: unknown) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Immediately send current status
+  const { getJob } = await import("./queue/jobStore.js");
+  const initial = await getJob(jobId).catch(() => null);
+  if (!initial) { send("error", { error: "Job not found" }); res.end(); return; }
+
+  send("status", { jobId, status: initial.status, txnId: initial.txnId });
+
+  if (initial.status === "confirmed" || initial.status === "failed") {
+    send("done", { jobId, status: initial.status, txnId: initial.txnId, error: initial.error });
+    res.end();
+    return;
+  }
+
+  // Poll until terminal state
+  const POLL_MS   = 500;
+  const TIMEOUT_S = 120;
+  let elapsed = 0;
+
+  const interval = setInterval(async () => {
+    elapsed += POLL_MS;
+    const job = await getJob(jobId).catch(() => null);
+    if (!job) { clearInterval(interval); send("error", { error: "Job not found" }); res.end(); return; }
+
+    send("status", { jobId, status: job.status, txnId: job.txnId });
+
+    if (job.status === "confirmed" || job.status === "failed") {
+      clearInterval(interval);
+      send("done", {
+        jobId,
+        status:         job.status,
+        txnId:          job.txnId,
+        confirmedRound: job.confirmedRound,
+        settledAt:      job.settledAt,
+        error:          job.error,
+        ...(job.txnId ? { explorerUrl: `https://allo.info/tx/${job.txnId}` } : {}),
+      });
+      res.end();
+      return;
+    }
+
+    if (elapsed >= TIMEOUT_S * 1000) {
+      clearInterval(interval);
+      send("timeout", { jobId, message: `Job not confirmed within ${TIMEOUT_S}s` });
+      res.end();
+    }
+  }, POLL_MS);
+
+  req.on("close", () => clearInterval(interval));
 });
 
 // ── Portal Telemetry Routes ─────────────────────────────────────
@@ -1445,10 +1549,11 @@ app.get("/api/agents/:agentId/auth/liquid-status/:sessionId", requirePortalAuth,
 
 app.post("/api/agents/:agentId/auth/liquid-register", requirePortalAuth, async (req, res) => {
   const agentId   = String(req.params.agentId || "");
-  const sessionId = String(req.body?.sessionId ?? "");
+  // Accept both "sessionId" (canonical) and "liquidAuthSessionId" (portal alias)
+  const sessionId = String(req.body?.sessionId ?? req.body?.liquidAuthSessionId ?? "");
 
   if (!sessionId) {
-    res.status(400).json({ error: "Missing required field: sessionId" });
+    res.status(400).json({ error: "Missing required field: sessionId (or liquidAuthSessionId)" });
     return;
   }
 
@@ -1462,6 +1567,95 @@ app.post("/api/agents/:agentId/auth/liquid-register", requirePortalAuth, async (
       msg.includes("mismatch") || msg.includes("denied") ? 403 :
       msg.includes("Liquid Auth") ? 401 :
       400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+// ── WebAuthn Login (device passkey — first-class auth path) ──────
+//
+// POST /api/agents/:agentId/auth/webauthn-register-challenge
+//   Issue a registration challenge for navigator.credentials.create().
+//   Returns { challenge, userId, rpId, rpName, userName, userDisplayName, hasCredentials }.
+//
+// POST /api/agents/:agentId/auth/webauthn-register
+//   Verify attestation, store credential ID + COSE key, set ownerWalletId.
+//   Returns { ownerWalletId, credentialId, status: "registered" }.
+//
+// POST /api/agents/:agentId/auth/webauthn-login-challenge
+//   Issue a login challenge for navigator.credentials.get().
+//   Returns { challenge, allowCredentials, hasCredentials, rpId }.
+//   hasCredentials=false → client should call register-challenge instead.
+//
+// POST /api/agents/:agentId/auth/webauthn-login
+//   Verify assertion, update counter, return ownerWalletId.
+//   Returns { ownerWalletId }.
+
+app.post("/api/agents/:agentId/auth/webauthn-register-challenge", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  try {
+    const result = await issueWebAuthnRegistrationChallenge(agentId);
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = msg.includes("not found") ? 404 : 500;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.post("/api/agents/:agentId/auth/webauthn-register", requirePortalAuth, async (req, res) => {
+  const agentId  = String(req.params.agentId || "");
+  const response = req.body?.registrationResponse ?? req.body;
+
+  if (!response?.id || !response?.response) {
+    res.status(400).json({ error: "Missing registrationResponse (RegistrationResponseJSON)" });
+    return;
+  }
+
+  try {
+    const result = await verifyAndRegisterWebAuthn(agentId, response);
+    res.json({ agentId, ...result, status: "registered" });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status =
+      msg.includes("not found")    ? 404 :
+      msg.includes("verification") ? 401 :
+      msg.includes("challenge")    ? 400 :
+      400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.post("/api/agents/:agentId/auth/webauthn-login-challenge", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  try {
+    const result = await issueWebAuthnLoginChallenge(agentId);
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = msg.includes("not found") ? 404 : 500;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.post("/api/agents/:agentId/auth/webauthn-login", requirePortalAuth, async (req, res) => {
+  const agentId   = String(req.params.agentId || "");
+  const assertion = req.body?.assertion ?? req.body;
+
+  if (!assertion?.id || !assertion?.response) {
+    res.status(400).json({ error: "Missing assertion (AuthenticationResponseJSON)" });
+    return;
+  }
+
+  try {
+    const result = await verifyWebAuthnLoginAssertion(agentId, assertion);
+    res.json({ agentId, ...result });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status =
+      msg.includes("not found")    ? 404 :
+      msg.includes("verification") ? 401 :
+      msg.includes("challenge")    ? 400 :
+      401;
     res.status(status).json({ error: msg });
   }
 });
@@ -1777,3 +1971,13 @@ startDriftPulse();
 
 // AP2 Module 5 — Recurring scheduler: 30s tick for due recurring mandates.
 startRecurringScheduler();
+
+// Settlement worker — dequeues signed transactions and broadcasts to Algorand.
+// Runs embedded in the API process. For higher throughput, run additional
+// standalone workers via: npm run worker
+const workerAbort = new AbortController();
+runWorker(workerAbort.signal).catch((err: unknown) =>
+  console.error("[Boot] Settlement worker crashed:", err instanceof Error ? err.message : err),
+);
+process.on("SIGTERM", () => workerAbort.abort());
+process.on("SIGINT",  () => workerAbort.abort());

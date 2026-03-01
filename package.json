@@ -10,10 +10,14 @@
     "dev": "tsx watch src/index.ts",
     "guardian": "tsx scripts/wallet-guardian.ts",
     "guardian:test": "tsx scripts/wallet-guardian.ts --test-alert",
-    "e2e": "tsx scripts/e2e-test.ts"
+    "e2e": "tsx scripts/e2e-test.ts",
+    "test:setup": "tsx examples/setup-tester.ts",
+    "test:full": "tsx examples/full-test.ts",
+    "worker": "tsx scripts/run-worker.ts"
   },
   "dependencies": {
-    "@m-reynaldo35/x402-client": "file:./packages/x402-client",
+    "@algo-wallet/x402-client": "file:./packages/x402-client",
+    "@anthropic-ai/sdk": "^0.78.0",
     "@sentry/node": "^9.20.0",
     "@simplewebauthn/server": "^13.2.3",
     "@types/cors": "^2.8.19",

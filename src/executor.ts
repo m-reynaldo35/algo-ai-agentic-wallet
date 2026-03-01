@@ -2,13 +2,13 @@ import { validateSandboxExport } from "./middleware/validation.js";
 import { authenticateAgentIdentity } from "./auth/liquidAuth.js";
 import { signAtomicGroup } from "./signer/roccaWallet.js";
 import { callSigningService } from "./signing-service/client.js";
-import { executeSettlement, type SettlementResult } from "./network/broadcaster.js";
-import { logSettlementSuccess, logExecutionFailure } from "./services/audit.js";
+import type { SettlementResult } from "./network/broadcaster.js";
+import { logExecutionFailure } from "./services/audit.js";
 import { extendReservationTTL } from "./services/executionIdempotency.js";
-import { rollbackOutflow } from "./protection/treasuryOutflowGuard.js";
-import { config } from "./config.js";
 import type { SandboxExport } from "./services/transaction.js";
 import { Sentry } from "./lib/sentry.js";
+import { createJob } from "./queue/jobStore.js";
+import { enqueueJob } from "./queue/settlementQueue.js";
 
 /**
  * Master Executor — End-to-End Settlement Pipeline
@@ -26,7 +26,7 @@ import { Sentry } from "./lib/sentry.js";
  */
 
 export interface ExecutionResult {
-  /** Whether the full pipeline completed successfully */
+  /** Whether the pipeline accepted the request */
   success: boolean;
   /** Which stage failed, if any */
   failedStage?: "validation" | "auth" | "sign" | "broadcast";
@@ -36,7 +36,14 @@ export interface ExecutionResult {
   agentId: string;
   /** The sandbox that produced the unsigned group */
   sandboxId: string;
-  /** Settlement details (only present on success) */
+  /**
+   * Present when success=true.
+   * queued=true  → async path: settlement is in the worker queue (jobId is set).
+   * queued=false → sync path: settlement already confirmed (settlement is set).
+   */
+  queued?: boolean;
+  jobId?: string;
+  /** Settlement details — only present on synchronous confirmation */
   settlement?: SettlementResult;
 }
 
@@ -148,77 +155,46 @@ export async function executePipeline(
     };
   }
 
-  // ── Stage 4: Broadcaster — On-Chain Settlement ────────────────
-  // The broadcast stage is where TEAL LogicSig policy breaches
-  // surface. When an agent's delegated Smart Signature rejects a
-  // transaction (fee too high, wrong type, amount exceeds cap),
-  // the Algod node returns "logic eval failed" or "rejected by logic".
-  // We trap these specifically and classify them as POLICY_BREACH.
-  console.log(`[Executor] Stage 4/4: Broadcasting to ${routing.network}...`);
+  // ── Stage 4: Enqueue for async settlement ────────────────────
+  // Signed transactions are handed off to the worker queue. The HTTP
+  // request returns immediately with a jobId — no blocking on-chain wait.
+  // The worker broadcasts, waits for confirmation, and updates the job.
+  console.log(`[Executor] Stage 4/4: Enqueueing signed group for async settlement...`);
 
-  // Extend again immediately before broadcast, then maintain a heartbeat
-  // for the duration of waitForConfirmation (up to ~15s under normal
-  // conditions, but potentially longer on a degraded node). The interval
-  // is well under PENDING_TTL_S so the marker never expires mid-wait.
-  await extendReservationTTL(sandboxId);
-  const ttlHeartbeat = setInterval(() => {
-    extendReservationTTL(sandboxId).catch(() => {});
-  }, 60_000);
-
-  let settlement;
   try {
-    settlement = await executeSettlement(signedGroup.signedTransactions);
+    const job = await createJob({
+      agentId,
+      sandboxId,
+      signedTransactions: signedGroup.signedTransactions.map((t) =>
+        Buffer.from(t).toString("base64"),
+      ),
+      outflowReservationKey,
+      network: routing.network,
+    });
+
+    await enqueueJob(job.jobId);
+
+    console.log(`[Executor] ✓ Queued  jobId=${job.jobId}  agent=${agentId}`);
+
+    return {
+      success: true,
+      queued:  true,
+      jobId:   job.jobId,
+      agentId,
+      sandboxId,
+    };
+
   } catch (err) {
-    clearInterval(ttlHeartbeat);
-    // Release the treasury outflow reservation — broadcast failed so no funds
-    // actually moved. Cap should reflect settled volume, not attempted volume.
-    rollbackOutflow(outflowReservationKey).catch(() => {});
-
-    const error = err instanceof Error ? err.message : "Unknown broadcast error";
-    const errorLower = error.toLowerCase();
-    const isPolicyBreach = errorLower.includes("logic eval failed") || errorLower.includes("rejected by logic");
-
-    if (isPolicyBreach) {
-      console.error(`[Executor] TEAL POLICY BREACH at Stage 4 (broadcast): ${error}`);
-      console.error(`[Executor]   Agent ${agentId} exceeded LogicSig spending bounds.`);
-      console.error(`[Executor]   The AVM rejected the transaction at Layer 1 consensus.`);
-    } else {
-      console.error(`[Executor] ABORT at Stage 4 (broadcast): ${error}`);
-    }
-
-    Sentry.setTag("blockchain_consensus", "rejected");
+    const error = err instanceof Error ? err.message : "Queue error";
+    console.error(`[Executor] ABORT at Stage 4 (enqueue): ${error}`);
+    Sentry.captureException(err);
     logExecutionFailure(agentId, "broadcast", error);
     return {
       success: false,
       failedStage: "broadcast",
-      error: isPolicyBreach
-        ? `POLICY_BREACH: ${error}`
-        : error,
+      error,
       agentId,
       sandboxId,
     };
   }
-  clearInterval(ttlHeartbeat);
-
-  // ── Success ───────────────────────────────────────────────────
-  console.log(`\n[Executor] ═══════════════════════════════════════════`);
-  console.log(`[Executor] SETTLEMENT CONFIRMED`);
-  console.log(`[Executor]   TxnID:  ${settlement.txnId}`);
-  console.log(`[Executor]   Round:  ${settlement.confirmedRound}`);
-  console.log(`[Executor]   Group:  ${settlement.groupId}`);
-  console.log(`[Executor] ═══════════════════════════════════════════\n`);
-
-  logSettlementSuccess(
-    settlement.txnId,
-    agentId,
-    config.x402.priceMicroUsdc,
-    settlement.groupId,
-  );
-
-  return {
-    success: true,
-    agentId,
-    sandboxId,
-    settlement,
-  };
 }
