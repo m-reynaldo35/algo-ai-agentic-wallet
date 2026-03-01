@@ -169,8 +169,8 @@ export async function getSuggestedParams(): Promise<algosdk.SuggestedParams> {
       minFee:      String(params.minFee),
       firstValid:  String(params.firstValid),
       lastValid:   String(params.lastValid),
-      genesisID:   params.genesisID,
-      genesisHash: Buffer.from(params.genesisHash).toString("base64"),
+      genesisID:   params.genesisID ?? "",
+      genesisHash: Buffer.from(params.genesisHash ?? new Uint8Array(0)).toString("base64"),
     };
     redis.set(PARAMS_CACHE_KEY, JSON.stringify(payload), { ex: PARAMS_CACHE_TTL }).catch(() => {});
   }
