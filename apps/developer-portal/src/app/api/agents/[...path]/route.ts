@@ -1,0 +1,85 @@
+/**
+ * Agent API Proxy — Catch-All REST Forwarder
+ *
+ * Forwards all /api/agents/{path} requests to the backend at
+ * API_URL/api/agents/{path}, injecting the PORTAL_API_SECRET header.
+ *
+ * Supported methods: GET, POST, PUT, PATCH, DELETE
+ *
+ * Environment:
+ *   API_URL            Backend base URL (default: https://api.ai-agentic-wallet.com)
+ *   PORTAL_API_SECRET  Bearer secret forwarded as X-Portal-Key header
+ */
+
+import { type NextRequest, NextResponse } from "next/server";
+
+const API_URL = process.env.API_URL || "https://api.ai-agentic-wallet.com";
+
+type RouteContext = { params: Promise<{ path: string[] }> };
+
+async function proxy(req: NextRequest, ctx: RouteContext): Promise<NextResponse> {
+  const { path } = await ctx.params;
+  const portalSecret = process.env.PORTAL_API_SECRET || "";
+
+  // Reconstruct path + query string
+  const upstreamPath = path.join("/");
+  const search = req.nextUrl.search ?? "";
+  const upstreamUrl = `${API_URL}/api/agents/${upstreamPath}${search}`;
+
+  // Forward headers — strip host/connection to avoid upstream confusion
+  const forwardHeaders: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(portalSecret ? { "X-Portal-Key": portalSecret } : {}),
+  };
+
+  // Forward authorization from the browser session if present
+  const authHeader = req.headers.get("authorization");
+  if (authHeader) forwardHeaders["Authorization"] = authHeader;
+
+  // Forward body for mutating methods
+  let body: string | undefined;
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    try {
+      body = await req.text();
+    } catch {
+      // Empty body — fine
+    }
+  }
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(upstreamUrl, {
+      method:  req.method,
+      headers: forwardHeaders,
+      body,
+      redirect: "manual",
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return NextResponse.json(
+      { error: "upstream_unavailable", detail: msg },
+      { status: 502 },
+    );
+  }
+
+  const contentType = upstream.headers.get("content-type") ?? "";
+  const responseBody = await upstream.text();
+
+  const responseHeaders: Record<string, string> = {
+    "Content-Type": contentType || "application/json",
+    "Cache-Control": "no-store",
+  };
+
+  return new NextResponse(responseBody, {
+    status:  upstream.status,
+    headers: responseHeaders,
+  });
+}
+
+export const GET    = proxy;
+export const POST   = proxy;
+export const PUT    = proxy;
+export const PATCH  = proxy;
+export const DELETE = proxy;
+
+export const dynamic = "force-dynamic";

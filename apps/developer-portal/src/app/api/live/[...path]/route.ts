@@ -11,7 +11,7 @@
  * Supported methods: GET, POST, PUT, PATCH, DELETE
  *
  * Environment:
- *   API_URL            Backend base URL (default: https://ai-agentic-wallet.com)
+ *   API_URL            Backend base URL (default: https://api.ai-agentic-wallet.com)
  *   PORTAL_API_SECRET  Bearer secret forwarded as X-Portal-Key header
  *
  * Note: SSE streaming is handled by the dedicated /api/live/stream route.
@@ -20,7 +20,7 @@
 
 import { type NextRequest, NextResponse } from "next/server";
 
-const API_URL = process.env.API_URL || "https://ai-agentic-wallet.com";
+const API_URL = process.env.API_URL || "https://api.ai-agentic-wallet.com";
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 

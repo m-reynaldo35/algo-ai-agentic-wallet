@@ -155,13 +155,16 @@ app.get("/api/info", (_req, res) => {
 // ── Health ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
   const node = await getNodeStatus();
+  const nodeUrl = node.algodUrl;
+  const provider = nodeUrl.includes("nodely") ? "nodely"
+    : (nodeUrl.includes("localhost") || nodeUrl.includes("127.0.0.1")) ? "local"
+    : "custom";
   res.json({
     status: node.healthy ? "ok" : "degraded",
     protocol: "x402",
     network: node.network,
     node: {
-      provider: "nodely",
-      tier: "free",
+      provider,
       algod: node.algodUrl,
       indexer: node.indexerUrl,
       latestRound: node.latestRound,

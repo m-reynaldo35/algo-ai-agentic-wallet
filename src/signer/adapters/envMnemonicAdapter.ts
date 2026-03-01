@@ -52,7 +52,7 @@ export class EnvMnemonicAdapter implements SignerAdapter {
     // the input bytes: bytesToSign = b"TX" + msgpack(txn), so we cannot
     // call rawSignTxn directly without the Transaction object.
     // Instead, use nacl directly via the account secret key.
-    const nacl = await import("tweetnacl");
+    const nacl = (await import("tweetnacl")).default;
     return nacl.sign.detached(bytesToSign, account.sk);
   }
 

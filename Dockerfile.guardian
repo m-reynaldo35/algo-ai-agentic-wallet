@@ -10,6 +10,7 @@ COPY packages/ ./packages/
 RUN npm ci --ignore-scripts && npm cache clean --force
 
 COPY tsconfig.json ./
+COPY src/ ./src/
 COPY scripts/wallet-guardian.ts ./scripts/
 
-CMD ["npx", "tsx", "scripts/wallet-guardian.ts"]
+CMD ["./node_modules/.bin/tsx", "scripts/wallet-guardian.ts"]

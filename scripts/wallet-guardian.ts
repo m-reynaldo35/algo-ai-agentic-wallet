@@ -40,6 +40,8 @@
  * │    COLD_WALLET_ADDRESS      Cold wallet address for sweeps              │
  * │    TREASURY_CEILING_ALGO    Max ALGO to keep in treasury (default 1000) │
  * │    TREASURY_USDC_CEILING    Max USDC to keep in treasury (default 100)  │
+ * │    UPSTASH_REDIS_REST_URL   Upstash Redis REST URL (auto-halt support)  │
+ * │    UPSTASH_REDIS_REST_TOKEN Upstash Redis REST token                   │
  * │    TELEGRAM_BOT_TOKEN       Bot token from @BotFather                   │
  * │    TELEGRAM_CHAT_ID         Your personal Telegram chat ID              │
  * │    ALERT_WEBHOOK_URL        Slack / Discord webhook URL                 │
@@ -129,6 +131,21 @@ const log = pino({
 if (process.env.SENTRY_DSN) {
   Sentry.init({ dsn: process.env.SENTRY_DSN, tracesSampleRate: 0 });
 }
+
+// ── Health server — module-level so it binds before main() runs ───────────
+// Railway fires its healthcheck within seconds of container start. tsx JIT
+// startup (imports + transpile) can take 10-15 s, so the server MUST bind
+// at module load time — not inside main() — to pass the 30 s window.
+let _healthReady = false;
+const _healthPort = parseInt(process.env.PORT || "8080", 10);
+const _healthServer = http.createServer((_req, res) => {
+  const status = _healthReady ? 200 : 503;
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ status: _healthReady ? "ok" : "starting", service: "wallet-guardian" }));
+});
+_healthServer.listen(_healthPort, () =>
+  log.info({ port: _healthPort }, "Health server listening"),
+);
 
 // ── Redis ─────────────────────────────────────────────────────────────────
 
@@ -615,7 +632,9 @@ async function runCycle(
 // ── Boot ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const testAlert  = process.argv.includes("--test-alert");
+  const testAlert = process.argv.includes("--test-alert");
+  // _healthServer is already bound at module load time (see above)
+
   const signerAddr = requireEnv("ALGO_SIGNER_ADDRESS");
   const treasury   = optionalAccount(process.env.ALGO_TREASURY_MNEMONIC, "treasury");
 
@@ -663,6 +682,9 @@ async function main(): Promise<void> {
   if (!TG_TOKEN && !WEBHOOK_URL && !process.env.SENTRY_DSN) {
     log.warn("No alert channel configured — set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID");
   }
+  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+    log.warn("UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN not set — drain detection will alert but CANNOT auto-halt signing");
+  }
   if (!treasury) {
     log.warn("Running in monitor-only mode — set ALGO_TREASURY_MNEMONIC to enable cold sweeps");
   }
@@ -678,21 +700,16 @@ async function main(): Promise<void> {
       "Telegram":       TG_TOKEN && TG_CHAT_ID ? "configured" : "not configured",
     });
     log.info("Test alert sent — exiting");
+    _healthServer.close();
     return;
   }
 
-  // ── Health server (Railway requires a bound PORT) ───────────────────────
-  const port = parseInt(process.env.PORT || "8080", 10);
-  const server = http.createServer((_req, res) => {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", service: "wallet-guardian" }));
-  });
-  server.listen(port, () => log.info({ port }, "Health server listening"));
+  _healthReady = true;
 
   let running    = true;
   let cycleCount = 0;
-  process.on("SIGTERM", () => { log.info("Shutting down"); running = false; server.close(); });
-  process.on("SIGINT",  () => { log.info("Shutting down"); running = false; server.close(); });
+  process.on("SIGTERM", () => { log.info("Shutting down"); running = false; _healthServer.close(); });
+  process.on("SIGINT",  () => { log.info("Shutting down"); running = false; _healthServer.close(); });
 
   while (running) {
     cycleCount++;

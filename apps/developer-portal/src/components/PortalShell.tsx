@@ -10,8 +10,9 @@ import Sidebar from "./Sidebar";
 export default function PortalShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isAuthPage = pathname === "/login";
+  const isCustomerApp = pathname.startsWith("/app");
 
-  if (isAuthPage) {
+  if (isAuthPage || isCustomerApp) {
     return <>{children}</>;
   }
 

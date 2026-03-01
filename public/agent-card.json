@@ -1,7 +1,7 @@
 {
   "name": "x402 AI Agentic Wallet",
   "description": "Zero-trust, x402-compliant AI-to-AI financial routing and atomic settlement on Algorand. Supports AP2 mandate-gated autonomous payments and A2A agent-to-agent transactions.",
-  "url": "https://ai-agentic-wallet.com",
+  "url": "https://api.ai-agentic-wallet.com",
   "version": "2.0.0",
   "capabilities": [
     "usdc-transfer",
@@ -17,7 +17,7 @@
       "assetId": 31566704,
       "asset": "USDC",
       "tollAmount": "10000",
-      "payTo": "https://ai-agentic-wallet.com/api/agent-action"
+      "payTo": "https://api.ai-agentic-wallet.com/api/agent-action"
     },
     "ap2": {
       "protocol": "ap2-v0.1",

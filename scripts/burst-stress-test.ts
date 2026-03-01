@@ -57,7 +57,7 @@ const MODE: "probe" | "sandbox" | "live" =
   "probe";
 
 // ── Config ────────────────────────────────────────────────────────
-const API_URL    = (process.env.API_URL || "https://ai-agentic-wallet.com").replace(/\/+$/, "");
+const API_URL    = (process.env.API_URL || "https://api.ai-agentic-wallet.com").replace(/\/+$/, "");
 const ALGO_NODE  = process.env.ALGORAND_NODE_URL || "https://mainnet-api.4160.nodely.dev";
 const TREASURY   = process.env.X402_PAY_TO_ADDRESS || "";
 const USDC_ASA   = 31566704n;

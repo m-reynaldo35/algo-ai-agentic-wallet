@@ -14,10 +14,13 @@
 import "dotenv/config";
 import algosdk from "algosdk";
 
-const BASE_URL   = process.env.E2E_BASE_URL || "https://ai-agentic-wallet.com";
-const PORTAL_KEY = process.env.PORTAL_API_SECRET || "";
-const ALGOD_URL  = process.env.ALGORAND_NODE_URL || "https://mainnet-api.4160.nodely.dev";
-const PAY_TO     = process.env.X402_PAY_TO_ADDRESS || "";
+const BASE_URL         = process.env.E2E_BASE_URL || "https://api.ai-agentic-wallet.com";
+const PORTAL_KEY       = process.env.PORTAL_API_SECRET || "";
+const ALGOD_URL        = process.env.ALGORAND_NODE_URL || "https://mainnet-api.4160.nodely.dev";
+const PAY_TO           = process.env.X402_PAY_TO_ADDRESS || "";
+// E2E_AGENT_MNEMONIC: a funded, USDC-opted-in testnet wallet used as the test agent.
+// Must be separate from ALGO_SIGNER_MNEMONIC (the Rocca signer).
+const E2E_AGENT_MNEMONIC = process.env.E2E_AGENT_MNEMONIC || "";
 
 // Stable agentId for e2e — same agent reused across runs
 const E2E_AGENT_ID = "e2e-test-agent";
@@ -65,14 +68,20 @@ async function getOrRegisterAgent(): Promise<AgentRecord> {
   }
 
   // Not found — register fresh
-  log(`Agent not found — registering ${E2E_AGENT_ID}...`);
-  const regRes = await fetch(`${BASE_URL}/api/agents/register`, {
+  if (!E2E_AGENT_MNEMONIC) {
+    throw new Error(
+      "Agent not registered and E2E_AGENT_MNEMONIC is not set.\n" +
+      "Provide a funded, USDC-opted-in Algorand wallet mnemonic to register the e2e test agent.",
+    );
+  }
+  log(`Agent not found — registering ${E2E_AGENT_ID} via register-existing...`);
+  const regRes = await fetch(`${BASE_URL}/api/agents/register-existing`, {
     method: "POST",
     headers: {
       "Content-Type":  "application/json",
       "Authorization": `Bearer ${PORTAL_KEY}`,
     },
-    body: JSON.stringify({ agentId: E2E_AGENT_ID, platform: "e2e" }),
+    body: JSON.stringify({ agentId: E2E_AGENT_ID, mnemonic: E2E_AGENT_MNEMONIC, platform: "e2e" }),
   });
 
   const reg = await regRes.json() as AgentRecord & { registrationTxnId: string; explorerUrl: string };

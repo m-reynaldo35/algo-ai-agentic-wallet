@@ -21,7 +21,35 @@ import { logSettlementSuccess,
 import { config }                       from "../config.js";
 
 const POLL_INTERVAL_MS   = 200;   // how often to check queue when idle
-const CONFIRMATION_ROUNDS = 4;    // max Algorand rounds to wait
+const CONFIRMATION_ROUNDS = 8;    // max Algorand rounds to wait (~36s at 4.5s/round)
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function broadcastWithRetry(
+  algod: algosdk.Algodv2,
+  concatenated: Uint8Array,
+): Promise<string> {
+  const MAX_ATTEMPTS = 3;
+  let lastErr: Error | null = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const { txid } = await algod.sendRawTransaction(concatenated).do();
+      return txid;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("txn dead")) {
+        console.error(`[Worker] txn expired — blob is past lastValid, will not retry`);
+        throw err; // expired — do not retry
+      }
+      lastErr = err instanceof Error ? err : new Error(msg);
+      console.warn(`[Worker] broadcast attempt ${attempt}/${MAX_ATTEMPTS} failed: ${msg}`);
+      if (attempt < MAX_ATTEMPTS) await sleep(1_000 * 2 ** (attempt - 1)); // 1s, 2s
+    }
+  }
+  throw lastErr;
+}
 
 async function processJob(jobId: string): Promise<void> {
   const job = await getJob(jobId);
@@ -56,7 +84,7 @@ async function processJob(jobId: string): Promise<void> {
   }, 60_000);
 
   try {
-    const { txid } = await algod.sendRawTransaction(concatenated).do();
+    const txid = await broadcastWithRetry(algod, concatenated);
     console.log(`[Worker] Submitted txn: ${txid}`);
 
     const confirmation = await algosdk.waitForConfirmation(algod, txid, CONFIRMATION_ROUNDS);

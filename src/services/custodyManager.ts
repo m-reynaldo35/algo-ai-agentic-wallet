@@ -287,7 +287,10 @@ export async function executeRekey(
 
     // Construct unsigned rekey txn: zero-value self-payment with rekey_to set
     const sp = await getSuggestedParams();
-    sp.lastValid = BigInt(sp.firstValid) + 10n; // ~50s window
+    // T2.1: Tighten validity window to ~450s (~100 rounds). Replay protection is
+    // enforced by the signing-service groupId replay guard (5-min TTL), not by
+    // the on-chain validity window. 100 rounds gives plenty of runway for queue depth.
+    sp.lastValid = BigInt(sp.firstValid) + 100n;
 
     const rekeyTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
       sender:          agent.address,

@@ -17,6 +17,7 @@ const PORTAL_SECRET  = process.env.PORTAL_API_SECRET!;
 const API_URL        = process.env.X402_API_URL ?? process.env.E2E_BASE_URL ?? "http://localhost:4020";
 const AGENT_ID       = "setup-tester-v1";
 const NODE_URL       = process.env.ALGORAND_NODE_URL ?? "https://mainnet-api.4160.nodely.dev";
+const NODE_TOKEN     = process.env.ALGORAND_NODE_TOKEN ?? "";
 const USDC_ASSET_ID  = 31566704n;
 const PAY_RUNS       = 5; // x402 payment test iterations
 
@@ -40,7 +41,7 @@ function sep(label: string) {
 // ── 1. Balance check ───────────────────────────────────────────
 async function checkBalances() {
   sep("1. BALANCE CHECK");
-  const algod = new algosdk.Algodv2("", NODE_URL, "");
+  const algod = new algosdk.Algodv2(NODE_TOKEN, NODE_URL);
   const info  = await algod.accountInformation(ADDRESS).do();
   const algo  = Number(info.amount) / 1e6;
   const usdcAsset = info.assets?.find((a: { assetId: bigint }) => a.assetId === USDC_ASSET_ID);

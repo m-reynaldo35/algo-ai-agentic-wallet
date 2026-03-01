@@ -1,13 +1,13 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { MOCK_EVENTS, type AuditEvent } from "@/lib/mock-data";
+import type { AuditEvent } from "@/lib/mock-data";
 
 type FilterType = "all" | "success" | "failure" | "rate.limit";
 type ConnectionState = "connecting" | "live" | "polling" | "paused" | "mock";
 
 export default function EventLog() {
-  const [events, setEvents] = useState<AuditEvent[]>(MOCK_EVENTS);
+  const [events, setEvents] = useState<AuditEvent[]>([]);
   const [filter, setFilter] = useState<FilterType>("all");
   const [agentSearch, setAgentSearch] = useState("");
   const [paused, setPaused] = useState(false);

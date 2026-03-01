@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { Redis } from "@upstash/redis";
 
-const API_URL = process.env.API_URL || "https://ai-agentic-wallet.com";
+const API_URL = process.env.API_URL || "https://api.ai-agentic-wallet.com";
 const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL || "";
 
 function getRedis(): Redis | null {

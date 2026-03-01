@@ -23,7 +23,9 @@ import { createHash }                          from "node:crypto";
 import algosdk                                 from "algosdk";
 import {
   verifyAuthenticationResponse,
+  verifyRegistrationResponse,
   type AuthenticationResponseJSON,
+  type RegistrationResponseJSON,
 }                                              from "@simplewebauthn/server";
 import {
   isoBase64URL,
@@ -213,10 +215,25 @@ function verifyMandateHmac(mandate: Mandate): boolean {
 
 // ── WebAuthn config ───────────────────────────────────────────────
 
-function getWebAuthnConfig(): { rpId: string; origin: string } {
-  const rpId   = process.env.FIDO2_RP_ID ?? process.env.LIQUID_AUTH_RP_ID ?? "localhost";
-  const origin = process.env.WEBAUTHN_ORIGIN ?? `https://${rpId}`;
-  return { rpId, origin };
+const WEBAUTHN_REG_CHAL_PREFIX   = "x402:webauthn:reg-challenge:";   // {agentId} → challenge
+const WEBAUTHN_LOGIN_CHAL_PREFIX = "x402:webauthn:login-challenge:";  // {agentId} → challenge
+
+function getWebAuthnConfig(): { rpId: string; origins: string[] } {
+  const rpId = process.env.FIDO2_RP_ID ?? process.env.LIQUID_AUTH_RP_ID ?? "localhost";
+
+  // WEBAUTHN_ORIGIN can be a comma-separated list to support dev + prod simultaneously.
+  // Default: for localhost rpId include common dev ports; otherwise https://{rpId}.
+  let rawOrigins: string;
+  if (process.env.WEBAUTHN_ORIGIN) {
+    rawOrigins = process.env.WEBAUTHN_ORIGIN;
+  } else if (rpId === "localhost") {
+    rawOrigins = "http://localhost:3000,http://localhost:3001,https://localhost:3000,https://localhost";
+  } else {
+    rawOrigins = `https://${rpId}`;
+  }
+
+  const origins = rawOrigins.split(",").map((s) => s.trim()).filter(Boolean);
+  return { rpId, origins };
 }
 
 // ── Challenge lifecycle ────────────────────────────────────────────
@@ -301,9 +318,10 @@ export async function registerWebAuthnCredential(
 
   const updated = {
     ...agent,
-    ownerWalletId:     ownerWalletId,
-    webauthnPublicKey: publicKeyCose,
-    webauthnCounter:   counter,
+    ownerWalletId:       ownerWalletId,
+    webauthnCredentialId: credentialId,
+    webauthnPublicKey:   publicKeyCose,
+    webauthnCounter:     counter,
   };
 
   await updateAgentRecord(updated);
@@ -419,13 +437,13 @@ export async function createMandate(
       createHash("sha256").update(`${nonce}:${canonicalJson}`).digest(),
     );
 
-    const { rpId, origin } = getWebAuthnConfig();
+    const { rpId, origins } = getWebAuthnConfig();
     let verification;
     try {
       verification = await verifyAuthenticationResponse({
         response:            input.webauthnAssertion!,
         expectedChallenge,
-        expectedOrigin:      origin,
+        expectedOrigin:      origins,
         expectedRPID:        rpId,
         credential: {
           id:        input.webauthnAssertion!.id,
@@ -611,13 +629,13 @@ export async function revokeMandate(
       createHash("sha256").update(`${nonce}:${mandateId}:revoke`).digest(),
     );
 
-    const { rpId, origin } = getWebAuthnConfig();
+    const { rpId, origins } = getWebAuthnConfig();
     let verification;
     try {
       verification = await verifyAuthenticationResponse({
         response:         input.webauthnAssertion!,
         expectedChallenge,
-        expectedOrigin:   origin,
+        expectedOrigin:   origins,
         expectedRPID:     rpId,
         credential: {
           id:        input.webauthnAssertion!.id,
@@ -846,3 +864,207 @@ export async function saveMandate(mandate: Mandate): Promise<void> {
 }
 
 export { verifyMandateHmac, RECUR_PREFIX };
+
+// ── First-class WebAuthn login — register + login ─────────────────
+//
+// These four functions back the dedicated auth endpoints:
+//   POST /api/agents/:id/auth/webauthn-register-challenge
+//   POST /api/agents/:id/auth/webauthn-register
+//   POST /api/agents/:id/auth/webauthn-login-challenge
+//   POST /api/agents/:id/auth/webauthn-login
+//
+// Unlike the mandate WebAuthn path (which ties the challenge to a specific
+// mandate payload), the login path uses a simple random challenge — the
+// authenticator proves device ownership; no mandate payload is in scope.
+
+/**
+ * Issue a WebAuthn registration challenge.
+ * Stores a random 32-byte challenge in Redis (single-use, 5-minute TTL).
+ * Returns everything the client needs for navigator.credentials.create().
+ */
+export async function issueWebAuthnRegistrationChallenge(agentId: string): Promise<{
+  challenge:       string;   // base64url random bytes
+  userId:          string;   // base64url(agentId) — stable across re-registrations
+  rpId:            string;
+  rpName:          string;
+  userName:        string;
+  userDisplayName: string;
+  hasCredentials:  boolean;  // true → device already registered; re-registration replaces it
+}> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const agent = await getAgent(agentId);
+  if (!agent) throw new Error(`Agent not found: ${agentId}`);
+
+  const challengeBytes = new Uint8Array(32);
+  crypto.getRandomValues(challengeBytes);
+  const challenge = isoBase64URL.fromBuffer(Buffer.from(challengeBytes));
+
+  await redis.set(`${WEBAUTHN_REG_CHAL_PREFIX}${agentId}`, challenge, { ex: CHALLENGE_TTL_S });
+
+  const { rpId } = getWebAuthnConfig();
+  return {
+    challenge,
+    userId:          isoBase64URL.fromBuffer(Buffer.from(agentId)),
+    rpId,
+    rpName:          "x402 Agent Dashboard",
+    userName:        agentId,
+    userDisplayName: `Agent ${agentId.slice(0, 8)}`,
+    hasCredentials:  !!agent.webauthnPublicKey,
+  };
+}
+
+/**
+ * Verify a WebAuthn registration response (navigator.credentials.create result).
+ * Extracts credential ID + COSE public key; stores alongside the agent record.
+ * ownerWalletId: keeps existing (if set via Liquid Auth), otherwise synthetic
+ * `webauthn:{credentialId}` so mandate operations still have a stable owner ID.
+ */
+export async function verifyAndRegisterWebAuthn(
+  agentId:  string,
+  response: RegistrationResponseJSON,
+): Promise<{ ownerWalletId: string; credentialId: string }> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const challenge = await redis.getdel(`${WEBAUTHN_REG_CHAL_PREFIX}${agentId}`) as string | null;
+  if (!challenge) throw new Error("No active registration challenge — expired or not issued");
+
+  const { rpId, origins } = getWebAuthnConfig();
+
+  let verification;
+  try {
+    verification = await verifyRegistrationResponse({
+      response,
+      expectedChallenge:      challenge,
+      expectedOrigin:         origins,
+      expectedRPID:           rpId,
+      requireUserVerification: false, // allow non-UV authenticators (e.g. security keys)
+    });
+  } catch (err) {
+    throw new Error(
+      `WebAuthn registration verification failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (!verification.verified || !verification.registrationInfo) {
+    throw new Error("WebAuthn registration not verified");
+  }
+
+  // simplewebauthn v13: registrationInfo.credential holds { id, publicKey, counter }
+  const { id: credentialID, publicKey: credentialPublicKey, counter } =
+    verification.registrationInfo.credential;
+  const publicKeyCose = isoBase64URL.fromBuffer(Buffer.from(credentialPublicKey));
+
+  const agent = await getAgent(agentId);
+  if (!agent) throw new Error(`Agent not found: ${agentId}`);
+
+  const ownerWalletId = agent.ownerWalletId || `webauthn:${credentialID}`;
+
+  await updateAgentRecord({
+    ...agent,
+    ownerWalletId,
+    webauthnCredentialId: credentialID,
+    webauthnPublicKey:    publicKeyCose,
+    webauthnCounter:      counter,
+  });
+
+  console.log(`[MandateService] WebAuthn credential registered: agent=${agentId} credId=${credentialID.slice(0, 16)}…`);
+  return { ownerWalletId, credentialId: credentialID };
+}
+
+/**
+ * Issue a WebAuthn login challenge.
+ * If the agent has no registered credential, hasCredentials=false — the
+ * client should switch to the registration flow instead.
+ */
+export async function issueWebAuthnLoginChallenge(agentId: string): Promise<{
+  challenge:        string;
+  allowCredentials: Array<{ id: string; type: "public-key" }>;
+  hasCredentials:   boolean;
+  rpId:             string;
+}> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const agent = await getAgent(agentId);
+  if (!agent) throw new Error(`Agent not found: ${agentId}`);
+
+  const challengeBytes = new Uint8Array(32);
+  crypto.getRandomValues(challengeBytes);
+  const challenge = isoBase64URL.fromBuffer(Buffer.from(challengeBytes));
+
+  await redis.set(`${WEBAUTHN_LOGIN_CHAL_PREFIX}${agentId}`, challenge, { ex: CHALLENGE_TTL_S });
+
+  const { rpId } = getWebAuthnConfig();
+  const hasCredentials = !!agent.webauthnPublicKey;
+
+  const allowCredentials: Array<{ id: string; type: "public-key" }> =
+    hasCredentials && agent.webauthnCredentialId
+      ? [{ id: agent.webauthnCredentialId, type: "public-key" }]
+      : [];
+
+  return { challenge, allowCredentials, hasCredentials, rpId };
+}
+
+/**
+ * Verify a WebAuthn login assertion (navigator.credentials.get result).
+ * Consumes the single-use login challenge and updates the authenticator counter.
+ * Returns the agent's ownerWalletId on success.
+ */
+export async function verifyWebAuthnLoginAssertion(
+  agentId:   string,
+  assertion: AuthenticationResponseJSON,
+): Promise<{ ownerWalletId: string }> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const challenge = await redis.getdel(`${WEBAUTHN_LOGIN_CHAL_PREFIX}${agentId}`) as string | null;
+  if (!challenge) {
+    throw new Error("No active login challenge — call webauthn-login-challenge first");
+  }
+
+  const agent = await getAgent(agentId);
+  if (!agent) throw new Error(`Agent not found: ${agentId}`);
+
+  if (!agent.webauthnPublicKey || !agent.ownerWalletId) {
+    throw new Error(
+      "No WebAuthn credential registered for this agent. " +
+      "Call POST /api/agents/:agentId/auth/webauthn-register first.",
+    );
+  }
+
+  const { rpId, origins } = getWebAuthnConfig();
+
+  let verification;
+  try {
+    verification = await verifyAuthenticationResponse({
+      response:         assertion,
+      expectedChallenge: challenge,
+      expectedOrigin:   origins,
+      expectedRPID:     rpId,
+      credential: {
+        id:        assertion.id,
+        publicKey: isoBase64URL.toBuffer(agent.webauthnPublicKey),
+        counter:   agent.webauthnCounter ?? 0,
+      },
+    });
+  } catch (err) {
+    throw new Error(
+      `WebAuthn login verification failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (!verification.verified) {
+    throw new Error("WebAuthn login assertion not verified");
+  }
+
+  await updateAgentRecord({
+    ...agent,
+    webauthnCounter: verification.authenticationInfo.newCounter,
+  });
+
+  console.log(`[MandateService] WebAuthn login verified: agent=${agentId} owner=${agent.ownerWalletId.slice(0, 16)}…`);
+  return { ownerWalletId: agent.ownerWalletId };
+}

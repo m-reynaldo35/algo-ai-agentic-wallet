@@ -119,7 +119,7 @@ const defaultNotifications: NotificationSettings = {
 
 const defaultConfig: ConfigData = {
   network: "algorand-mainnet",
-  serverUrl: "https://ai-agentic-wallet.com",
+  serverUrl: "https://api.ai-agentic-wallet.com",
   rateLimits: { ipMax: 30, ipWindow: "10s", platformMax: 100, platformWindow: "10s" },
 };
 

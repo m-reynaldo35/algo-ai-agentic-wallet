@@ -16,24 +16,31 @@ import algosdk from "algosdk";
 import {
   AlgoAgentClient,
   X402Error,
-  type TradeResult,
-  type SettlementResult,
-} from "@m-reynaldo35/x402-client";
+} from "@algo-wallet/x402-client";
 
 // ── Environment ────────────────────────────────────────────────
 
-const LIVE_API_URL = process.env.LIVE_API_URL;
-const MNEMONIC = process.env.ALGO_MNEMONIC;
+const LIVE_API_URL    = process.env.LIVE_API_URL;
+const MNEMONIC        = process.env.ALGO_MNEMONIC;
+const PORTAL_SECRET   = process.env.PORTAL_API_SECRET;
+const AGENT_ID        = process.env.AGENT_ID;
 
 if (!LIVE_API_URL) {
   console.error("[FATAL] LIVE_API_URL is required.");
-  console.error("        Example: LIVE_API_URL=https://your-project.vercel.app");
+  console.error("        Example: LIVE_API_URL=https://algo-ai-wallet-production.up.railway.app");
   process.exit(1);
 }
 
 if (!MNEMONIC) {
   console.error("[FATAL] ALGO_MNEMONIC is required.");
-  console.error("        Export your 25-word Algorand Testnet mnemonic.");
+  console.error("        Export your 25-word Algorand mnemonic.");
+  process.exit(1);
+}
+
+if (!PORTAL_SECRET || !AGENT_ID) {
+  console.error("[FATAL] PORTAL_API_SECRET and AGENT_ID are required for /api/execute.");
+  console.error("        PORTAL_API_SECRET: your portal API secret");
+  console.error("        AGENT_ID: a registered agentId (POST /api/agents/register-existing first)");
   process.exit(1);
 }
 
@@ -50,15 +57,9 @@ console.log(`
 ║  Target:   ${LIVE_API_URL.padEnd(50)}║
 ║  Sender:   ${SENDER.slice(0, 12)}...${SENDER.slice(-6)}                           ║
 ║  Network:  Algorand Testnet                                     ║
-║  Toll:     100,000 micro-USDC ($0.10)                           ║
+║  Toll:     10,000 micro-USDC ($0.01)                            ║
 ╚══════════════════════════════════════════════════════════════════╝
 `);
-
-// ── Type Guard ─────────────────────────────────────────────────
-
-function isSuccess(result: TradeResult): result is SettlementResult {
-  return "success" in result && result.success === true;
-}
 
 // ── Health Check ───────────────────────────────────────────────
 
@@ -101,7 +102,7 @@ async function executePing(): Promise<void> {
 
   const sandboxResponse = await client.requestSandboxExport({
     senderAddress: SENDER,
-    amount: 100_000, // $0.10 USDC toll
+    amount: 10_000, // $0.01 USDC toll
   });
 
   const { export: sandbox } = sandboxResponse;
@@ -117,18 +118,29 @@ async function executePing(): Promise<void> {
 
   // ── Step 3: Settlement Pipeline ───────────────────────────
   console.log(`[PING] Step 3/4: Settlement → POST /api/execute`);
+  console.log(`[PING]   agentId: ${AGENT_ID}`);
   console.log(`[PING]   Forwarding to pipeline: Validate → Auth → Sign → Broadcast...`);
 
-  const result = await client.settle(sandboxResponse);
+  // Call /api/execute directly so we can inject portal auth + agentId.
+  // The SDK's settle() doesn't support custom headers.
+  const execRes = await fetch(`${LIVE_API_URL}/api/execute`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${PORTAL_SECRET}`,
+    },
+    body: JSON.stringify({ sandboxExport: sandbox, agentId: AGENT_ID }),
+  });
+  const result = await execRes.json();
 
   // ── Step 4: Verification ──────────────────────────────────
   console.log();
-  if (isSuccess(result)) {
+  if (execRes.ok && result.settlement?.txnId) {
     const explorerUrl = `${EXPLORER_BASE}/${result.settlement.txnId}`;
 
     console.log(`[PING] Step 4/4: VERIFICATION`);
     console.log(`[PING] ════════════════════════════════════════════════════`);
-    console.log(`[PING]   SETTLEMENT CONFIRMED ON ALGORAND TESTNET`);
+    console.log(`[PING]   SETTLEMENT CONFIRMED ON ALGORAND MAINNET`);
     console.log(`[PING] ════════════════════════════════════════════════════`);
     console.log(`[PING]   Txn ID:  ${result.settlement.txnId}`);
     console.log(`[PING]   Round:   ${result.settlement.confirmedRound}`);
@@ -144,9 +156,9 @@ async function executePing(): Promise<void> {
     console.log(`[PING]   x402 infrastructure is LIVE. Toll collected.`);
     console.log();
   } else {
-    console.error(`[PING] Step 4/4: SETTLEMENT FAILED`);
-    console.error(`[PING]   Stage:  ${result.failedStage}`);
-    console.error(`[PING]   Error:  ${result.detail}`);
+    console.error(`[PING] Step 4/4: SETTLEMENT FAILED (HTTP ${execRes.status})`);
+    console.error(`[PING]   Stage:  ${result.failedStage ?? "unknown"}`);
+    console.error(`[PING]   Error:  ${result.error ?? result.detail ?? JSON.stringify(result)}`);
     console.error(`[PING]   No funds moved (atomic abort). Debug the failed stage above.`);
     process.exit(1);
   }
@@ -166,7 +178,7 @@ async function main(): Promise<void> {
     } else {
       console.error(`\n[PING] UNEXPECTED ERROR:`, err);
     }
-    console.error(`[PING] Ping failed. Check deployment logs: npx vercel logs`);
+    console.error(`[PING] Ping failed. Check deployment logs: railway logs`);
     process.exit(1);
   }
 }

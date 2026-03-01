@@ -92,6 +92,12 @@ export interface AgentRecord {
    */
   webauthnPublicKey?: string;
   /**
+   * Base64url credential ID from the agent owner's FIDO2 device.
+   * Stored alongside webauthnPublicKey so login challenges can populate
+   * allowCredentials, directing the browser to the correct authenticator.
+   */
+  webauthnCredentialId?: string;
+  /**
    * Monotonic WebAuthn signature counter — anti-replay for FIDO2 assertions.
    * Server increments on every successful WebAuthn assertion. If the device
    * sends a counter lower than this value, the assertion is rejected.

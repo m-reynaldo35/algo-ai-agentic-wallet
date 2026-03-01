@@ -15,7 +15,7 @@
   "asset_network": "algorand-mainnet",
   "currency_decimals": 6,
 
-  "base_url": "https://ai-agentic-wallet.com",
+  "base_url": "https://api.ai-agentic-wallet.com",
 
   "endpoints": {
     "discover":     { "method": "GET",  "path": "/agent.json",        "auth": "none" },
@@ -85,13 +85,14 @@
     "npm": "@algo-wallet/x402-client",
     "typescript": true,
     "install": "npm install @algo-wallet/x402-client",
-    "docs": "https://ai-agentic-wallet.com/docs"
+    "docs": "https://ai-agentic-wallet.com/docs",
+    "install": "npm install @m-reynaldo35/x402-client"
   },
 
   "registry_listings": {
-    "openclaw": "https://ai-agentic-wallet.com/openclaw-registry.json",
-    "moltbook": "https://ai-agentic-wallet.com/moltbook-agent.json",
-    "skill_manifest": "https://ai-agentic-wallet.com/skill.md"
+    "openclaw": "https://api.ai-agentic-wallet.com/openclaw-registry.json",
+    "moltbook": "https://api.ai-agentic-wallet.com/moltbook-agent.json",
+    "skill_manifest": "https://api.ai-agentic-wallet.com/skill.md"
   },
 
   "contact": {

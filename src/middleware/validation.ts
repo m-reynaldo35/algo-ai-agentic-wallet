@@ -158,7 +158,9 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
         const onChainAuthAddr = accountInfo.authAddr?.toString() ?? null;
 
         if (!onChainAuthAddr) {
-          // Account is not rekeyed — its own key would need to sign, not Rocca
+          // The Rocca signer itself is the top-level authority — no rekey required.
+          // All other un-rekeyed accounts are rejected.
+          if (sender === routing.authAddr) continue;
           authAddrVerified = false;
           errors.push(
             `Rule 3: Sender ${sender} has no auth-addr — account is not rekeyed to Rocca signer`,

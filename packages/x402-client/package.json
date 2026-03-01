@@ -1,5 +1,5 @@
 {
-  "name": "@m-reynaldo35/x402-client",
+  "name": "@algo-wallet/x402-client",
   "version": "0.2.0",
   "description": "TypeScript SDK for x402-compliant AI-to-AI settlement on Algorand",
   "type": "module",

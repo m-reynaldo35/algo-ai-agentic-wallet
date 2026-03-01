@@ -1,6 +1,6 @@
 import { type NextRequest } from "next/server";
 
-const API_URL = process.env.API_URL || "https://ai-agentic-wallet.com";
+const API_URL = process.env.API_URL || "https://api.ai-agentic-wallet.com";
 
 /**
  * SSE Proxy — streams real-time events from the backend to the portal client.

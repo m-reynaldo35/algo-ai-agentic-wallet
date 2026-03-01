@@ -156,9 +156,10 @@ export async function constructAtomicGroup(
 
   try {
     const suggestedParams = await getSuggestedParams();
-    // T2.1: Tighten validity window to ~10 rounds (~50s) to minimise the
-    // replay window. Default Algorand validity is ~1000 rounds (~50 min).
-    suggestedParams.lastValid = BigInt(suggestedParams.firstValid) + 10n;
+    // T2.1: Tighten validity window to ~450s (~100 rounds). Replay protection is
+    // enforced by the signing-service groupId replay guard (5-min TTL), not by
+    // the on-chain validity window. 100 rounds gives plenty of runway for queue depth.
+    suggestedParams.lastValid = BigInt(suggestedParams.firstValid) + 100n;
 
     const expectedAmountBig = BigInt(amount);
     const minAmountOut = calculateMinAmountOut(expectedAmountBig, slippageBips);
@@ -325,8 +326,10 @@ export async function constructDataSwapGroup(
   }
 
   const suggestedParams = await getSuggestedParams();
-  // T2.1: Tighten validity window to ~10 rounds (~50s)
-  suggestedParams.lastValid = BigInt(suggestedParams.firstValid) + 10n;
+  // T2.1: Tighten validity window to ~450s (~100 rounds). Replay protection is
+  // enforced by the signing-service groupId replay guard (5-min TTL), not by
+  // the on-chain validity window. 100 rounds gives plenty of runway for queue depth.
+  suggestedParams.lastValid = BigInt(suggestedParams.firstValid) + 100n;
 
   // ── Txn A: The Payment ────────────────────────────────────────
   // ASA transfer of USDC from buyer to seller. Uses the Algorand
@@ -412,8 +415,10 @@ export async function constructBatchedAtomicGroup(
 
   try {
     const suggestedParams = await getSuggestedParams();
-    // T2.1: Tighten validity window to ~10 rounds (~50s)
-    suggestedParams.lastValid = BigInt(suggestedParams.firstValid) + 10n;
+    // T2.1: Tighten validity window to ~450s (~100 rounds). Replay protection is
+    // enforced by the signing-service groupId replay guard (5-min TTL), not by
+    // the on-chain validity window. 100 rounds gives plenty of runway for queue depth.
+    suggestedParams.lastValid = BigInt(suggestedParams.firstValid) + 100n;
 
     const tollTxns: algosdk.Transaction[] = [];
     const batchIntents: SandboxExport["batchIntents"] = [];

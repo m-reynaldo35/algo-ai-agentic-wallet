@@ -64,13 +64,15 @@ export function getIndexerClient(): algosdk.Indexer {
 }
 
 const PARAMS_CACHE_KEY = "x402:params:suggested";
-const PARAMS_CACHE_TTL = 30; // seconds — valid for ~7 Algorand rounds
+const PARAMS_CACHE_TTL = 10; // seconds — valid for ~2 Algorand rounds
 
 /**
  * Fetch suggested transaction parameters from the Algod node.
  *
- * Redis-backed cache with 30s TTL: one Algod round-trip per ~7 rounds
+ * Redis-backed cache with 10s TTL: one Algod round-trip per ~2 rounds
  * instead of one per transaction. bigint fields are serialized as strings.
+ * Combined with the 100-round validity window, there are always 98+ rounds
+ * of real remaining validity even with a fully stale cached firstValid.
  */
 export async function getSuggestedParams(): Promise<algosdk.SuggestedParams> {
   // ── Cache read ────────────────────────────────────────────────

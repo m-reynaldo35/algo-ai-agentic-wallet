@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { MOCK_SETTLEMENTS, type Settlement } from "@/lib/mock-data";
+import type { Settlement } from "@/lib/mock-data";
 import SettlementDetailModal from "./SettlementDetailModal";
 
 type DateRange = "24h" | "7d" | "30d";
@@ -11,7 +11,7 @@ export default function SettlementTable() {
   const [agentSearch, setAgentSearch] = useState("");
   const [dateRange, setDateRange] = useState<DateRange>("7d");
   const [selected, setSelected] = useState<Settlement | null>(null);
-  const [settlements, setSettlements] = useState<Settlement[]>(MOCK_SETTLEMENTS);
+  const [settlements, setSettlements] = useState<Settlement[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {

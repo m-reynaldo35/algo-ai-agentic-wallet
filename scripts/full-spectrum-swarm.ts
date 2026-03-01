@@ -28,7 +28,7 @@
  * │                                                                          │
  * │  Env:                                                                    │
  * │    ALGO_MNEMONIC    — 25-word mnemonic of funded mainnet wallet          │
- * │    API_URL          — x402 server (default: https://ai-agentic-wallet.com)│
+ * │    API_URL          — x402 server (default: https://api.ai-agentic-wallet.com)│
  * └─────────────────────────────────────────────────────────────────────────┘
  */
 
@@ -49,7 +49,7 @@ const MODE: "probe" | "sandbox" | "live" =
   "probe";
 
 // ── Config ───────────────────────────────────────────────────────
-const API_URL     = (process.env.API_URL || "https://ai-agentic-wallet.com").replace(/\/+$/, "");
+const API_URL     = (process.env.API_URL || "https://api.ai-agentic-wallet.com").replace(/\/+$/, "");
 const ALGO_NODE   = process.env.ALGORAND_NODE_URL  || "https://mainnet-api.4160.nodely.dev";
 const ALGO_IDX    = process.env.ALGORAND_INDEXER_URL || "https://mainnet-idx.4160.nodely.dev";
 const USDC_ASA    = 31566704n;                 // Circle USDC on Algorand mainnet

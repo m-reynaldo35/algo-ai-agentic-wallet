@@ -26,6 +26,7 @@ RUN npm ci --ignore-scripts && npm cache clean --force
 COPY --from=builder /app/dist ./dist
 COPY public/ ./public/
 COPY scripts/ ./scripts/
+COPY src/ ./src/
 COPY tsconfig.json ./
 COPY entrypoint.sh ./
 RUN chmod +x entrypoint.sh

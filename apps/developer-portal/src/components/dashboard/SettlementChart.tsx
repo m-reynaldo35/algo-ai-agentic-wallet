@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { SETTLEMENT_VOLUME_7D } from "@/lib/mock-data";
 import SparklineBar from "./SparklineBar";
 
 interface VolumePoint {
@@ -20,11 +19,11 @@ const CHAIN_COLORS: Record<ChainFilter, string> = {
 };
 
 export default function SettlementChart() {
-  const [data, setData] = useState<VolumePoint[]>(SETTLEMENT_VOLUME_7D);
-  const [total, setTotal] = useState(() => SETTLEMENT_VOLUME_7D.reduce((s, d) => s + d.value, 0));
+  const [data, setData] = useState<VolumePoint[]>([]);
+  const [total, setTotal] = useState(0);
   const [range, setRange] = useState<Range>("7d");
   const [chain, setChain] = useState<ChainFilter>("all");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
@@ -97,6 +96,11 @@ export default function SettlementChart() {
 
       {/* Chart */}
       <div className="flex items-end gap-1 h-24">
+        {loading && data.length === 0 && (
+          <div className="w-full flex items-center justify-center h-full">
+            <span className="text-zinc-600 text-sm animate-pulse">Loading...</span>
+          </div>
+        )}
         {data.map((d, i) => {
           const pct = maxValue > 0 ? (d.value / maxValue) * 100 : 0;
           return (

@@ -19,14 +19,14 @@
     "toll_model": "per-request"
   },
   "endpoints": {
-    "agent_action": "https://ai-agentic-wallet.com/api/agent-action",
-    "batch_action": "https://ai-agentic-wallet.com/api/batch-action",
-    "execute": "https://ai-agentic-wallet.com/api/execute",
-    "health": "https://ai-agentic-wallet.com/health",
-    "telemetry": "https://ai-agentic-wallet.com/api/telemetry",
-    "info": "https://ai-agentic-wallet.com/api/info"
+    "agent_action": "https://api.ai-agentic-wallet.com/api/agent-action",
+    "batch_action": "https://api.ai-agentic-wallet.com/api/batch-action",
+    "execute": "https://api.ai-agentic-wallet.com/api/execute",
+    "health": "https://api.ai-agentic-wallet.com/health",
+    "telemetry": "https://api.ai-agentic-wallet.com/api/telemetry",
+    "info": "https://api.ai-agentic-wallet.com/api/info"
   },
-  "webhook_url": "https://ai-agentic-wallet.com/api/execute",
+  "webhook_url": "https://api.ai-agentic-wallet.com/api/execute",
   "auth": {
     "method": "X-PAYMENT",
     "signature_scheme": "Ed25519",
