@@ -6,7 +6,7 @@
  * never degrade silently into an unsafe state.
  *
  * Covers:
- *   Section 1  — Upstash Redis credentials required in production
+ *   Section 1  — Redis credentials required in production (Railway or Upstash)
  *   Section 7  — Treasury address required; config frozen at runtime
  *   Section 8  — Signer mnemonic refused outside production unless explicitly allowed
  *   Section 9  — mTLS env validation when MTLS_ENABLED=true
@@ -16,29 +16,30 @@
 import { createHash } from "node:crypto";
 import { config } from "../config.js";
 
-// ── Section 1: Upstash Redis credentials ──────────────────────────
+// ── Section 1: Redis credentials ──────────────────────────────────
 
 /**
  * Require Redis credentials in production.
  * Without Redis, rate limiting and the circuit breaker are degraded
  * to in-memory fallbacks — acceptable for dev, not for production.
+ *
+ * Accepts any of the supported Redis connection methods (priority order):
+ *   REDIS_PRIVATE_URL  — Railway internal network (preferred)
+ *   REDIS_URL          — Railway public URL / local dev
+ *   UPSTASH_REDIS_REST_URL + TOKEN — legacy Upstash HTTP REST fallback
  */
 export function assertRedisCredentials(): void {
   if (process.env.NODE_ENV !== "production") return;
 
-  if (!process.env.UPSTASH_REDIS_REST_URL) {
-    throw new Error(
-      "BOOT FAILURE: UPSTASH_REDIS_REST_URL must be set in production. " +
-      "Rate limiting and the signer circuit breaker require Redis. " +
-      "Provision an Upstash Redis database and set this variable.",
-    );
-  }
+  const hasRailwayRedis = !!(process.env.REDIS_PRIVATE_URL || process.env.REDIS_URL);
+  const hasUpstash      = !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
 
-  if (!process.env.UPSTASH_REDIS_REST_TOKEN) {
+  if (!hasRailwayRedis && !hasUpstash) {
     throw new Error(
-      "BOOT FAILURE: UPSTASH_REDIS_REST_TOKEN must be set in production. " +
+      "BOOT FAILURE: No Redis credentials configured in production. " +
       "Rate limiting and the signer circuit breaker require Redis. " +
-      "Set this to the REST token from your Upstash Redis console.",
+      "Set REDIS_PRIVATE_URL (Railway internal) or REDIS_URL, " +
+      "or provision an Upstash database and set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN.",
     );
   }
 }
@@ -148,21 +149,32 @@ export function assertSignerEnvironment(): void {
 
 /**
  * Warn in production when the signing service has no dedicated Redis
- * database configured. The signing service should use SIGNER_REDIS_REST_URL
- * (separate Upstash DB) rather than the shared main-API Redis instance.
+ * database configured. For isolation, the signing service should use
+ * SIGNER_REDIS_PRIVATE_URL / SIGNER_REDIS_URL (separate Railway Redis plugin)
+ * rather than sharing the main-API Redis instance.
  *
- * This is a warning, not a hard failure — a single Redis database is
+ * This is a warning, not a hard failure — sharing a single Redis database is
  * acceptable in development or single-instance deployments.
  */
 export function assertSignerRedis(): void {
-  if (process.env.NODE_ENV !== "production") return;
+  const isProd =
+    process.env.NODE_ENV === "production" ||
+    process.env.RAILWAY_ENVIRONMENT === "production";
 
-  if (!process.env.SIGNER_REDIS_REST_URL) {
+  if (!isProd) return;
+
+  const hasDedicatedRedis = !!(
+    process.env.SIGNER_REDIS_PRIVATE_URL ||
+    process.env.SIGNER_REDIS_URL ||
+    process.env.SIGNER_REDIS_REST_URL
+  );
+
+  if (!hasDedicatedRedis) {
     console.warn(
-      "[envGuard] WARNING: SIGNER_REDIS_REST_URL is not set. " +
+      "[envGuard] WARNING: No dedicated signer Redis configured (SIGNER_REDIS_PRIVATE_URL / SIGNER_REDIS_URL). " +
       "The signing service will share the main API Redis database. " +
-      "For production: provision a separate Upstash database and set " +
-      "SIGNER_REDIS_REST_URL / SIGNER_REDIS_REST_TOKEN on the signing service.",
+      "For production isolation: add a second Railway Redis plugin to the signing service " +
+      "and set SIGNER_REDIS_PRIVATE_URL + SIGNER_REDIS_URL.",
     );
   }
 }
@@ -258,15 +270,12 @@ export function assertMtlsProduction(side: "client" | "server"): void {
  * Must be called AFTER assertAndFreezeTreasury() and assertRedisCredentials().
  */
 export async function assertCrossRegionTreasuryHash(): Promise<void> {
-  const url   = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) return; // Redis not configured — skip
+  const { getRedis } = await import("../services/redis.js");
+  const redis = getRedis();
+  if (!redis) return; // Redis not configured — skip
 
-  const { Redis } = await import("@upstash/redis");
-  const redis = new Redis({ url, token });
-
-  const HASH_KEY    = "x402:config:treasury-hash";
-  const actualHash  = createHash("sha256").update(config.x402.payToAddress).digest("hex");
+  const HASH_KEY   = "x402:config:treasury-hash";
+  const actualHash = createHash("sha256").update(config.x402.payToAddress).digest("hex");
 
   // SET NX — only set if key does not exist (first instance wins)
   const result = await redis.set(HASH_KEY, actualHash, { nx: true });
@@ -277,7 +286,7 @@ export async function assertCrossRegionTreasuryHash(): Promise<void> {
   }
 
   // Key already existed — compare with stored hash
-  const storedHash = await redis.get(HASH_KEY) as string | null;
+  const storedHash = await redis.get<string>(HASH_KEY);
   if (storedHash && storedHash !== actualHash) {
     throw new Error(
       `BOOT FAILURE: Treasury address mismatch across regions. ` +
