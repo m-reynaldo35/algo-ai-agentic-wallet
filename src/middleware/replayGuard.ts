@@ -1,4 +1,4 @@
-import { Redis } from "@upstash/redis";
+import { getRedis } from "../services/redis.js";
 
 /**
  * ┌─────────────────────────────────────────────────────────────────┐
@@ -8,12 +8,11 @@ import { Redis } from "@upstash/redis";
  * │  X-PAYMENT signatures via two enforcement mechanisms:           │
  * │                                                                 │
  * │  1. Time Bound:  ΔT = T_current − T_signature ≤ 60 seconds     │
- * │  2. Nonce Cache: Each nonce is single-use, stored in Upstash    │
- * │     Redis with automatic TTL expiration. Duplicates are         │
- * │     rejected with HTTP 401.                                     │
+ * │  2. Nonce Cache: Each nonce is single-use, stored in Redis      │
+ * │     with automatic TTL expiration. Duplicates are rejected      │
+ * │     with HTTP 401.                                              │
  * │                                                                 │
- * │  Upstash Redis provides globally consistent nonce state across  │
- * │  all serverless function instances (Vercel, AWS Lambda, etc).   │
+ * │  Uses the shared Railway Redis (TCP, <2ms) via getRedis().      │
  * │  Falls back to in-memory Map when Redis is not configured       │
  * │  (local development).                                           │
  * └─────────────────────────────────────────────────────────────────┘
@@ -25,33 +24,8 @@ const MAX_SIGNATURE_AGE_SECONDS = 60;
 /** Redis key prefix to namespace nonces and avoid collisions */
 const NONCE_KEY_PREFIX = "x402:nonce:";
 
-// ── Redis Client (lazy initialization) ───────────────────────────
-// Initialized on first use. If UPSTASH_REDIS_REST_URL is not set,
-// falls back to an in-memory Map for local development.
-
-let redis: Redis | null = null;
-let redisAvailable: boolean | null = null;
+// ── In-memory fallback ────────────────────────────────────────────
 const localFallbackCache = new Map<string, number>();
-
-function getRedisClient(): Redis | null {
-  if (redisAvailable === false) return null;
-
-  if (redis === null) {
-    const url = process.env.UPSTASH_REDIS_REST_URL;
-    const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-
-    if (!url || !token) {
-      redisAvailable = false;
-      console.warn("[ReplayGuard] UPSTASH_REDIS_REST_URL/TOKEN not set — using in-memory fallback (not suitable for production)");
-      return null;
-    }
-
-    redis = new Redis({ url, token });
-    redisAvailable = true;
-  }
-
-  return redis;
-}
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -117,13 +91,24 @@ export async function enforceReplayProtection(
   }
 
   // ── Nonce Uniqueness Check ──────────────────────────────────────
-  const client = getRedisClient();
+  const redis = getRedis();
 
-  if (client) {
-    return enforceViaRedis(client, nonce);
+  if (redis) {
+    const key = `${NONCE_KEY_PREFIX}${nonce}`;
+    // SET key "1" NX EX 60 — atomic set-if-not-exists with 60s TTL.
+    // Returns "OK" if the key was set (nonce is fresh).
+    // Returns null if the key already exists (replay detected).
+    const result = await redis.set(key, "1", { nx: true, ex: MAX_SIGNATURE_AGE_SECONDS });
+    if (result === null) {
+      return {
+        valid: false,
+        error: "Signature Replay Detected: nonce has already been used",
+      };
+    }
+    return { valid: true };
   }
 
-  // Fail CLOSED when Redis is unavailable (production path).
+  // Fail CLOSED when Redis is unavailable in production.
   // In-memory nonce caches are per-instance and cannot prevent cross-instance
   // replay in multi-region deployments. A Redis outage must not silently
   // degrade replay protection for a financial signing service.
@@ -148,36 +133,8 @@ export async function enforceReplayProtection(
 }
 
 /**
- * Redis-backed nonce enforcement (production path).
- *
- * Uses SET with NX (set-if-not-exists) + EX (TTL) in a single atomic
- * command. If the key already exists, SET NX returns null — meaning
- * the nonce was already consumed and this is a replay.
- */
-async function enforceViaRedis(
-  client: Redis,
-  nonce: string,
-): Promise<ReplayCheckResult> {
-  const key = `${NONCE_KEY_PREFIX}${nonce}`;
-
-  // SET key "1" NX EX 60 — atomic set-if-not-exists with 60s TTL.
-  // Returns "OK" if the key was set (nonce is fresh).
-  // Returns null if the key already exists (replay detected).
-  const result = await client.set(key, "1", { nx: true, ex: MAX_SIGNATURE_AGE_SECONDS });
-
-  if (result === null) {
-    return {
-      valid: false,
-      error: "Signature Replay Detected: nonce has already been used",
-    };
-  }
-
-  return { valid: true };
-}
-
-/**
  * In-memory fallback nonce enforcement (local dev path).
- * Used when Upstash Redis credentials are not configured.
+ * Used when Redis credentials are not configured.
  */
 function enforceViaMemory(nonce: string, now: number): ReplayCheckResult {
   // Evict stale entries on each check to keep memory bounded

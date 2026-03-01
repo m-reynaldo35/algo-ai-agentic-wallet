@@ -46,7 +46,7 @@ import { setHalt }   from "../services/agentRegistry.js";
 import { emitSecurityEvent } from "../services/securityAudit.js";
 import algosdk from "algosdk";
 import { config } from "../config.js";
-import type { Redis } from "@upstash/redis";
+import type { RedisShim } from "../services/redis.js";
 
 // ── Policy constants ───────────────────────────────────────────────
 
@@ -191,7 +191,7 @@ return {0, sum10m, sum24h}
 
 /** Prune old entries and return the sum of all amounts in the window. */
 async function getWindowSum(
-  redis:    Redis,
+  redis:    RedisShim,
   key:      string,
   windowMs: number,
 ): Promise<bigint> {
@@ -211,7 +211,7 @@ async function getWindowSum(
 
 /** Record a spend into a single ZSET window. Used by the global window only. */
 async function addToWindow(
-  redis:           Redis,
+  redis:           RedisShim,
   key:             string,
   windowMs:        number,
   amountMicroUsdc: bigint,

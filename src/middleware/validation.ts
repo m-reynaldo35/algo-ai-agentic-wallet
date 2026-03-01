@@ -1,7 +1,13 @@
 import algosdk from "algosdk";
 import { config } from "../config.js";
 import { getAlgodClient } from "../network/nodely.js";
+import { getRedis } from "../services/redis.js";
 import type { SandboxExport } from "../services/transaction.js";
+
+// Auth-addr cache TTL — 5 minutes. Auth-addrs only change on deliberate
+// rekeying; 5 minutes of residual cache is safe. Any stale-cache txn will
+// be rejected by the Algorand network at settlement before funds move.
+const AUTH_ADDR_CACHE_TTL_S = 5 * 60;
 
 /**
  * Pre-Flight Validation Gatekeeper
@@ -154,8 +160,30 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
 
     for (const sender of uniqueSenders) {
       try {
-        const accountInfo = await getAlgodClient().accountInformation(sender).do();
-        const onChainAuthAddr = accountInfo.authAddr?.toString() ?? null;
+        // ── Cache lookup (x402:authaddr:{sender}, 5-min TTL) ──────
+        const redis = getRedis();
+        const cacheKey = `x402:authaddr:${sender}`;
+        let onChainAuthAddr: string | null = null;
+        let cacheHit = false;
+
+        if (redis) {
+          const cached = await redis.get(cacheKey);
+          if (cached !== null && cached !== undefined) {
+            // Empty string stored for "no auth-addr"
+            onChainAuthAddr = (cached as string) || null;
+            cacheHit = true;
+          }
+        }
+
+        if (!cacheHit) {
+          const accountInfo = await getAlgodClient().accountInformation(sender).do();
+          onChainAuthAddr = accountInfo.authAddr?.toString() ?? null;
+
+          // Cache the result; empty string represents "no auth-addr"
+          if (redis) {
+            redis.set(cacheKey, onChainAuthAddr ?? "", { ex: AUTH_ADDR_CACHE_TTL_S }).catch(() => {});
+          }
+        }
 
         if (!onChainAuthAddr) {
           // The Rocca signer itself is the top-level authority — no rekey required.

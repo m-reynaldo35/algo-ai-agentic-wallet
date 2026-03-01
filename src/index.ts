@@ -165,9 +165,10 @@ app.get("/health", async (_req, res) => {
     network: node.network,
     node: {
       provider,
-      algod: node.algodUrl,
-      indexer: node.indexerUrl,
-      latestRound: node.latestRound,
+      algod:         node.algodUrl,
+      indexer:       node.indexerUrl,
+      usingFallback: node.usingFallback,
+      latestRound:   node.latestRound,
     },
   });
 });
@@ -1079,7 +1080,13 @@ app.patch("/api/agents/:agentId/unsuspend", requirePortalAuth, async (req, res) 
 app.patch("/api/agents/:agentId/suspend", requirePortalAuth, async (req, res) => {
   try {
     const agentId = String(req.params.agentId || "");
+    // Load before suspend so we have the address for cache invalidation
+    const agentForCache = await getAgent(agentId);
     await updateAgentStatus(agentId, "suspended");
+    // Eagerly invalidate auth-addr cache so Rule 3 re-fetches on next request
+    if (agentForCache?.address) {
+      getRedis()?.del(`x402:authaddr:${agentForCache.address}`).catch(() => {});
+    }
     res.json({ agentId, status: "suspended" });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

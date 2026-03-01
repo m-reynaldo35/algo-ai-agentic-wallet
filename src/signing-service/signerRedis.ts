@@ -1,51 +1,88 @@
-import { Redis } from "@upstash/redis";
+import { RedisShim } from "../services/redis.js";
 
 /**
  * Isolated Redis client for the Signing Service.
  *
- * Uses SIGNER_REDIS_REST_URL / SIGNER_REDIS_REST_TOKEN — a separate
- * Upstash database from the one the main API uses. This enforces
- * database-level isolation: a compromised main-API Redis connection
- * cannot read or write signing-service replay keys, and vice versa.
+ * Uses a dedicated database so the main API's Redis connection cannot
+ * read or write signing-service replay keys, and vice versa (Module 7).
  *
- * Falls back to null when credentials are not set (dev / mock mode).
- * Returns null should never block the signing pipeline — callers handle
- * the null case explicitly.
+ * Connection priority:
+ *   1. SIGNER_REDIS_PRIVATE_URL — Railway internal network (preferred)
+ *   2. SIGNER_REDIS_URL         — Railway public URL
+ *   3. REDIS_PRIVATE_URL        — shared Railway internal network
+ *   4. REDIS_URL                — shared Railway public URL
+ *   5. Legacy Upstash (SIGNER_REDIS_REST_URL + TOKEN or main UPSTASH_* vars)
+ *
+ * Returns null when no credentials are set (dev / mock mode).
+ * Callers handle the null case explicitly.
  *
  * Module 7 — Redis ACL & Key Isolation
  */
 
-let signerRedis: Redis | null = null;
+let signerRedis: RedisShim | null = null;
 let signerChecked = false;
 
-export function getSignerRedis(): Redis | null {
+export function getSignerRedis(): RedisShim | null {
   if (signerChecked) return signerRedis;
 
-  const url   = process.env.SIGNER_REDIS_REST_URL;
-  const token = process.env.SIGNER_REDIS_REST_TOKEN;
+  const privateUrl = process.env.SIGNER_REDIS_PRIVATE_URL;
+  const publicUrl  = process.env.SIGNER_REDIS_URL;
+  const sharedPriv = process.env.REDIS_PRIVATE_URL;
+  const sharedPub  = process.env.REDIS_URL;
 
-  if (!url || !token) {
+  const url = privateUrl || publicUrl || sharedPriv || sharedPub;
+
+  if (url) {
+    signerRedis = new RedisShim(url);
     signerChecked = true;
-    console.warn(
-      "[SignerRedis] SIGNER_REDIS credentials not set — " +
-      "signing-service replay protection uses main Redis (not isolated).",
-    );
-    return null;
+
+    // Warn if using the shared connection (reduced isolation)
+    if (!privateUrl && !publicUrl) {
+      console.warn(
+        "[SignerRedis] Using shared REDIS_* URL — " +
+        "provision a dedicated Redis database and set SIGNER_REDIS_PRIVATE_URL " +
+        "to enforce database isolation (Module 7).",
+      );
+    } else {
+      const label = privateUrl ? "SIGNER_REDIS_PRIVATE_URL" : "SIGNER_REDIS_URL";
+      console.log(`[SignerRedis] Connected via ${label}`);
+    }
+    return signerRedis;
   }
 
-  // Boot-time safety check: warn if the signer is using the same database
-  // as the main API. Different databases are the Module 7 security goal.
-  const mainUrl = process.env.UPSTASH_REDIS_REST_URL;
-  if (mainUrl && mainUrl === url) {
-    console.warn(
-      "[SignerRedis] WARNING: SIGNER_REDIS_REST_URL === UPSTASH_REDIS_REST_URL. " +
-      "The signing service and main API are sharing the same Redis database. " +
-      "Provision a separate Upstash database for the signing service and set " +
-      "SIGNER_REDIS_REST_URL / SIGNER_REDIS_REST_TOKEN to enforce database isolation.",
-    );
+  // Legacy Upstash fallback
+  const signerUpstashUrl   = process.env.SIGNER_REDIS_REST_URL;
+  const signerUpstashToken = process.env.SIGNER_REDIS_REST_TOKEN;
+  const mainUpstashUrl     = process.env.UPSTASH_REDIS_REST_URL;
+  const mainUpstashToken   = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  const upstashUrl   = signerUpstashUrl   || mainUpstashUrl;
+  const upstashToken = signerUpstashToken || mainUpstashToken;
+
+  if (upstashUrl && upstashToken) {
+    // Warn if the signer is sharing the main API's database
+    if (upstashUrl === mainUpstashUrl && signerUpstashUrl !== mainUpstashUrl) {
+      console.warn(
+        "[SignerRedis] WARNING: falling back to main API Upstash database. " +
+        "Provision a separate database and set SIGNER_REDIS_PRIVATE_URL for isolation.",
+      );
+    }
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { Redis: UpstashRedis } = require("@upstash/redis");
+      signerRedis = new UpstashRedis({ url: upstashUrl, token: upstashToken }) as unknown as RedisShim;
+      signerChecked = true;
+      console.warn("[SignerRedis] Using legacy Upstash HTTP client — switch to SIGNER_REDIS_PRIVATE_URL");
+      return signerRedis;
+    } catch {
+      console.error("[SignerRedis] @upstash/redis not available for legacy fallback");
+    }
   }
 
-  signerRedis = new Redis({ url, token });
   signerChecked = true;
-  return signerRedis;
+  console.warn(
+    "[SignerRedis] No credentials configured — " +
+    "signing-service replay protection is disabled.",
+  );
+  return null;
 }

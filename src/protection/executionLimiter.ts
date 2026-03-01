@@ -19,7 +19,7 @@
  */
 
 import { getRedis } from "../services/redis.js";
-import type { Redis } from "@upstash/redis";
+import type { RedisShim } from "../services/redis.js";
 
 // ── Violation codes ────────────────────────────────────────────────
 
@@ -67,7 +67,7 @@ const GLOBAL_WIN_MS = GLOBAL_WIN_S * 1_000;
  * @returns { allowed, count } — count is AFTER adding the request
  */
 async function checkWindow(
-  redis: Redis,
+  redis: RedisShim,
   key: string,
   windowMs: number,
   maxCount: number,
