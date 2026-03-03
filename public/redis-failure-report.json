@@ -1,0 +1,22 @@
+{
+  "schema": "redis-failure-test-v1",
+  "generatedAt": "2026-03-03T14:30:00.000Z",
+  "test": "Sprint 5.5 — Redis Failure (fail-closed verification)",
+  "apiUrl": "https://algo-ai-wallet-production.up.railway.app",
+  "procedure": "All Redis vars (REDIS_PRIVATE_URL, REDIS_URL, UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN) set to unreachable sentinels, then redeployed.",
+  "findings": {
+    "bootBehavior": "FATAL: Cross-region treasury hash mismatch — server refused to start",
+    "paymentBehavior": "HTTP 502 from Railway load balancer — payments rejected (fail-safe)",
+    "crashLoop": true,
+    "failedClosed": true,
+    "specificError": "[Boot] FATAL: Cross-region treasury hash mismatch — Reached the max retries per request limit (which is 3)"
+  },
+  "notes": [
+    "Server enters crash loop on boot when Redis is unavailable",
+    "Boot-time security check (treasury hash reconciliation) throws on Redis failure",
+    "Railway load balancer returns 502 — no payments can be processed",
+    "This is stronger than the 'fail-closed 401' in replayGuard: the entire service refuses to start",
+    "Redis was immediately restored; final payment confirmed HTTP 200 (jobId: 776c0ed5)"
+  ],
+  "verdict": "PASS — system fails closed when Redis is unavailable"
+}

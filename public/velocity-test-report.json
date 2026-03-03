@@ -1,0 +1,113 @@
+{
+  "schema": "velocity-limit-test-v1",
+  "generatedAt": "2026-03-03T14:08:12.431Z",
+  "velocityTarget": 110000,
+  "paymentAmount": 10000,
+  "capFired": true,
+  "capCleared": false,
+  "skipWait": true,
+  "phase1Results": [
+    {
+      "seq": 1,
+      "amountMicroUsdc": 10000,
+      "success": true,
+      "velocityCapped": false,
+      "httpStatus": 200,
+      "enqueueMs": 1545,
+      "jobStatus": "confirmed"
+    },
+    {
+      "seq": 2,
+      "amountMicroUsdc": 10000,
+      "success": true,
+      "velocityCapped": false,
+      "httpStatus": 200,
+      "enqueueMs": 1159,
+      "jobStatus": "confirmed"
+    },
+    {
+      "seq": 3,
+      "amountMicroUsdc": 10000,
+      "success": true,
+      "velocityCapped": false,
+      "httpStatus": 200,
+      "enqueueMs": 1559,
+      "jobStatus": "confirmed"
+    },
+    {
+      "seq": 4,
+      "amountMicroUsdc": 10000,
+      "success": true,
+      "velocityCapped": false,
+      "httpStatus": 200,
+      "enqueueMs": 1042,
+      "jobStatus": "confirmed"
+    },
+    {
+      "seq": 5,
+      "amountMicroUsdc": 10000,
+      "success": true,
+      "velocityCapped": false,
+      "httpStatus": 200,
+      "enqueueMs": 1354,
+      "jobStatus": "confirmed"
+    },
+    {
+      "seq": 6,
+      "amountMicroUsdc": 10000,
+      "success": true,
+      "velocityCapped": false,
+      "httpStatus": 200,
+      "enqueueMs": 1270,
+      "jobStatus": "confirmed"
+    },
+    {
+      "seq": 7,
+      "amountMicroUsdc": 10000,
+      "success": true,
+      "velocityCapped": false,
+      "httpStatus": 200,
+      "enqueueMs": 1378,
+      "jobStatus": "confirmed"
+    },
+    {
+      "seq": 8,
+      "amountMicroUsdc": 10000,
+      "success": true,
+      "velocityCapped": false,
+      "httpStatus": 200,
+      "enqueueMs": 1405,
+      "jobStatus": "confirmed"
+    },
+    {
+      "seq": 9,
+      "amountMicroUsdc": 10000,
+      "success": true,
+      "velocityCapped": false,
+      "httpStatus": 200,
+      "enqueueMs": 1470,
+      "jobStatus": "confirmed"
+    },
+    {
+      "seq": 10,
+      "amountMicroUsdc": 10000,
+      "success": true,
+      "velocityCapped": false,
+      "httpStatus": 200,
+      "enqueueMs": 1225,
+      "jobStatus": "confirmed"
+    },
+    {
+      "seq": 11,
+      "amountMicroUsdc": 10000,
+      "success": false,
+      "velocityCapped": true,
+      "httpStatus": 402,
+      "enqueueMs": 582,
+      "jobStatus": "velocity_capped",
+      "threshold10m": "100000",
+      "threshold24h": "500000000",
+      "tenMinTotal": "100000"
+    }
+  ]
+}

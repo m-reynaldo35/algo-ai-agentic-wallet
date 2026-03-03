@@ -52,7 +52,7 @@ const MNEMONIC          = process.env.ALGO_MNEMONIC;
 const POLL_INTERVAL_MS  = parseInt(process.env.FAILOVER_POLL_MS    || "5000",   10);
 const FAILOVER_WAIT_MS  = parseInt(process.env.FAILOVER_TIMEOUT_MS || "120000", 10);
 const RECOVERY_WAIT_MS  = parseInt(process.env.RECOVERY_TIMEOUT_MS || "180000", 10);
-const TEST_AMOUNT_MICRO = 1000; // $0.001 per test payment
+const TEST_AMOUNT_MICRO = 10000; // $0.01 — must match X402_PRICE_MICROUSDC on server
 
 const REPORT_PATH = path.join(__dirname, "..", "public", "failover-test-report.json");
 
