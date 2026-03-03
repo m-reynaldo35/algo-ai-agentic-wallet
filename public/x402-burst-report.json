@@ -1,0 +1,96 @@
+{
+  "schema": "x402-burst-v1",
+  "generatedAt": "2026-03-03T10:59:15.887Z",
+  "burstSize": 5,
+  "exportsOk": 5,
+  "queued": 5,
+  "rateLimited": 0,
+  "errors": 0,
+  "confirmed": 5,
+  "failed": 0,
+  "timedOut": 0,
+  "enqueueLatencyMs": {
+    "p50": 1459,
+    "p95": 1461,
+    "p99": 1461,
+    "avg": 1459
+  },
+  "confirmLatencyMs": {
+    "p50": 18540,
+    "p95": 30581
+  },
+  "execResults": [
+    {
+      "slot": 0,
+      "sandboxId": "sandbox-8ef9809c-78f3-4947-9097-d04c88539b3d",
+      "jobId": "455a9334-1106-48e9-9216-c9f5d8959012",
+      "enqueueMs": 1460,
+      "httpStatus": 200,
+      "rateLimited": false
+    },
+    {
+      "slot": 1,
+      "sandboxId": "sandbox-09b54f38-c515-4557-827a-f0b8cea003eb",
+      "jobId": "3dc0a824-80ea-4163-bf49-919397e2c1b1",
+      "enqueueMs": 1459,
+      "httpStatus": 200,
+      "rateLimited": false
+    },
+    {
+      "slot": 2,
+      "sandboxId": "sandbox-dfd3ef6f-6762-430a-99ac-83bc3a32dc2d",
+      "jobId": "995df513-d485-4352-9e5e-04dbca819088",
+      "enqueueMs": 1461,
+      "httpStatus": 200,
+      "rateLimited": false
+    },
+    {
+      "slot": 3,
+      "sandboxId": "sandbox-a9596e98-ca4f-497a-a0fc-8cb92d876d3b",
+      "jobId": "fdfdc0cd-9319-470c-a1eb-45997346a19c",
+      "enqueueMs": 1458,
+      "httpStatus": 200,
+      "rateLimited": false
+    },
+    {
+      "slot": 4,
+      "sandboxId": "sandbox-39ad2b37-7a85-4c33-9be3-89fa430aa1cb",
+      "jobId": "a93fcf59-73b0-479c-a10c-d91cd4e01e18",
+      "enqueueMs": 1459,
+      "httpStatus": 200,
+      "rateLimited": false
+    }
+  ],
+  "pollResults": [
+    {
+      "slot": 0,
+      "jobId": "455a9334-1106-48e9-9216-c9f5d8959012",
+      "status": "confirmed",
+      "confirmMs": 23427
+    },
+    {
+      "slot": 1,
+      "jobId": "3dc0a824-80ea-4163-bf49-919397e2c1b1",
+      "status": "confirmed",
+      "confirmMs": 8702
+    },
+    {
+      "slot": 2,
+      "jobId": "995df513-d485-4352-9e5e-04dbca819088",
+      "status": "confirmed",
+      "confirmMs": 30581
+    },
+    {
+      "slot": 3,
+      "jobId": "fdfdc0cd-9319-470c-a1eb-45997346a19c",
+      "status": "confirmed",
+      "confirmMs": 13632
+    },
+    {
+      "slot": 4,
+      "jobId": "a93fcf59-73b0-479c-a10c-d91cd4e01e18",
+      "status": "confirmed",
+      "confirmMs": 18540
+    }
+  ]
+}

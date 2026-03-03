@@ -82,8 +82,8 @@ export async function enforceReplayProtection(
     };
   }
 
-  if (deltaT < -5) {
-    // Allow 5s of clock skew tolerance for future timestamps
+  if (deltaT < -30) {
+    // Allow 30s of clock skew tolerance for future timestamps
     return {
       valid: false,
       error: `Signature timestamp is in the future: ΔT=${deltaT}s`,

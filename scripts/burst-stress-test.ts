@@ -2,41 +2,51 @@
  * ┌─────────────────────────────────────────────────────────────────────────┐
  * │  HONDA SYSTEM — BURST STRESS TEST                                        │
  * │                                                                          │
- * │  460 mainnet Type A atomic settlements across 4 amount tranches.        │
- * │  Proves throughput, robustness, and settlement correctness under         │
- * │  concurrent load with random amounts.                                   │
+ * │  Two independent burst modes:                                            │
  * │                                                                          │
- * │  Tranche breakdown:                                                      │
- * │    Micro    (200 txns)  100–500 µUSDC    ($0.0001–$0.0005)  ~$0.06     │
- * │    Standard (200 txns)  1,000–5,000 µUSDC ($0.001–$0.005)   ~$0.30     │
- * │    Bulk     (50 txns)   10,000–50,000 µUSDC ($0.01–$0.05)   ~$1.00     │
- * │    Spike    (10 txns)   100,000–500,000 µUSDC ($0.10–$0.50) ~$2.00     │
- * │    ─────────────────────────────────────────────────────────────────    │
- * │    Total    460 txns                                          ~$3.40     │
+ * │  On-chain modes (direct Algorand):                                       │
+ * │    460 mainnet Type A atomic settlements across 4 amount tranches.      │
+ * │    Proves throughput, robustness, and settlement correctness under       │
+ * │    concurrent load with random amounts.                                 │
  * │                                                                          │
- * │  Architecture:                                                           │
- * │    - suggestedParams fetched ONCE, reused for all 460 txns             │
- * │    - 10 concurrent workers (Promise pool)                               │
- * │    - Cryptographically random amounts via crypto.randomInt              │
- * │    - P50/P95/P99 latency report                                         │
- * │    - JSON report written to public/stress-report.json                  │
- * │    - All txns carry honda_v1 audit note (indexer-verifiable)           │
+ * │    Tranche breakdown:                                                    │
+ * │      Micro    (200 txns)  100–500 µUSDC    ($0.0001–$0.0005)  ~$0.06   │
+ * │      Standard (200 txns)  1,000–5,000 µUSDC ($0.001–$0.005)   ~$0.30   │
+ * │      Bulk     (50 txns)   10,000–50,000 µUSDC ($0.01–$0.05)   ~$1.00   │
+ * │      Spike    (10 txns)   100,000–500,000 µUSDC ($0.10–$0.50) ~$2.00   │
+ * │      Total    460 txns                                          ~$3.40   │
+ * │                                                                          │
+ * │  x402 API mode (Sprint 5.1 — tests the full API pipeline):              │
+ * │    N concurrent requests through /api/execute. Measures enqueue          │
+ * │    p50/p95/p99 with pass target p95 < 5s.                               │
+ * │    - Phase 1: get N sandbox exports sequentially (x402 handshake)       │
+ * │    - Phase 2: fire all N /api/execute calls simultaneously              │
+ * │    - Phase 3: poll all job statuses to confirmation                     │
  * │                                                                          │
  * │  MODES:                                                                  │
  * │    --probe    (default)  Dry run. No on-chain activity.                 │
  * │    --sandbox             Full construction + sign. No broadcast.        │
  * │    --live                Real mainnet settlement. Requires wallet.      │
+ * │    --x402                x402 API pipeline burst (Sprint 5.1).         │
  * │                                                                          │
  * │  Run:                                                                    │
  * │    npx tsx scripts/burst-stress-test.ts                   # probe       │
  * │    npx tsx scripts/burst-stress-test.ts --sandbox         # dry-run     │
  * │    npx tsx scripts/burst-stress-test.ts --live            # mainnet     │
+ * │    npx tsx scripts/burst-stress-test.ts --x402            # API burst   │
  * │                                                                          │
- * │  Env:                                                                    │
+ * │  Env (on-chain modes):                                                   │
  * │    ALGO_MNEMONIC         — 25-word mnemonic of funded mainnet wallet    │
  * │    X402_PAY_TO_ADDRESS   — treasury address receiving toll payments     │
  * │    ALGORAND_NODE_URL     — Algod endpoint (default: Nodely mainnet)     │
  * │    CONCURRENCY           — worker pool size (default: 10)               │
+ * │                                                                          │
+ * │  Env (--x402 mode):                                                      │
+ * │    ALGO_MNEMONIC         — 25-word mnemonic of registered agent wallet  │
+ * │    PORTAL_API_SECRET     — bearer token for /api/execute                │
+ * │    AGENT_ID              — registered agent ID                          │
+ * │    BURST_SIZE            — concurrent requests (default: 20)            │
+ * │    BURST_AMOUNT_MICROUSDC — per-request USDC amount (default: 1000)    │
  * └─────────────────────────────────────────────────────────────────────────┘
  */
 
@@ -46,12 +56,14 @@ import { randomInt } from "crypto";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { AlgoAgentClient } from "@algo-wallet/x402-client";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
 // ── Mode ──────────────────────────────────────────────────────────
-const MODE: "probe" | "sandbox" | "live" =
+const MODE: "probe" | "sandbox" | "live" | "x402" =
+  process.argv.includes("--x402")    ? "x402"    :
   process.argv.includes("--live")    ? "live"    :
   process.argv.includes("--sandbox") ? "sandbox" :
   "probe";
@@ -560,7 +572,355 @@ async function runBurstStressTest() {
   console.log(`\n  ${G}Burst stress test complete.${R}\n`);
 }
 
-runBurstStressTest().catch((err) => {
-  console.error(`\n  ${RE}FATAL: ${err instanceof Error ? err.message : String(err)}${R}\n`);
-  process.exit(1);
-});
+// ══════════════════════════════════════════════════════════════════
+// x402 API BURST TEST (Sprint 5.1)
+// Tests the x402 API pipeline under concurrent load.
+// ══════════════════════════════════════════════════════════════════
+
+// Default BURST_SIZE=5 matches server EXEC_BURST_MAX (5 req/10s per agent).
+// Increase BURST_SIZE beyond 5 to intentionally test the rate-limiter response
+// (expect 429 for excess requests — this is correct behaviour, not a failure).
+const X402_BURST_SIZE      = parseInt(process.env.BURST_SIZE             || "5",    10);
+const X402_AMOUNT_MICROUSDC = parseInt(process.env.BURST_AMOUNT_MICROUSDC || "10000", 10); // $0.01 (must match X402_PRICE_MICROUSDC on server)
+const X402_PHASE1_DELAY_MS  = 300;  // gap between sandbox export requests
+const X402_POLL_INTERVAL_MS = 2000; // job status poll interval
+const X402_POLL_TIMEOUT_MS  = 120_000; // 2 min max for jobs to confirm
+
+interface X402JobOutcome {
+  slot:          number;
+  sandboxId:     string;
+  jobId:         string;
+  enqueueMs:     number;   // time from fire to "queued" response
+  confirmMs:     number;   // time from fire to confirmed/failed
+  status:        "confirmed" | "failed" | "timeout";
+  httpStatus:    number;
+  rateLimited:   boolean;
+  error?:        string;
+}
+
+async function getSandboxExport(
+  client:        AlgoAgentClient,
+  senderAddress: string,
+  amount:        number,
+): Promise<object | null> {
+  try {
+    const response = await client.requestSandboxExport({ senderAddress, amount });
+    return response.export as object;
+  } catch {
+    return null;
+  }
+}
+
+async function fireExecuteRequest(
+  apiUrl:        string,
+  sandboxExport: object,
+  agentId:       string,
+  portalSecret:  string,
+  slot:          number,
+): Promise<Pick<X402JobOutcome, "slot" | "sandboxId" | "jobId" | "enqueueMs" | "httpStatus" | "rateLimited" | "error">> {
+  const sandboxId = (sandboxExport as Record<string, string>).sandboxId ?? `slot-${slot}`;
+  const t0 = Date.now();
+
+  try {
+    const res = await fetch(`${apiUrl}/api/execute`, {
+      method:  "POST",
+      headers: {
+        "Content-Type":  "application/json",
+        "Authorization": `Bearer ${portalSecret}`,
+      },
+      body: JSON.stringify({ sandboxExport, agentId }),
+    });
+
+    const body = await res.json() as Record<string, unknown>;
+    const enqueueMs = Date.now() - t0;
+
+    if (res.status === 429 || res.status === 503) {
+      return {
+        slot, sandboxId, jobId: "", enqueueMs, httpStatus: res.status,
+        rateLimited: true, error: String(body.error ?? `HTTP ${res.status}`),
+      };
+    }
+
+    if (!res.ok) {
+      return {
+        slot, sandboxId, jobId: "", enqueueMs, httpStatus: res.status,
+        rateLimited: false, error: String(body.error ?? `HTTP ${res.status}`),
+      };
+    }
+
+    const jobId = String(body.jobId ?? "");
+    return { slot, sandboxId, jobId, enqueueMs, httpStatus: res.status, rateLimited: false };
+  } catch (err) {
+    return {
+      slot, sandboxId, jobId: "", enqueueMs: Date.now() - t0,
+      httpStatus: 0, rateLimited: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function pollJobUntilDone(
+  apiUrl:       string,
+  jobId:        string,
+  portalSecret: string,
+  startMs:      number,
+  timeoutMs:    number,
+): Promise<{ status: "confirmed" | "failed" | "timeout"; confirmMs: number }> {
+  if (!jobId) return { status: "failed", confirmMs: Date.now() - startMs };
+
+  const deadline = startMs + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, X402_POLL_INTERVAL_MS));
+    try {
+      const res = await fetch(`${apiUrl}/api/jobs/${jobId}`, {
+        headers: { "Authorization": `Bearer ${portalSecret}` },
+      });
+      if (!res.ok) continue;
+      const job = await res.json() as Record<string, string>;
+      if (job.status === "confirmed") return { status: "confirmed", confirmMs: Date.now() - startMs };
+      if (job.status === "failed")    return { status: "failed",    confirmMs: Date.now() - startMs };
+    } catch { /* retry */ }
+  }
+  return { status: "timeout", confirmMs: timeoutMs };
+}
+
+async function runX402BurstTest() {
+  const AGENT_ID     = process.env.AGENT_ID;
+  const PORTAL_SEC   = process.env.PORTAL_API_SECRET;
+  const MNEMONIC     = process.env.ALGO_MNEMONIC;
+
+  console.log(`\n${C}${"═".repeat(68)}${R}`);
+  console.log(`  ${C}x402 API BURST TEST (Sprint 5.1)${R}`);
+  console.log(`  ${D}Target:       ${API_URL}${R}`);
+  console.log(`  ${D}Burst size:   ${X402_BURST_SIZE} concurrent requests${R}`);
+  console.log(`  ${D}Amt/request:  ${X402_AMOUNT_MICROUSDC} µUSDC ($${(X402_AMOUNT_MICROUSDC / 1_000_000).toFixed(6)})${R}`);
+  console.log(`  ${D}Date:         ${new Date().toISOString()}${R}`);
+  console.log(`${C}${"═".repeat(68)}${R}\n`);
+
+  if (!AGENT_ID || !PORTAL_SEC || !MNEMONIC) {
+    fail("Missing required env vars: ALGO_MNEMONIC, PORTAL_API_SECRET, AGENT_ID");
+    process.exit(1);
+  }
+
+  let account: algosdk.Account;
+  try {
+    account = algosdk.mnemonicToSecretKey(MNEMONIC);
+  } catch (err) {
+    fail(`Invalid ALGO_MNEMONIC: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  // ── Pre-flight ─────────────────────────────────────────────────
+  sep("PRE-FLIGHT");
+  try {
+    const h = await fetch(`${API_URL}/health`);
+    if (!h.ok) throw new Error(`HTTP ${h.status}`);
+    const b = await h.json() as Record<string, unknown>;
+    ok(`Server: ${API_URL} — ${b["protocol"]} on ${b["network"]}`);
+  } catch (err) {
+    fail(`Server unreachable: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  ok(`Wallet:  ${account.addr.toString().slice(0, 20)}...`);
+  ok(`AgentId: ${AGENT_ID}`);
+  console.log(`\n  ${Y}LIVE mode — this sends real x402 payments (${X402_BURST_SIZE} × $${(X402_AMOUNT_MICROUSDC / 1_000_000).toFixed(6)} = ~$${((X402_BURST_SIZE * X402_AMOUNT_MICROUSDC) / 1_000_000).toFixed(4)} USDC)${R}`);
+  console.log(`  ${Y}Ctrl+C to abort. Starting in 5 seconds...${R}`);
+  await new Promise((r) => setTimeout(r, 5000));
+
+  const x402Client = new AlgoAgentClient({
+    baseUrl:      API_URL,
+    privateKey:   account.sk,
+    slippageBips: 0,
+  });
+
+  // ── Phase 1: Get N sandbox exports (sequential, 300ms gap) ─────
+  sep(`PHASE 1 — GETTING ${X402_BURST_SIZE} SANDBOX EXPORTS`);
+  const sandboxExports: Array<object | null> = [];
+  const phase1Start = Date.now();
+
+  for (let i = 0; i < X402_BURST_SIZE; i++) {
+    process.stdout.write(`  [${String(i + 1).padStart(3)}/${X402_BURST_SIZE}] requesting sandbox export... `);
+    const t0 = Date.now();
+    const ex = await getSandboxExport(x402Client, account.addr.toString(), X402_AMOUNT_MICROUSDC);
+    const ms = Date.now() - t0;
+
+    if (ex) {
+      sandboxExports.push(ex);
+      process.stdout.write(`${G}✔${R} ${ms}ms\n`);
+    } else {
+      sandboxExports.push(null);
+      process.stdout.write(`${RE}✗${R} failed\n`);
+    }
+
+    if (i < X402_BURST_SIZE - 1) await new Promise((r) => setTimeout(r, X402_PHASE1_DELAY_MS));
+  }
+
+  const validExports = sandboxExports.filter(Boolean);
+  info(`Phase 1 done in ${((Date.now() - phase1Start) / 1000).toFixed(1)}s — ${validExports.length}/${X402_BURST_SIZE} exports ready`);
+
+  if (validExports.length === 0) {
+    fail("No sandbox exports obtained — cannot proceed");
+    process.exit(1);
+  }
+
+  // ── Phase 2: Burst execute — fire ALL simultaneously ────────────
+  sep(`PHASE 2 — BURST EXECUTE (${validExports.length} concurrent)`);
+  info(`Firing ${validExports.length} /api/execute calls simultaneously...`);
+  console.log();
+
+  const burstStart = Date.now();
+  const execResults = await Promise.all(
+    sandboxExports.map((ex, slot) =>
+      ex
+        ? fireExecuteRequest(API_URL, ex, AGENT_ID, PORTAL_SEC, slot)
+        : Promise.resolve({
+            slot, sandboxId: `slot-${slot}`, jobId: "", enqueueMs: 0,
+            httpStatus: 0, rateLimited: false, error: "no export",
+          }),
+    ),
+  );
+
+  const burstElapsedMs = Date.now() - burstStart;
+  info(`All execute calls returned in ${burstElapsedMs}ms`);
+
+  const enqueueLatencies = execResults
+    .filter((r) => r.httpStatus === 200 || r.httpStatus === 201 || r.httpStatus === 202)
+    .map((r) => r.enqueueMs)
+    .sort((a, b) => a - b);
+
+  const rateLimitedCount = execResults.filter((r) => r.rateLimited).length;
+  const successCount     = execResults.filter((r) => !r.rateLimited && !r.error).length;
+  const failCount        = execResults.filter((r) => r.error && !r.rateLimited).length;
+
+  console.log();
+  console.log(`  ${C}Execute results:${R}`);
+  console.log(`    ${G}Queued:      ${successCount}${R}`);
+  console.log(`    ${Y}Rate-limited: ${rateLimitedCount}  (target ≤ ${Math.ceil(X402_BURST_SIZE * 0.05)})${R}`);
+  console.log(`    ${RE}Errors:       ${failCount}${R}`);
+
+  if (enqueueLatencies.length > 0) {
+    const p50 = percentile(enqueueLatencies, 50);
+    const p95 = percentile(enqueueLatencies, 95);
+    const p99 = percentile(enqueueLatencies, 99);
+    const avg = Math.round(enqueueLatencies.reduce((s, v) => s + v, 0) / enqueueLatencies.length);
+    console.log();
+    console.log(`  ${C}Enqueue latency (time to "queued" response):${R}`);
+    console.log(`    p50: ${p50}ms`);
+    console.log(`    ${p95 <= 5000 ? G : RE}p95: ${p95}ms  (target < 5000ms)${R}`);
+    console.log(`    p99: ${p99}ms`);
+    console.log(`    avg: ${avg}ms`);
+  }
+
+  // ── Phase 3: Poll jobs to confirmation ─────────────────────────
+  sep("PHASE 3 — POLLING JOBS TO CONFIRMATION");
+  const jobIds = execResults.filter((r) => r.jobId).map((r) => ({ slot: r.slot, jobId: r.jobId, startMs: burstStart }));
+  info(`Polling ${jobIds.length} jobs (timeout: ${X402_POLL_TIMEOUT_MS / 1000}s)...`);
+
+  const pollResults = await Promise.all(
+    jobIds.map(({ slot, jobId, startMs }) =>
+      pollJobUntilDone(API_URL, jobId, PORTAL_SEC, startMs, X402_POLL_TIMEOUT_MS)
+        .then(({ status, confirmMs }) => ({ slot, jobId, status, confirmMs })),
+    ),
+  );
+
+  const confirmed = pollResults.filter((r) => r.status === "confirmed");
+  const failed    = pollResults.filter((r) => r.status === "failed");
+  const timedOut  = pollResults.filter((r) => r.status === "timeout");
+
+  const confirmLatencies = confirmed.map((r) => r.confirmMs).sort((a, b) => a - b);
+
+  // ── Results ────────────────────────────────────────────────────
+  sep("RESULTS SUMMARY");
+  console.log(`  ${D}Burst size:          ${X402_BURST_SIZE}${R}`);
+  console.log(`  ${D}Sandbox exports:     ${validExports.length}/${X402_BURST_SIZE}${R}`);
+  console.log(`  ${D}Queued:              ${successCount}/${validExports.length}${R}`);
+  console.log(`  ${D}Rate-limited (429/503): ${rateLimitedCount} (${((rateLimitedCount / X402_BURST_SIZE) * 100).toFixed(1)}% — target ≤ 5%)${R}`);
+  console.log(`  ${D}Confirmed on-chain:  ${confirmed.length}${R}`);
+  console.log(`  ${D}Failed:              ${failed.length}${R}`);
+  console.log(`  ${D}Timed out:           ${timedOut.length}${R}`);
+
+  if (enqueueLatencies.length > 0) {
+    const p50 = percentile(enqueueLatencies, 50);
+    const p95 = percentile(enqueueLatencies, 95);
+    const p99 = percentile(enqueueLatencies, 99);
+    console.log();
+    console.log(`  ${C}Enqueue latency:${R}`);
+    console.log(`    p50 ${p50}ms  p95 ${p95 <= 5000 ? G : RE}${p95}ms${R}  p99 ${p99}ms`);
+  }
+
+  if (confirmLatencies.length > 0) {
+    const cP50 = percentile(confirmLatencies, 50);
+    const cP95 = percentile(confirmLatencies, 95);
+    console.log();
+    console.log(`  ${C}Confirmation latency (burst start → on-chain):${R}`);
+    console.log(`    p50 ${cP50}ms  p95 ${cP95}ms`);
+  }
+
+  // ── Write JSON report ──────────────────────────────────────────
+  const report = {
+    schema:      "x402-burst-v1",
+    generatedAt: new Date().toISOString(),
+    burstSize:   X402_BURST_SIZE,
+    exportsOk:   validExports.length,
+    queued:      successCount,
+    rateLimited: rateLimitedCount,
+    errors:      failCount,
+    confirmed:   confirmed.length,
+    failed:      failed.length,
+    timedOut:    timedOut.length,
+    enqueueLatencyMs: enqueueLatencies.length > 0 ? {
+      p50: percentile(enqueueLatencies, 50),
+      p95: percentile(enqueueLatencies, 95),
+      p99: percentile(enqueueLatencies, 99),
+      avg: Math.round(enqueueLatencies.reduce((s, v) => s + v, 0) / enqueueLatencies.length),
+    } : null,
+    confirmLatencyMs: confirmLatencies.length > 0 ? {
+      p50: percentile(confirmLatencies, 50),
+      p95: percentile(confirmLatencies, 95),
+    } : null,
+    execResults,
+    pollResults,
+  };
+
+  const x402ReportPath = path.join(__dirname, "..", "public", "x402-burst-report.json");
+  fs.mkdirSync(path.dirname(x402ReportPath), { recursive: true });
+  fs.writeFileSync(x402ReportPath, JSON.stringify(report, null, 2));
+  ok(`Report: ${x402ReportPath}`);
+
+  // ── Pass/fail gate ─────────────────────────────────────────────
+  const rateLimitPct = (rateLimitedCount / X402_BURST_SIZE) * 100;
+  const p95Enqueue   = enqueueLatencies.length > 0 ? percentile(enqueueLatencies, 95) : 0;
+  const crashes      = failCount > successCount * 0.1; // >10% pipeline errors = crash
+
+  const pass =
+    !crashes &&
+    rateLimitPct <= 5 &&
+    (p95Enqueue === 0 || p95Enqueue <= 5000);
+
+  console.log();
+  if (pass) {
+    console.log(`  ${G}✔ BURST TEST PASSED${R}`);
+    console.log(`    0 crashes  |  ${rateLimitPct.toFixed(1)}% rate-limited (≤5%)  |  p95 enqueue ${p95Enqueue}ms (≤5000ms)`);
+  } else {
+    console.log(`  ${RE}✗ BURST TEST FAILED${R}`);
+    if (crashes)           console.log(`    ${RE}Pipeline error rate too high${R}`);
+    if (rateLimitPct > 5)  console.log(`    ${RE}Rate-limited: ${rateLimitPct.toFixed(1)}% (target ≤5%)${R}`);
+    if (p95Enqueue > 5000) console.log(`    ${RE}p95 enqueue ${p95Enqueue}ms > 5000ms target${R}`);
+    process.exit(1);
+  }
+}
+
+// ── Entry point ───────────────────────────────────────────────────
+
+if (MODE === "x402") {
+  runX402BurstTest().catch((err) => {
+    console.error(`\n  ${RE}FATAL: ${err instanceof Error ? err.message : String(err)}${R}\n`);
+    process.exit(1);
+  });
+} else {
+  runBurstStressTest().catch((err) => {
+    console.error(`\n  ${RE}FATAL: ${err instanceof Error ? err.message : String(err)}${R}\n`);
+    process.exit(1);
+  });
+}

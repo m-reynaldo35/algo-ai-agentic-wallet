@@ -159,7 +159,7 @@ async function buildPaymentProof(
     transactions: [Buffer.from(signedTxn).toString("base64")],
     senderAddr: senderAddress,
     signature: Buffer.from(signature).toString("base64"),
-    timestamp: Math.floor(Date.now() / 1000),
+    timestamp: Math.floor(Date.now() / 1000) - 5, // 5s back-skew handles server clock lag
     nonce: crypto.randomUUID(),
   };
 }
@@ -167,6 +167,8 @@ async function buildPaymentProof(
 // ── Helpers ────────────────────────────────────────────────────
 
 function resolveAlgodUrl(chain: string): string {
+  const override = typeof process !== "undefined" && process.env?.ALGO_CLIENT_NODE_URL;
+  if (override) return override;
   switch (chain) {
     case "mainnet":
       return "https://mainnet-api.4160.nodely.dev";
