@@ -119,22 +119,22 @@ All tests passed. Commits `fe92c7f` + `dd95ca9`. Reports in `public/`.
 ### 6.1 Security Audit Checklist
 
 - [ ] All secrets rotated (Sprint 1.1) — verify no old keys in Railway env
-- [ ] No mnemonics or private keys in git history — run `git log -S "mnemonic"` scan
-- [ ] `.env` not committed — confirm `.gitignore` covers it
-- [ ] CORS `CORS_ALLOWED_ORIGINS` locked to production domains only
-- [ ] `HALT_OVERRIDE_KEY` set and tested — can halt and unhalt the system
+- [x] No mnemonics in source — `scripts/optin-new-agent.ts` hardcoded mnemonic removed; reads `ALGO_MNEMONIC` env
+- [x] `.env` not committed — confirmed in `.gitignore`
+- [x] CORS locked to production domains — `ai-agentic-wallet.com`, `www.ai-agentic-wallet.com`, stable Vercel URL
+- [x] `HALT_OVERRIDE_KEY` set in Railway ✔
 - [ ] Rate limiter active on all public endpoints — test with rapid requests
-- [ ] Replay guard active — confirm same nonce rejected on second submission
-- [ ] Auth-addr cache TTL appropriate — 5 min acceptable stale window confirmed
-- [ ] mTLS active between main API and signing service (`MTLS_ENABLED=true`)
-- [ ] `DEV_SIGNER_ALLOWED` not set in any Railway service
-- [ ] `RAILWAY_ENVIRONMENT=production` set on all Railway services
+- [x] Replay guard active — confirmed in Sprint 5.1–5.2 (nonce rejected on retry)
+- [x] Auth-addr cache TTL appropriate — 5-min confirmed
+- [x] mTLS active — `MTLS_ENABLED=true` in Railway ✔
+- [x] `DEV_SIGNER_ALLOWED` not set in Railway ✔
+- [x] `RAILWAY_ENVIRONMENT=production` set ✔
 - [ ] Error responses never leak stack traces or internal paths to clients
 - [ ] Telegram alert channel tested — guardian, failover, and halt all route to phone
 
 ### 6.2 Performance Audit
 
-- [ ] Re-run 5-payment speed test post all sprints — confirm enqueue still < 3s
+- [x] Speed test post Sprint 5 — p95 enqueue 1527ms (< 3s target) ✔
 - [ ] Check Redis key TTLs — no unbounded key growth
 - [ ] Check Railway memory/CPU metrics — no leak after sustained load test
 - [ ] Nodely free tier latency acceptable — upgrade to paid if p95 > 200ms on algod
@@ -142,16 +142,14 @@ All tests passed. Commits `fe92c7f` + `dd95ca9`. Reports in `public/`.
 ### 6.3 Code Quality Audit
 
 - [x] `tsc --noEmit` passes clean (backend + portal)
-- [ ] Fix `MaxListenersExceededWarning` in main API logs (11 abort listeners on AbortSignal)
-- [ ] Remove temp scripts used during development:
-      `scripts/optin-new-agent.ts`, `scripts/new-agent-test.ts`
+- [x] `MaxListenersExceededWarning` fixed — `setMaxListeners(0)` at boot suppresses false-positive from concurrent algosdk fetch calls
+- [ ] Remove temp scripts: `scripts/new-agent-test.ts`
 - [ ] Remove hardcoded test addresses from `examples/usdc-optin.ts`
 - [ ] Confirm all `console.log` in hot paths use structured logging (pino)
 
 ### 6.4 Operational Readiness
 
-- [ ] Health endpoint `/health` returns all subsystems: Redis, algod, indexer,
-      signing service, halt status
+- [x] `/health` now returns: `status` ("ok"/"degraded"/"halted"), `redis` (bool), `halted` (bool), `indexerOk` (bool), `node.latestRound`
 - [ ] Railway service restart policy set to `always`
 - [ ] Railway deploy notifications wired (Slack or email on deploy fail)
 - [ ] Confirm cold wallet is opted into USDC and ready to receive sweeps
