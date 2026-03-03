@@ -1,5 +1,10 @@
 console.log("Boot start. PORT=", process.env.PORT);
 
+// Algosdk v3 + Node fetch each add abort listeners per concurrent request.
+// 20 is sufficient headroom; 10 (the default) fires false-positive warnings.
+import { setMaxListeners } from "events";
+setMaxListeners(20);
+
 import { initSentry } from "./lib/sentry.js";
 initSentry(); // Must be first — before any other imports touch the network
 
@@ -18,7 +23,7 @@ import { getRedis } from "./services/redis.js";
 import { getWebhookDeliveries } from "./services/webhook.js";
 import { registerSSEBroadcaster } from "./services/audit.js";
 import { requirePortalAuth } from "./middleware/portalAuth.js";
-import { registerExistingAgent } from "./services/agentRegistration.js";
+import { registerExistingAgent, generateAgentKeypair } from "./services/agentRegistration.js";
 import { assertProductionAuthReady } from "./auth/liquidAuth.js";
 import { runBootGuards, assertCrossRegionTreasuryHash } from "./protection/envGuard.js";
 import { checkExecutionLimits } from "./protection/executionLimiter.js";
@@ -48,6 +53,12 @@ import {
 import {
   issueAlgorandChallenge, submitAlgorandSignature, getLiquidAuthStatus,
 }                                        from "./auth/humanAuth.js";
+import {
+  issueAdminLiquidChallenge, submitAdminLiquidSignature, getAdminLiquidStatus,
+  consumeAdminLiquidSession,
+  issueAdminWebAuthnRegChallenge, verifyAndRegisterAdminWebAuthn,
+  issueAdminWebAuthnLoginChallenge, verifyAdminWebAuthnLoginAssertion,
+}                                        from "./auth/adminAuth.js";
 import { evaluateMandate }               from "./services/mandateEngine.js";
 import a2aRouter                         from "./routes/a2a.js";
 import { getRecentSecurityEvents, emitSecurityEvent, querySecurityEvents } from "./services/securityAudit.js";
@@ -154,22 +165,52 @@ app.get("/api/info", (_req, res) => {
 
 // ── Health ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
-  const node = await getNodeStatus();
-  const nodeUrl = node.algodUrl;
+  const [node, haltRecord] = await Promise.all([
+    getNodeStatus(),
+    isHalted(),
+  ]);
+
+  // Redis ping
+  let redisOk = false;
+  try {
+    const redis = getRedis();
+    if (redis) {
+      await (redis._ioredis?.ping?.() ?? Promise.resolve("PONG"));
+      redisOk = true;
+    }
+  } catch { /* redis down */ }
+
+  // Indexer reachability (lightweight HEAD-like call)
+  let indexerOk = false;
+  try {
+    const r = await fetch(`${config.algorand.indexerUrl}/health`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    indexerOk = r.ok;
+  } catch { /* indexer unreachable */ }
+
+  const nodeUrl  = node.algodUrl;
   const provider = nodeUrl.includes("nodely") ? "nodely"
     : (nodeUrl.includes("localhost") || nodeUrl.includes("127.0.0.1")) ? "local"
     : "custom";
+
+  const halted = !!(haltRecord as unknown);
+  const allOk  = node.healthy && redisOk && !halted;
+
   res.json({
-    status: node.healthy ? "ok" : "degraded",
+    status:   halted ? "halted" : allOk ? "ok" : "degraded",
     protocol: "x402",
-    network: node.network,
+    network:  node.network,
+    halted,
     node: {
       provider,
       algod:         node.algodUrl,
       indexer:       node.indexerUrl,
       usingFallback: node.usingFallback,
       latestRound:   node.latestRound,
+      indexerOk,
     },
+    redis: redisOk,
   });
 });
 
@@ -986,10 +1027,73 @@ app.get("/api/portal/stream", requirePortalAuth, (req, res) => {
 
 // ── Agent Registration ───────────────────────────────────────────
 //
+// POST /api/agents/create            — sponsored wallet creation (treasury-funded)
 // POST /api/agents/register-existing — rekey a funded wallet to Rocca
 // GET  /api/agents                   — list registered agents
 // GET  /api/agents/:agentId          — fetch a single agent record
 // PATCH /api/agents/:agentId/suspend — suspend an agent
+
+// Keypair generation — pure in-process, no blockchain, no treasury cost.
+// Returns a fresh Algorand address + mnemonic. The user funds the address,
+// then calls /api/agents/register-existing to opt-in and rekey.
+// Per-IP cap: max 10 per hour (keypair generation is cheap but should be bounded).
+app.post("/api/agents/create", requirePortalAuth, async (req, res) => {
+  try {
+    const { agentId } = req.body;
+
+    if (!agentId || typeof agentId !== "string") {
+      res.status(400).json({ error: "Missing required field: agentId" });
+      return;
+    }
+
+    // ── Per-IP hourly cap ──────────────────────────────────────────
+    const redis = getRedis();
+    if (redis) {
+      const forwarded   = req.header("X-Forwarded-For");
+      const trustedHops = parseInt(process.env.TRUSTED_PROXY_HOPS ?? "1", 10);
+      let ip = req.socket?.remoteAddress || req.ip || "unknown";
+      if (forwarded) {
+        const hops = forwarded.split(",").map((h) => h.trim()).filter(Boolean);
+        const idx  = Math.max(0, hops.length - trustedHops);
+        if (hops[idx]) ip = hops[idx];
+      }
+      const { createHash } = await import("node:crypto");
+      const ipHash   = createHash("sha256").update(ip).digest("hex").slice(0, 16);
+      const limitKey = `x402:create-limit:ip:${ipHash}`;
+      try {
+        const count = await redis.incr(limitKey) as number;
+        if (count === 1) await redis.expire(limitKey, 3600);
+        if (count > 10) {
+          res.status(429).json({
+            error:      "Too Many Requests",
+            detail:     "Maximum 10 keypair generations per IP per hour.",
+            retryAfter: 3600,
+          });
+          return;
+        }
+      } catch { /* Redis error — allow through */ }
+    }
+
+    const result = generateAgentKeypair(agentId);
+
+    res.status(201).json({
+      agentId:             result.agentId,
+      address:             result.address,
+      mnemonic:            result.mnemonic,
+      minimumFundingAlgo:  Number(result.minimumFundingMicro) / 1_000_000,
+      warning:             "Save this mnemonic — the server has already discarded it.",
+      nextStep:            `Fund ${result.address} with at least ${Number(result.minimumFundingMicro) / 1_000_000} ALGO, then call POST /api/agents/register-existing.`,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    if (message.includes("Invalid agentId")) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error("[agents/create]", message);
+    res.status(500).json({ error: "Keypair generation failed", detail: message });
+  }
+});
 
 // Register an existing funded wallet by rekeying it to Rocca.
 app.post("/api/agents/register-existing", requirePortalAuth, async (req, res) => {
@@ -1062,6 +1166,32 @@ app.get("/api/agents/:agentId", requirePortalAuth, async (req, res) => {
   } catch (err) {
     console.error("[agents/get]", err);
     res.status(500).json({ error: "Failed to fetch agent" });
+  }
+});
+
+// Per-agent settlement history — queries the global x402:settlements ZSET and
+// filters in-memory by agentId. The ZSET is capped at 1,000 entries so the
+// scan is bounded. Returns the most-recent `limit` settlements for this agent.
+app.get("/api/agents/:agentId/settlements", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  if (!agentId) { res.status(400).json({ error: "Missing agentId" }); return; }
+
+  const redis = getRedis();
+  if (!redis) { res.json({ settlements: [] }); return; }
+
+  try {
+    const limit = Math.min(parseInt(String(req.query.limit ?? "20"), 10), 100);
+    const now   = Date.now();
+    // Scan last 90 days (matches typical retention window)
+    const entries = await redis.zrange("x402:settlements", now - 90 * 86_400_000, now, { byScore: true, rev: true }) as string[];
+    const settlements = entries
+      .map((s) => safeParse(s))
+      .filter((s) => s?.agentId === agentId)
+      .slice(0, limit);
+    res.json({ settlements });
+  } catch (err) {
+    console.error("[agents/:agentId/settlements]", err);
+    res.status(500).json({ error: "Failed to fetch settlement history" });
   }
 });
 
@@ -1666,6 +1796,123 @@ app.post("/api/agents/:agentId/auth/webauthn-login", requirePortalAuth, async (r
       msg.includes("verification") ? 401 :
       msg.includes("challenge")    ? 400 :
       401;
+    res.status(status).json({ error: msg });
+  }
+});
+
+// ── Admin Portal Auth — Liquid Auth + WebAuthn ───────────────────
+//
+// These routes are PUBLIC (no requirePortalAuth) — the admin is not yet
+// authenticated when calling them.  The portal issues the JWT after
+// verifying the session or assertion.
+//
+// POST /api/admin/auth/liquid-challenge     Issue QR challenge
+// POST /api/admin/auth/liquid-sign         Wallet callback (no portal auth)
+// GET  /api/admin/auth/liquid-status/:id   Poll for "verified"
+// POST /api/admin/auth/liquid-consume      Consume session → address
+// POST /api/admin/auth/webauthn-register-challenge
+// POST /api/admin/auth/webauthn-register
+// POST /api/admin/auth/webauthn-login-challenge
+// POST /api/admin/auth/webauthn-login
+
+app.post("/api/admin/auth/liquid-challenge", async (req, res) => {
+  const baseUrl = String(req.body?.baseUrl ?? process.env.API_BASE_URL ?? "https://api.ai-agentic-wallet.com");
+  try {
+    const result = await issueAdminLiquidChallenge(baseUrl);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post("/api/admin/auth/liquid-sign", async (req, res) => {
+  const { sessionId, address, signatureBase64 } = req.body as {
+    sessionId?: string; address?: string; signatureBase64?: string;
+  };
+  if (!sessionId || !address || !signatureBase64) {
+    res.status(400).json({ error: "Missing required fields: sessionId, address, signatureBase64" });
+    return;
+  }
+  try {
+    await submitAdminLiquidSignature(sessionId, address, signatureBase64);
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status =
+      msg.includes("not found") || msg.includes("expired") ? 404 :
+      msg.includes("Invalid signature") ? 401 : 400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.get("/api/admin/auth/liquid-status/:sessionId", async (req, res) => {
+  try {
+    const result = await getAdminLiquidStatus(String(req.params.sessionId));
+    if (!result) { res.status(404).json({ error: "Session not found or expired" }); return; }
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post("/api/admin/auth/liquid-consume", async (req, res) => {
+  const sessionId = String(req.body?.sessionId ?? "");
+  if (!sessionId) { res.status(400).json({ error: "Missing sessionId" }); return; }
+  try {
+    const result = await consumeAdminLiquidSession(sessionId);
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = msg.includes("not found") || msg.includes("expired") ? 404 :
+      msg.includes("not yet verified") ? 400 : 500;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.post("/api/admin/auth/webauthn-register-challenge", async (req, res) => {
+  try {
+    res.json(await issueAdminWebAuthnRegChallenge());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post("/api/admin/auth/webauthn-register", async (req, res) => {
+  const response = req.body?.registrationResponse ?? req.body;
+  if (!response?.id || !response?.response) {
+    res.status(400).json({ error: "Missing registrationResponse (RegistrationResponseJSON)" });
+    return;
+  }
+  try {
+    res.json(await verifyAndRegisterAdminWebAuthn(response));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(msg.includes("failed") ? 401 : 500).json({ error: msg });
+  }
+});
+
+app.post("/api/admin/auth/webauthn-login-challenge", async (req, res) => {
+  try {
+    res.json(await issueAdminWebAuthnLoginChallenge());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post("/api/admin/auth/webauthn-login", async (req, res) => {
+  const assertion = req.body?.assertion ?? req.body;
+  if (!assertion?.id || !assertion?.response) {
+    res.status(400).json({ error: "Missing assertion (AuthenticationResponseJSON)" });
+    return;
+  }
+  try {
+    await verifyAdminWebAuthnLoginAssertion(assertion);
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status =
+      msg.includes("not found") ? 404 :
+      msg.includes("not verified") || msg.includes("failed") ? 401 : 400;
     res.status(status).json({ error: msg });
   }
 });
