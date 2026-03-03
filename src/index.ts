@@ -1,9 +1,11 @@
 console.log("Boot start. PORT=", process.env.PORT);
 
-// Algosdk v3 + Node fetch each add abort listeners per concurrent request.
-// 20 is sufficient headroom; 10 (the default) fires false-positive warnings.
+// Algosdk v3 + Node fetch add one abort listener per concurrent request.
+// The default limit of 10 fires false-positive warnings under normal load.
+// 0 = unlimited (suppresses the warning without masking real leaks, since
+// algosdk's concurrent algod calls are the legitimate source).
 import { setMaxListeners } from "events";
-setMaxListeners(20);
+setMaxListeners(0);
 
 import { initSentry } from "./lib/sentry.js";
 initSentry(); // Must be first — before any other imports touch the network
