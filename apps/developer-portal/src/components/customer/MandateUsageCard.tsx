@@ -133,7 +133,7 @@ export default function MandateUsageCard({ agentId, ownerAddress }: Props) {
                 <span>{activeMandates.length} active mandate{activeMandates.length !== 1 ? "s" : ""}</span>
               )}
               <a
-                href="/mandates"
+                href="/app/mandates"
                 className="text-emerald-400 hover:text-emerald-300 transition-colors"
               >
                 Manage all →
