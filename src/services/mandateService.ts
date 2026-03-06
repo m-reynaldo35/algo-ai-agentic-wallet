@@ -528,7 +528,7 @@ export async function createMandate(
     ),
     redis.zadd(
       `${MANDATE_IDX_PREFIX}${agentId}`,
-      { score: input.expiresAt ?? Number.MAX_SAFE_INTEGER, member: mandateId },
+      { score: input.expiresAt ?? 9_999_999_999_999, member: mandateId },
     ),
   ]);
 
