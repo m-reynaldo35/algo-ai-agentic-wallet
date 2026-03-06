@@ -84,7 +84,7 @@ function LoginForm() {
   const searchParams = useSearchParams();
   const from = searchParams.get("from") || "/app/dashboard";
 
-  const [agentIdInput, setAgentIdInput] = useState("");
+  const [agentIdInput, setAgentIdInput] = useState(searchParams.get("agentId") ?? "");
   const [authMethod,   setAuthMethod]   = useState<AuthMethod>("liquid");
   const [showQR,       setShowQR]       = useState(false);
   const [submitting,   setSubmitting]   = useState(false);

@@ -364,10 +364,10 @@ function Step4({ agentId, result }: { agentId: string; result: ActivateResponse 
 
       <div className="flex flex-col gap-2">
         <Link
-          href="/app/login"
+          href={`/app/login?agentId=${encodeURIComponent(agentId)}`}
           className="block w-full bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium py-2.5 rounded-md transition-colors text-center"
         >
-          Sign in to Dashboard →
+          Go to Dashboard →
         </Link>
         <Link
           href="/app/create"
