@@ -2,7 +2,34 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+
+const WARN_BEFORE_MS = 30 * 60 * 1000; // show banner when < 30 min remain
+
+function useSessionExpiry() {
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchExpiry() {
+      try {
+        const res = await fetch("/api/auth/session");
+        if (!res.ok) return;
+        const data = await res.json() as { authenticated: boolean; expiresAt: number | null };
+        if (!cancelled) setExpiresAt(data.expiresAt ?? null);
+      } catch { /* silent */ }
+    }
+    fetchExpiry();
+    const interval = setInterval(fetchExpiry, 60_000); // refresh every minute
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  if (expiresAt === null) return null;
+  const msLeft = expiresAt - Date.now();
+  if (msLeft <= 0 || msLeft > WARN_BEFORE_MS) return null;
+  const minLeft = Math.ceil(msLeft / 60_000);
+  return minLeft;
+}
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" },
@@ -10,14 +37,14 @@ const navItems = [
   { href: "/api-keys", label: "API Keys", icon: "M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" },
   { href: "/mandates", label: "Mandates", icon: "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" },
   { href: "/logs", label: "Logs", icon: "M4 6h16M4 10h16M4 14h16M4 18h16" },
-  { href: "/docs", label: "Docs", icon: "M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" },
   { href: "/settings", label: "Settings", icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z" },
 ];
 
 export default function Sidebar() {
-  const pathname = usePathname();
-  const router = useRouter();
+  const pathname    = usePathname();
+  const router      = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const minsLeft    = useSessionExpiry();
 
   const handleLogout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -85,6 +112,18 @@ export default function Sidebar() {
 
         {/* Footer */}
         <div className="px-3 py-4 border-t border-zinc-800 space-y-3">
+          {/* Session expiry warning */}
+          {minsLeft !== null && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-amber-900/30 border border-amber-800/50">
+              <svg className="w-3.5 h-3.5 text-amber-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span className="text-xs text-amber-400">
+                Session expires in {minsLeft} min
+              </span>
+            </div>
+          )}
           <div className="flex items-center gap-2 px-3 text-xs text-zinc-500">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             algorand-mainnet
