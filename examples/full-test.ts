@@ -15,7 +15,7 @@ import "dotenv/config";
 const MNEMONIC       = process.env.ALGO_MNEMONIC!;
 const PORTAL_SECRET  = process.env.PORTAL_API_SECRET!;
 const API_URL        = process.env.X402_API_URL ?? process.env.E2E_BASE_URL ?? "http://localhost:4020";
-const AGENT_ID       = "setup-tester-v2";
+const AGENT_ID       = process.env.AGENT_ID ?? "setup-tester-v2";
 const NODE_URL       = process.env.ALGORAND_NODE_URL ?? "https://mainnet-api.4160.nodely.dev";
 const NODE_TOKEN     = process.env.ALGORAND_NODE_TOKEN ?? "";
 const USDC_ASSET_ID  = 31566704n;

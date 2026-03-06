@@ -214,3 +214,13 @@ export async function getNodeStatus(): Promise<{
     };
   }
 }
+
+/** @internal Testing only — inject a mock Algod client. Never call from production code. */
+export function _setAlgodForTest(mock: algosdk.Algodv2 | null): void {
+  _algod = mock;
+}
+
+/** @internal Testing only — inject a mock Indexer client. Never call from production code. */
+export function _setIndexerForTest(mock: algosdk.Indexer | null): void {
+  _indexer = mock;
+}

@@ -324,9 +324,15 @@ export async function rollbackOutflow(reservationKey: string | undefined): Promi
 
   try {
     // reservationKey format: "{aKey}:{microAlgo}|{uKey}:{microUsdc}"
+    // Keys contain dates (e.g. "x402:treasury:outflow:algo:2026-03-06"), so we
+    // must split on the LAST colon only — not /:(?=\d)/ which also matches ":2026".
     const [algoPart, usdcPart] = reservationKey.split("|");
-    const [aKey, microAlgoStr] = algoPart.split(/:(?=\d)/);  // split on last colon before digits
-    const [uKey, microUsdcStr] = usdcPart.split(/:(?=\d)/);
+    const aLastColon   = algoPart.lastIndexOf(":");
+    const uLastColon   = usdcPart.lastIndexOf(":");
+    const aKey         = algoPart.slice(0, aLastColon);
+    const microAlgoStr = algoPart.slice(aLastColon + 1);
+    const uKey         = usdcPart.slice(0, uLastColon);
+    const microUsdcStr = usdcPart.slice(uLastColon + 1);
 
     const microAlgo = BigInt(microAlgoStr ?? "0");
     const microUsdc = BigInt(microUsdcStr ?? "0");

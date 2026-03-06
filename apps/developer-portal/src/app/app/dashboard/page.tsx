@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import AgentStatusCard from "@/components/customer/AgentStatusCard";
 import WalletCard from "@/components/customer/WalletCard";
 import MandateUsageCard from "@/components/customer/MandateUsageCard";
@@ -80,6 +81,20 @@ export default function CustomerDashboard() {
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-5">
+      {/* Page header */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-sm text-zinc-400">Dashboard</h1>
+        <Link
+          href="/app/create"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-400 border border-emerald-800 rounded-md transition-colors"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          Create Agent
+        </Link>
+      </div>
+
       {/* Top row — Agent Status + Wallet */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <AgentStatusCard

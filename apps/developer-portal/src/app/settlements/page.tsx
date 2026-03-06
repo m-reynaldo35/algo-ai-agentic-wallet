@@ -11,7 +11,7 @@ export default function SettlementsPage() {
       <div className="mb-10">
         <h1 className="text-4xl font-bold tracking-tight">Settlements</h1>
         <p className="text-zinc-400 mt-2 text-lg">
-          On-chain settlement history with oracle context and audit trail.
+          On-chain settlement history and audit trail.
         </p>
       </div>
 

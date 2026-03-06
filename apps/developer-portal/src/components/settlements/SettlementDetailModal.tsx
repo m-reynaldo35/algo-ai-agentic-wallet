@@ -32,18 +32,6 @@ export default function SettlementDetailModal({ settlement: s, onClose }: Props)
           {s.confirmedRound && <Row label="Confirmed Round" value={String(s.confirmedRound)} />}
           {s.failedStage && <Row label="Failed Stage" value={s.failedStage} />}
           {s.error && <Row label="Error" value={s.error} />}
-
-          {s.oracleContext && (
-            <>
-              <div className="border-t border-zinc-800 pt-4 mt-4">
-                <p className="text-xs text-zinc-500 uppercase tracking-wider mb-3">Oracle Context</p>
-              </div>
-              <Row label="Asset Pair" value={s.oracleContext.assetPair} />
-              <Row label="Gora Price" value={`${(Number(s.oracleContext.goraConsensusPrice) / 1e6).toFixed(4)} USDC/ALGO`} />
-              <Row label="Timestamp" value={new Date(s.oracleContext.goraTimestamp * 1000).toLocaleString()} />
-              <Row label="Slippage" value={`${s.oracleContext.slippageDelta} bips`} />
-            </>
-          )}
         </div>
       </div>
     </div>

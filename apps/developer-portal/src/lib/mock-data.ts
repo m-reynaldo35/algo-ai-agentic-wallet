@@ -28,12 +28,6 @@ export interface Settlement {
   confirmedRound?: number;
   failedStage?: string;
   error?: string;
-  oracleContext?: {
-    assetPair: string;
-    goraConsensusPrice: string;
-    goraTimestamp: number;
-    slippageDelta: number;
-  };
 }
 
 export interface AuditEvent {
@@ -59,12 +53,6 @@ function generateSettlements(): Settlement[] {
       confirmedRound: status === "confirmed" ? rand(40000000, 41000000) : undefined,
       failedStage: status === "failed" ? "validation" : undefined,
       error: status === "failed" ? "Signature Replay Detected: nonce already used" : undefined,
-      oracleContext: status === "confirmed" ? {
-        assetPair: "USDC/ALGO",
-        goraConsensusPrice: String(rand(280000, 290000)),
-        goraTimestamp: Math.floor(Date.now() / 1000) - rand(1, 300),
-        slippageDelta: rand(20, 80),
-      } : undefined,
     };
   }).sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
 }

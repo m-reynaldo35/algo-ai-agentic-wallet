@@ -115,7 +115,7 @@ fi
 # NOTE: This endpoint is normally x402-gated (returns 402 on first
 # call). In development with DISABLE_PORTAL_AUTH=true the portal
 # secret bypasses the x402 check. In production, build an X-PAYMENT
-# proof using py-algorand-sdk or @m-reynaldo35/x402-client.
+# proof using py-algorand-sdk or @algo-wallet/x402-client.
 
 echo
 echo "── 3a. BUILD ATOMIC GROUP ───────────────────────────────"

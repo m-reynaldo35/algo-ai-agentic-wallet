@@ -237,6 +237,36 @@ export async function listAgents(limit = 50, offset = 0): Promise<AgentRecord[]>
  * Load all agents in a given cohort.
  * At 100k+ agents: replace redis.keys() scan with a sorted set index keyed by cohort.
  */
+/**
+ * Cursor-based scan over all agents — single O(N) pass using SCAN instead
+ * of KEYS. Use this in background jobs (gas station, guardian) instead of
+ * calling listAgents() in a loop, which issues a full KEYS scan per page.
+ */
+export async function scanAllAgents(): Promise<AgentRecord[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+
+  const agents: AgentRecord[] = [];
+  let cursor = 0;
+
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, {
+      match: `${AGENTS_PREFIX}*`,
+      count: 100,
+    });
+    cursor = parseInt(nextCursor, 10);
+
+    if (keys.length > 0) {
+      const raws = await Promise.all(keys.map((k) => redis.get<AgentRecord>(k)));
+      for (const r of raws) {
+        if (r !== null) agents.push(r);
+      }
+    }
+  } while (cursor !== 0);
+
+  return agents;
+}
+
 export async function listAgentsByCohort(cohort: string): Promise<AgentRecord[]> {
   const redis = getRedis();
   if (!redis) return [];

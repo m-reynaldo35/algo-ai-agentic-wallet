@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs";
 
-const API_URL = process.env.API_URL || "https://ai-agentic-wallet.com";
+const API_URL = process.env.API_URL || "https://api.ai-agentic-wallet.com";
 const PORTAL_SECRET = process.env.PORTAL_API_SECRET || "";
 
 const nextConfig: NextConfig = {

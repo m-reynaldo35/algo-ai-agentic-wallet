@@ -2,9 +2,17 @@ import algosdk from "algosdk";
 import "dotenv/config";
 
 const USDC_ASSET_ID = 31566704n; // Mainnet USDC
-const ADDRESS = "G7W3CRVRMUJNL23ZPJQ5ABOA6NLNUJBCU724IBG4LWWCPBHOSQY75PCOIU";
-const MNEMONIC = process.env.ALGO_MNEMONIC!;
+const MNEMONIC = process.env.ALGO_MNEMONIC;
 const NODE_URL = process.env.ALGORAND_NODE_URL ?? "https://mainnet-api.4160.nodely.dev";
+
+if (!MNEMONIC) {
+  console.error("[FATAL] ALGO_MNEMONIC env var is required");
+  process.exit(1);
+}
+
+// Derive address from mnemonic, or override with ALGO_ADDRESS
+const derived = algosdk.mnemonicToSecretKey(MNEMONIC);
+const ADDRESS = process.env.ALGO_ADDRESS ?? derived.addr.toString();
 
 async function main() {
   const algod = new algosdk.Algodv2("", NODE_URL, "");
@@ -29,7 +37,6 @@ async function main() {
     process.exit(1);
   }
 
-  const account = algosdk.mnemonicToSecretKey(MNEMONIC);
   const params  = await algod.getTransactionParams().do();
 
   // Opt-in = 0-amount asset transfer to self
@@ -42,7 +49,7 @@ async function main() {
     note: new Uint8Array(Buffer.from("x402:usdc-optin")),
   });
 
-  const signed = optInTxn.signTxn(account.sk);
+  const signed = optInTxn.signTxn(derived.sk);
   const { txid } = await algod.sendRawTransaction(signed).do();
   console.log(`\nOpt-in submitted: ${txid}`);
 

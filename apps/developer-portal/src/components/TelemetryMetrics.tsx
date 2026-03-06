@@ -19,13 +19,6 @@ interface AuditEvent {
   error?: string;
   settledAt?: string;
   timestamp?: string;
-  oracleContext?: {
-    assetPair: string;
-    goraConsensusPrice: string;
-    goraTimestamp: number;
-    goraTimestampISO: string;
-    slippageDelta: number;
-  };
 }
 
 /**
@@ -34,7 +27,6 @@ interface AuditEvent {
  * Fetches and displays pino JSON audit logs, graphing:
  *   - Total USDC Revenue (settlement.success events)
  *   - Blocked Replay Attacks (execution.failure where stage=validation)
- *   - Gora Oracle price at time of last settlement
  *   - Active agent count
  */
 export default function TelemetryMetrics() {
@@ -58,11 +50,10 @@ export default function TelemetryMetrics() {
           { label: "Blocked Replays", value: "7", delta: "3 today", status: "negative" },
           { label: "Blocked TEAL Breaches", value: "2", delta: "1 today", status: "negative" },
           { label: "Rate Limit Hits", value: "23", delta: "5 unique IPs", status: "neutral" },
-          { label: "Gora Oracle Price", value: "0.2850 USDC/ALGO", delta: "3s ago", status: "neutral" },
           { label: "Active Agents", value: "8", delta: "3 new today", status: "positive" },
         ]);
         setEvents([
-          { event: "settlement.success", agentId: "sdk-WYQ24WWZ", tollAmountMicroUsdc: 100000, settledAt: new Date().toISOString(), oracleContext: { assetPair: "USDC/ALGO", goraConsensusPrice: "285000", goraTimestamp: Math.floor(Date.now() / 1000) - 3, goraTimestampISO: new Date().toISOString(), slippageDelta: 50 } },
+          { event: "settlement.success", agentId: "sdk-WYQ24WWZ", tollAmountMicroUsdc: 100000, settledAt: new Date().toISOString() },
           { event: "execution.failure", agentId: "agent-rogue-01", failedStage: "validation", error: "Signature Replay Detected: nonce has already been used", timestamp: new Date().toISOString() },
           { event: "settlement.success", agentId: "sdk-GOBIB6Q4", tollAmountMicroUsdc: 100000, settledAt: new Date().toISOString() },
         ]);
@@ -134,11 +125,6 @@ export default function TelemetryMetrics() {
                 <p className="text-zinc-500">Toll: {e.tollAmountMicroUsdc / 1e6} USDC</p>
               )}
               {e.error && <p className={`mt-1 ${isPolicyBreach ? "text-amber-300" : "text-red-300"}`}>{e.error}</p>}
-              {e.oracleContext && (
-                <p className="text-zinc-500">
-                  Oracle: {e.oracleContext.assetPair} @ {Number(e.oracleContext.goraConsensusPrice) / 1e6} (δ={e.oracleContext.slippageDelta}bips)
-                </p>
-              )}
             </div>
             );
           })}

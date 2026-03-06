@@ -21,7 +21,7 @@ import {
   X402Error,
   type TradeResult,
   type SettlementResult,
-} from "@m-reynaldo35/x402-client";
+} from "@algo-wallet/x402-client";
 
 // ── Agent Identity ─────────────────────────────────────────────
 // The agent derives its keypair from a mnemonic stored in the

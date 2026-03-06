@@ -26,6 +26,8 @@ import { getWebhookDeliveries } from "./services/webhook.js";
 import { registerSSEBroadcaster } from "./services/audit.js";
 import { requirePortalAuth } from "./middleware/portalAuth.js";
 import { registerExistingAgent, generateAgentKeypair } from "./services/agentRegistration.js";
+import { getOnboardingQuote, prepareOnboardingGroup, submitOnboardingGroup } from "./services/treasuryFunder.js";
+import { startGasStation, stopGasStation } from "./services/gasStation.js";
 import { assertProductionAuthReady } from "./auth/liquidAuth.js";
 import { runBootGuards, assertCrossRegionTreasuryHash } from "./protection/envGuard.js";
 import { checkExecutionLimits } from "./protection/executionLimiter.js";
@@ -69,6 +71,7 @@ import { logMtlsStatus } from "./protection/mtlsConfig.js";
 import { verifyMultiSigHalt, isMultiSigConfigured } from "./protection/multiSigHalt.js";
 import helmet from "helmet";
 import cors from "cors";
+import { logger } from "./lib/logger.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -132,6 +135,15 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: "256kb" })); // Limit request body size
 
+// ── API versioning: /v1/* → /* (canonical is /v1/, old paths kept as aliases) ──
+// Rewriting before routing means all existing handlers work for both paths.
+app.use((req, _res, next) => {
+  if (req.url.startsWith("/v1/")) {
+    req.url = req.url.slice(3); // "/v1/api/execute" → "/api/execute"
+  }
+  next();
+});
+
 // ── Serve public/skill.md and other static assets ─────────────
 app.use(express.static(path.join(__dirname, "..", "public")));
 
@@ -143,8 +155,8 @@ app.get("/.well-known/agent-card.json", (_req, res) => {
 // ── A2A Agent-to-Agent endpoint (open — mandate/velocity gated internally) ──
 app.use("/a2a", a2aRouter);
 
-// ── Rate Limiting (Upstash sliding window — before all API routes) ─
-app.use("/api", rateLimiter);
+// ── Rate Limiting (Upstash sliding window — all routes including /health, /a2a) ─
+app.use(rateLimiter);
 
 // ── API info manifest (machine-readable; landing page is served by static middleware) ──
 app.get("/api/info", (_req, res) => {
@@ -200,9 +212,10 @@ app.get("/health", async (_req, res) => {
   const allOk  = node.healthy && redisOk && !halted;
 
   res.json({
-    status:   halted ? "halted" : allOk ? "ok" : "degraded",
-    protocol: "x402",
-    network:  node.network,
+    status:     halted ? "halted" : allOk ? "ok" : "degraded",
+    protocol:   "x402",
+    apiVersion: "v1",
+    network:    node.network,
     halted,
     node: {
       provider,
@@ -254,7 +267,7 @@ app.post("/api/agent-action", x402Paywall, async (req, res) => {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    console.error("[agent-action]", message);
+    logger.error({ err: message }, "[agent-action] Failed to construct atomic group");
     res.status(500).json({ error: "Failed to construct atomic group" });
   }
 });
@@ -368,7 +381,7 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
         // Attach reservation key so we can roll back on pipeline failure
         (req as unknown as Record<string, unknown>)._velocityReservationKey = velocity.reservationKey;
       } catch (velocityErr) {
-        console.error("[execute/velocity]", velocityErr instanceof Error ? velocityErr.message : velocityErr);
+        logger.error({ err: velocityErr instanceof Error ? velocityErr.message : velocityErr }, "[execute] velocity check threw");
       }
     }
 
@@ -407,21 +420,21 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
     // ── Phase 1.5: Circuit breaker feedback ───────────────────
     if (result.success) {
       // Any successful submission resets the failure counter immediately.
-      recordSuccess().catch((e) => console.warn("[execute] recordSuccess failed:", e));
+      recordSuccess().catch((e) => logger.warn({ err: e }, "[execute] recordSuccess failed"));
     } else if (result.failedStage === "sign" || result.failedStage === "broadcast") {
       // Only signing/RPC failures feed the circuit breaker.
       // Auth and validation failures indicate client errors, not RPC instability.
-      recordFailure(`stage=${result.failedStage}: ${result.error ?? "unknown"}`).catch((e) => console.warn("[execute] recordFailure failed:", e));
+      recordFailure(`stage=${result.failedStage}: ${result.error ?? "unknown"}`).catch((e) => logger.warn({ err: e }, "[execute] recordFailure failed"));
     }
 
     if (!result.success) {
       // Release the execution reservation so the client can retry
-      releaseReservation(sandboxId).catch((e) => console.warn("[execute] releaseReservation failed:", e));
+      releaseReservation(sandboxId).catch((e) => logger.warn({ err: e }, "[execute] releaseReservation failed"));
       // Roll back the velocity reservation so the failed attempt does not
       // consume the agent's spend allowance.
       const reservationKey = (req as unknown as Record<string, unknown>)._velocityReservationKey as string | undefined;
       if (!usedMandatePath && reservationKey) {
-        rollbackVelocityReservation(agentId, reservationKey).catch((e) => console.warn("[execute] rollbackVelocity failed:", e));
+        rollbackVelocityReservation(agentId, reservationKey).catch((e) => logger.warn({ err: e }, "[execute] rollbackVelocity failed"));
       }
       res.status(502).json({
         error: "Settlement pipeline failed",
@@ -432,7 +445,7 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
 
     // ── Record global outflow for mass drain tracking ──────────
     if (!usedMandatePath && proposedMicroUsdc > 0n) {
-      recordGlobalOutflow(agentId, proposedMicroUsdc).catch((e) => console.warn("[execute] recordGlobalOutflow failed:", e));
+      recordGlobalOutflow(agentId, proposedMicroUsdc).catch((e) => logger.warn({ err: e }, "[execute] recordGlobalOutflow failed"));
     }
 
     // ── Async path: job queued, return immediately ─────────────
@@ -459,7 +472,7 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
     try {
       await completeReservation(sandboxId, result);
     } catch (err) {
-      console.error("[execute] completeReservation failed — idempotency gap possible:", err);
+      logger.error({ err }, "[execute] completeReservation failed — idempotency gap possible");
     }
 
     // ── Mark confirmed txnId as settled (7-day retention) ─────
@@ -472,10 +485,9 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
         settledAt:      result.settlement.settledAt,
       });
       if (!wasNew) {
-        console.warn(
-          `[execute] markTxIdSettled NX=false for txnId ${result.settlement.txnId} — ` +
-          `crash-recovery: previous execution settled this txnId but completeReservation did not persist. ` +
-          `Returning success; idempotency gap was ${sandboxId}.`,
+        logger.warn(
+          { txnId: result.settlement.txnId, sandboxId },
+          "[execute] markTxIdSettled NX=false — crash-recovery: completeReservation did not persist",
         );
       }
     }
@@ -483,7 +495,7 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
     res.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    console.error("[execute]", message);
+    logger.error({ err: message }, "[execute] Pipeline execution failed");
     res.status(500).json({ error: "Pipeline execution failed" });
   }
 });
@@ -525,7 +537,7 @@ app.post("/api/batch-action", x402Paywall, async (req, res) => {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    console.error("[batch-action]", message);
+    logger.error({ err: message }, "[batch-action] Failed to construct batched atomic group");
     res.status(500).json({ error: "Failed to construct batched atomic group" });
   }
 });
@@ -1029,11 +1041,19 @@ app.get("/api/portal/stream", requirePortalAuth, (req, res) => {
 
 // ── Agent Registration ───────────────────────────────────────────
 //
-// POST /api/agents/create            — sponsored wallet creation (treasury-funded)
-// POST /api/agents/register-existing — rekey a funded wallet to Rocca
-// GET  /api/agents                   — list registered agents
-// GET  /api/agents/:agentId          — fetch a single agent record
-// PATCH /api/agents/:agentId/suspend — suspend an agent
+// USDC-native onboarding (no manual ALGO required):
+//   GET  /api/agents/onboarding-quote   — live USDC fee for MBR funding (public)
+//   POST /api/agents/prepare-onboarding — build atomic group (treasury pre-signs ALGO tx)
+//   POST /api/agents/activate           — submit signed group + opt-in + rekey
+//
+// Legacy / self-fund path (user provides their own ALGO):
+//   POST /api/agents/create            — generate keypair (no blockchain cost)
+//   POST /api/agents/register-existing — rekey an already-funded wallet to Rocca
+//
+// Management:
+//   GET  /api/agents                   — list registered agents
+//   GET  /api/agents/:agentId          — fetch a single agent record
+//   PATCH /api/agents/:agentId/suspend — suspend an agent
 
 // Keypair generation — pure in-process, no blockchain, no treasury cost.
 // Returns a fresh Algorand address + mnemonic. The user funds the address,
@@ -1139,6 +1159,121 @@ app.post("/api/agents/register-existing", requirePortalAuth, async (req, res) =>
     }
     console.error("[agents/register-existing]", message);
     res.status(500).json({ error: "Agent registration failed", detail: message });
+  }
+});
+
+// ── USDC-Native Onboarding ───────────────────────────────────────
+//
+// Three-step flow that eliminates manual ALGO acquisition:
+//   1. GET  /api/agents/onboarding-quote     — live pricing (USDC cost for MBR)
+//   2. POST /api/agents/prepare-onboarding   — build atomic group (treasury pre-signs ALGO tx)
+//   3. POST /api/agents/activate             — submit signed group + register agent
+//
+// The payer signs only the USDC transfer using any Algorand wallet (Pera, Defly, SDK).
+// Treasury atomically sends ALGO to the new agent wallet in the same group.
+
+// Step 1 — public (no portal auth required; agents can query this autonomously)
+app.get("/api/agents/onboarding-quote", async (_req, res) => {
+  try {
+    const quote = await getOnboardingQuote();
+    res.json(quote);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("[agents/onboarding-quote]", message);
+    res.status(500).json({ error: "Failed to generate onboarding quote", detail: message });
+  }
+});
+
+// Step 2 — build the partially-signed atomic group
+app.post("/api/agents/prepare-onboarding", requirePortalAuth, async (req, res) => {
+  try {
+    const { payerAddress, agentAddress } = req.body;
+
+    if (!payerAddress || typeof payerAddress !== "string") {
+      res.status(400).json({ error: "Missing required field: payerAddress" });
+      return;
+    }
+    if (!agentAddress || typeof agentAddress !== "string") {
+      res.status(400).json({ error: "Missing required field: agentAddress" });
+      return;
+    }
+
+    const prepared = await prepareOnboardingGroup(payerAddress, agentAddress);
+
+    // Single-use quote nonce — expires in 90s (matches quote.expiresAt).
+    // activate checks + deletes this key, rejecting expired or replayed calls.
+    const onboardingRedis = getRedis();
+    if (onboardingRedis) {
+      await onboardingRedis.set(`x402:onboarding:nonce:${prepared.groupIdB64}`, "1", { ex: 90 });
+    }
+
+    res.json({
+      ...prepared,
+      instructions: [
+        "Sign unsignedUsdcTxB64 with your payer wallet (the wallet that holds USDC).",
+        "Then call POST /api/agents/activate with signedUsdcTxB64, signedAlgoTxB64, agentId, and mnemonic.",
+        "Quote expires in 90 seconds — complete activation before expiry.",
+      ],
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    if (message.startsWith("Invalid payerAddress") || message.startsWith("Invalid agentAddress")) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error("[agents/prepare-onboarding]", message);
+    res.status(500).json({ error: "Failed to prepare onboarding group" });
+  }
+});
+
+// Step 3 — submit atomic group + register agent
+app.post("/api/agents/activate", requirePortalAuth, async (req, res) => {
+  try {
+    const { agentId, mnemonic, signedUsdcTxB64, signedAlgoTxB64, groupIdB64, platform } = req.body;
+
+    if (!agentId  || typeof agentId  !== "string") { res.status(400).json({ error: "Missing required field: agentId" });         return; }
+    if (!mnemonic || typeof mnemonic !== "string") { res.status(400).json({ error: "Missing required field: mnemonic" });        return; }
+    if (!signedUsdcTxB64 || typeof signedUsdcTxB64 !== "string") { res.status(400).json({ error: "Missing required field: signedUsdcTxB64" }); return; }
+    if (!signedAlgoTxB64 || typeof signedAlgoTxB64 !== "string") { res.status(400).json({ error: "Missing required field: signedAlgoTxB64" }); return; }
+    if (!groupIdB64      || typeof groupIdB64      !== "string") { res.status(400).json({ error: "Missing required field: groupIdB64 (returned by prepare-onboarding)" }); return; }
+
+    // Quote nonce check — reject if expired (> 90s) or already used.
+    // groupIdB64 was returned by prepare-onboarding and stored in Redis with 90s TTL.
+    // HIGH-1: Use atomic GETDEL so concurrent requests cannot both pass the
+    // exists check before either deletes — eliminates the TOCTOU race.
+    const activateRedis = getRedis();
+    if (activateRedis) {
+      const nonceKey = `x402:onboarding:nonce:${groupIdB64}`;
+      const consumed = await activateRedis.getdel(nonceKey);
+      if (!consumed) {
+        res.status(410).json({ error: "Onboarding quote has expired or was already used. Call prepare-onboarding again." });
+        return;
+      }
+    }
+
+    // Submit the atomic group — treasury ALGO arrives at agent wallet on confirmation
+    const fundingTxId = await submitOnboardingGroup(signedUsdcTxB64, signedAlgoTxB64);
+
+    // Agent wallet now has ALGO — proceed with opt-in + rekey
+    const result = await registerExistingAgent(agentId, mnemonic, platform);
+
+    res.status(201).json({
+      status:             "registered",
+      agentId:            result.agentId,
+      address:            result.address,
+      cohort:             result.cohort,
+      authAddr:           result.authAddr,
+      fundingTxId,
+      registrationTxnId: result.registrationTxnId,
+      explorerUrl:        result.explorerUrl,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    if (message.includes("already registered")) { res.status(409).json({ error: message }); return; }
+    if (message.includes("Invalid agentId"))     { res.status(400).json({ error: message }); return; }
+    if (message.includes("Group ID mismatch"))   { res.status(400).json({ error: message }); return; }
+    console.error("[agents/activate]", message);
+    res.status(500).json({ error: "Agent activation failed" });
   }
 });
 
@@ -1267,7 +1402,7 @@ app.post("/api/system/halt", requirePortalAuth, async (req, res) => {
   }
   const reason = String(req.body?.reason ?? "Manual halt via portal API");
   await setHalt(reason);
-  console.error(`[system/halt] Halt set via API: ${reason}`);
+  logger.warn({ reason }, "[system/halt] Halt set via API");
   res.json({ halted: true, reason });
 });
 
@@ -1282,7 +1417,7 @@ app.post("/api/system/unhalt", requirePortalAuth, async (req, res) => {
     }
   }
   await clearHalt();
-  console.log("[system/unhalt] Halt cleared via API");
+  logger.info("[system/unhalt] Halt cleared via API");
   res.json({ halted: false });
 });
 
@@ -2147,7 +2282,7 @@ app.get("/api/portal/security-metrics", requirePortalAuth, async (_req, res) => 
 // Catches any error passed to next(err) or thrown synchronously in a route.
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const message = err instanceof Error ? err.message : String(err);
-  console.error("[Express] Unhandled error:", message);
+  logger.error({ err: message }, "[Express] Unhandled error");
   if (!res.headersSent) {
     res.status(500).json({ error: "Internal server error" });
   }
@@ -2156,11 +2291,11 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 // ── Process-level safety nets ─────────────────────────────────────
 // Catch async errors that escape route handlers entirely.
 process.on("unhandledRejection", (reason) => {
-  console.error("[Process] Unhandled promise rejection:", reason);
+  logger.error({ reason }, "[Process] Unhandled promise rejection");
 });
 
 process.on("uncaughtException", (err) => {
-  console.error("[Process] Uncaught exception:", err);
+  logger.fatal({ err }, "[Process] Uncaught exception");
   process.exit(1);
 });
 
@@ -2173,10 +2308,7 @@ runBootGuards();
 // Cross-region treasury hash consistency check (async — runs after Redis is reachable).
 // Fails the process if X402_PAY_TO_ADDRESS differs from what other regions registered.
 assertCrossRegionTreasuryHash().catch((err: unknown) => {
-  console.error(
-    "[Boot] FATAL: Cross-region treasury hash mismatch —",
-    err instanceof Error ? err.message : err,
-  );
+  logger.fatal({ err: err instanceof Error ? err.message : err }, "[Boot] FATAL: Cross-region treasury hash mismatch");
   process.exit(1);
 });
 
@@ -2190,9 +2322,10 @@ if (!port) {
 }
 
 const server = app.listen(port, "0.0.0.0", () => {
-  console.log(`Listening on ${port}`);
-  console.log(`  Network: algorand-${config.algorand.network}`);
-  console.log(`  Default slippage: ${DEFAULT_SLIPPAGE_BIPS} bips (${DEFAULT_SLIPPAGE_BIPS / 100}%)`);
+  logger.info(
+    { port, network: `algorand-${config.algorand.network}`, slippageBips: DEFAULT_SLIPPAGE_BIPS },
+    "Server listening",
+  );
 });
 
 // Async boot assertion: custody invariant.
@@ -2202,12 +2335,9 @@ const server = app.listen(port, "0.0.0.0", () => {
 const roccaSignerAddress = config.rocca.signerAddress;
 if (roccaSignerAddress) {
   assertCustodyInvariant(roccaSignerAddress)
-    .then(() => console.log("[Boot] Custody invariant: OK"))
+    .then(() => logger.info("[Boot] Custody invariant: OK"))
     .catch((err: unknown) => {
-      console.error(
-        "[Boot] FATAL: Custody invariant violated —",
-        err instanceof Error ? err.message : err,
-      );
+      logger.fatal({ err: err instanceof Error ? err.message : err }, "[Boot] FATAL: Custody invariant violated");
       server.close(() => process.exit(1));
     });
 }
@@ -2219,9 +2349,9 @@ logMtlsStatus("main-api");
 // against on-chain state before serving traffic. Runs after custody invariant
 // so a clean registry is confirmed first.
 runRekeySync()
-  .then(() => console.log("[Boot] Rekey sync: OK"))
+  .then(() => logger.info("[Boot] Rekey sync: OK"))
   .catch((err: unknown) =>
-    console.error("[Boot] Rekey sync error:", err instanceof Error ? err.message : err),
+    logger.error({ err: err instanceof Error ? err.message : err }, "[Boot] Rekey sync error"),
   );
 
 // Module 5 — Drift pulse: start 60s heartbeat that samples 5% of agents
@@ -2231,6 +2361,10 @@ startDriftPulse();
 // AP2 Module 5 — Recurring scheduler: 30s tick for due recurring mandates.
 startRecurringScheduler();
 
+// Gas station — monitors agent ALGO balances, tops up from treasury when below threshold.
+// Configure via GAS_STATION_INTERVAL_S, GAS_STATION_TRIGGER_MICRO, GAS_STATION_TOPUP_MICRO.
+startGasStation();
+
 // Settlement worker — dequeues signed transactions and broadcasts to Algorand.
 // Runs embedded in the API process. For higher throughput, run additional
 // standalone workers via: npm run worker
@@ -2238,5 +2372,5 @@ const workerAbort = new AbortController();
 runWorker(workerAbort.signal).catch((err: unknown) =>
   console.error("[Boot] Settlement worker crashed:", err instanceof Error ? err.message : err),
 );
-process.on("SIGTERM", () => workerAbort.abort());
-process.on("SIGINT",  () => workerAbort.abort());
+process.on("SIGTERM", () => { workerAbort.abort(); stopGasStation(); });
+process.on("SIGINT",  () => { workerAbort.abort(); stopGasStation(); });

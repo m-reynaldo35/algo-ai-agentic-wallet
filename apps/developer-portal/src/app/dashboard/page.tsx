@@ -4,7 +4,7 @@ import HealthBanner from "@/components/dashboard/HealthBanner";
 
 export const metadata = {
   title: "Dashboard — x402 Developer Portal",
-  description: "Real-time x402 protocol telemetry and Gora oracle metrics",
+  description: "Real-time x402 protocol telemetry and security events",
 };
 
 export default function DashboardPage() {
@@ -15,7 +15,7 @@ export default function DashboardPage() {
           x402 Protocol Dashboard
         </h1>
         <p className="text-zinc-400 mt-2 text-lg">
-          Real-time settlement telemetry, Gora oracle prices, and security events.
+          Real-time settlement telemetry and security events.
         </p>
       </div>
 

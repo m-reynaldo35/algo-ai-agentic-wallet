@@ -108,6 +108,12 @@ const DRAIN_VELOCITY_MICRO = BigInt(
 ); // default: 50 ALGO per window = suspicious
 const DRAIN_WINDOW_S = parseInt(process.env.SIGNER_DRAIN_WINDOW_S || "60", 10);
 
+// Gas station treasury low-balance alert.
+// At default GAS_STATION_TOPUP_MICRO=700000 (0.7 ALGO/agent), 10 ALGO covers ~14 top-ups.
+const TREASURY_LOW_ALERT_MICRO = BigInt(
+  Math.round(parseFloat(process.env.TREASURY_LOW_ALERT_ALGO || "10") * 1_000_000),
+);
+
 // ── Module 5: Sweep destination anchoring ────────────────────────
 // SHA-256 of COLD_WALLET_ADDRESS stored in Redis at first boot.
 // Any subsequent mismatch → abort sweep + alert + halt.
@@ -342,7 +348,44 @@ async function sendUsdc(
 // ── Job 1: Signer monitor ─────────────────────────────────────────────────
 
 async function checkSigner(algod: algosdk.Algodv2, signerAddr: string): Promise<void> {
-  const balance = await getAlgoBalance(algod, signerAddr);
+  // Fetch full account info once — used for both balance and auth-addr checks.
+  const info    = await algod.accountInformation(signerAddr).do();
+  const balance = BigInt(info.amount);
+
+  // ── Signer rekey detection ─────────────────────────────────────
+  // The Rocca signer account must NEVER have an auth-addr set on-chain.
+  // If auth-addr is present it means the signer key itself has been rekeyed
+  // to a different address — a critical indicator of key compromise or attack.
+  // An attacker who extracts the signer private key could rekey the signer
+  // account to a key they control, permanently hijacking signing authority.
+  const signerAuthAddr = (info as unknown as { authAddr?: { toString(): string } }).authAddr?.toString() ?? null;
+  if (signerAuthAddr) {
+    const reason =
+      `SIGNER_REKEYED: Rocca signer account ${signerAddr} has been rekeyed to ` +
+      `${signerAuthAddr}. The signer private key may be compromised. ` +
+      `All signing halted immediately — investigate key material before clearing.`;
+
+    log.fatal(
+      { signerAddr, reKeyedTo: signerAuthAddr },
+      "CRITICAL: Rocca signer has been rekeyed — signing halted",
+    );
+
+    const body = buildBody(`🚨🚨 x402 CRITICAL — Rocca Signer Rekeyed`, {
+      "Signer address": signerAddr,
+      "Rekeyed to":     signerAuthAddr,
+      "Action":         "Signing halted. Investigate key material immediately. POST /api/system/unhalt to resume.",
+    });
+    await Promise.allSettled([sendTelegram(body), sendWebhook(body)]);
+    if (process.env.SENTRY_DSN) {
+      Sentry.captureMessage(reason, {
+        level: "fatal",
+        tags: { component: "wallet-guardian", event: "SIGNER_REKEYED" },
+      });
+    }
+
+    await setHaltFlag(reason);
+    return;
+  }
 
   // ── Module 2: Drain velocity check ────────────────────────────
   //
@@ -593,6 +636,21 @@ async function sweepUsdc(
   });
 }
 
+// ── Gas station treasury balance check ──────────────────────────────────
+// Fires an alert (with 30-min cooldown) when the treasury ALGO balance drops
+// below TREASURY_LOW_ALERT_ALGO. This is the same wallet used by gasStation.ts
+// to fund agent MBRs and ALGO top-ups — it must stay funded or agents run dry.
+
+async function checkTreasuryLowBalance(treasuryAddr: string, treasuryAlgo: bigint): Promise<void> {
+  if (treasuryAlgo >= TREASURY_LOW_ALERT_MICRO) return;
+  await alert(`⚠️ x402 Gas Station Treasury Low — Refill Required`, {
+    'Treasury address': treasuryAddr,
+    'Current balance':  microToAlgo(treasuryAlgo),
+    'Alert threshold':  microToAlgo(TREASURY_LOW_ALERT_MICRO),
+    'Suggested action': 'Send ALGO to treasury address to refill gas station reserve',
+  });
+}
+
 // ── Main cycle ────────────────────────────────────────────────────────────
 
 async function runCycle(
@@ -616,6 +674,7 @@ async function runCycle(
     await checkSigner(algod, signerAddr);
     await sweepAlgo(algod, treasury, treasuryBal.algo);
     await sweepUsdc(algod, treasury, treasuryBal.usdc, treasuryBal.algo);
+    await checkTreasuryLowBalance(treasury.addr.toString(), treasuryBal.algo);
   } else {
     const signerAlgo = await getAlgoBalance(algod, signerAddr);
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import QRCode from "qrcode";
 
 interface Props {
@@ -64,7 +65,7 @@ export default function LiquidAuthQRModal({ agentId, intent, onVerified, onClose
         await QRCode.toCanvas(canvasRef.current, JSON.stringify(data.qrPayload), {
           width: 240,
           margin: 2,
-          color: { dark: "#ffffff", light: "#18181b" },
+          color: { dark: "#000000", light: "#ffffff" },
         });
       }
 
@@ -109,9 +110,9 @@ export default function LiquidAuthQRModal({ agentId, intent, onVerified, onClose
 
   const isAmber = msLeft > 0 && msLeft < 60_000;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/70" />
+  const modal = (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/80" />
       <div
         className="relative bg-zinc-900 border border-zinc-700 rounded-lg max-w-sm w-full p-6 flex flex-col items-center gap-4"
         onClick={(e) => e.stopPropagation()}
@@ -192,4 +193,7 @@ export default function LiquidAuthQRModal({ agentId, intent, onVerified, onClose
       </div>
     </div>
   );
+
+  if (typeof document === "undefined") return null;
+  return createPortal(modal, document.body);
 }

@@ -15,7 +15,7 @@
  */
 
 import algosdk from "algosdk";
-import { AlgoAgentClient, X402Error, type SettlementResult } from "@m-reynaldo35/x402-client";
+import { AlgoAgentClient, X402Error, type SettlementResult } from "@algo-wallet/x402-client";
 
 // ── Config ─────────────────────────────────────────────────────
 

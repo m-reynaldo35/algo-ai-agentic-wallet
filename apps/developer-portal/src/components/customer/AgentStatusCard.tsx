@@ -17,6 +17,27 @@ interface Props {
   error?: string;
 }
 
+type StatusKind = "active" | "halted" | "suspended" | "orphaned" | "registered" | "unknown";
+
+function resolveStatus(agent: AgentInfo): StatusKind {
+  if (agent.halted || agent.status === "halted") return "halted";
+  const s = agent.status?.toLowerCase() ?? "";
+  if (s === "suspended") return "suspended";
+  if (s === "orphaned")  return "orphaned";
+  if (s === "registered") return "registered";
+  if (s === "active" || s === "") return "active";
+  return "unknown";
+}
+
+const STATUS_STYLES: Record<StatusKind, { pill: string; dot: string; label: string }> = {
+  active:     { pill: "bg-emerald-900/40 text-emerald-400 border-emerald-800", dot: "bg-emerald-400", label: "Active" },
+  registered: { pill: "bg-emerald-900/40 text-emerald-400 border-emerald-800", dot: "bg-emerald-400", label: "Registered" },
+  halted:     { pill: "bg-red-900/40 text-red-400 border-red-800",             dot: "bg-red-400",     label: "Halted" },
+  suspended:  { pill: "bg-amber-900/40 text-amber-400 border-amber-800",       dot: "bg-amber-400",   label: "Suspended" },
+  orphaned:   { pill: "bg-purple-900/40 text-purple-400 border-purple-800",    dot: "bg-purple-400",  label: "Orphaned" },
+  unknown:    { pill: "bg-zinc-800 text-zinc-400 border-zinc-700",             dot: "bg-zinc-400",    label: "Unknown" },
+};
+
 export default function AgentStatusCard({ agentId, agent, error }: Props) {
   const [copied, setCopied] = useState(false);
 
@@ -27,7 +48,8 @@ export default function AgentStatusCard({ agentId, agent, error }: Props) {
     });
   }
 
-  const isHalted = agent?.halted || agent?.status === "halted";
+  const statusKind: StatusKind = agent ? resolveStatus(agent) : "unknown";
+  const style = STATUS_STYLES[statusKind];
   const registeredDate = agent?.registeredAt || agent?.createdAt;
 
   return (
@@ -53,55 +75,27 @@ export default function AgentStatusCard({ agentId, agent, error }: Props) {
                 className="shrink-0 text-zinc-500 hover:text-emerald-400 transition-colors"
               >
                 {copied ? (
-                  <svg
-                    className="w-4 h-4 text-emerald-400"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M5 13l4 4L19 7"
-                    />
+                  <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
                 ) : (
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                    />
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                   </svg>
                 )}
               </button>
             </div>
           </div>
 
-          {/* Status */}
-          <div className="flex items-center gap-2">
-            <span
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${
-                isHalted
-                  ? "bg-red-900/40 text-red-400 border border-red-800"
-                  : "bg-emerald-900/40 text-emerald-400 border border-emerald-800"
-              }`}
-            >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  isHalted ? "bg-red-400" : "bg-emerald-400"
-                }`}
-              />
-              {isHalted ? "Halted" : "Active"}
-            </span>
-          </div>
+          {/* Status badge */}
+          {agent && (
+            <div className="flex items-center gap-2">
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${style.pill}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`} />
+                {style.label}
+              </span>
+            </div>
+          )}
 
           {/* Cohort */}
           {agent?.cohort && (

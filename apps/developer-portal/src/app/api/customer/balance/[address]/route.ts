@@ -41,7 +41,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
   try {
     upstream = await fetch(
       `${indexerBase}/v2/accounts/${address}?exclude=created-assets,apps-local-state,created-apps,none`,
-      { headers: { Accept: "application/json" }, next: { revalidate: 30 } },
+      { headers: { Accept: "application/json" }, cache: "no-store" },
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

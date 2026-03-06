@@ -160,6 +160,8 @@ export async function checkRecipients(
       const isNew     = setResult !== null; // null = key already existed
 
       if (isNew) {
+        // Set 90-day TTL to prevent unbounded key growth (one key per unique recipient)
+        await redis.expire(fsKey, 90 * 24 * 60 * 60);
         // Track in the 1h scattershot window
         await redis.zadd(NEW_ADDRS_HOUR_KEY, { score: now, member: `${now}:${addr}` });
         await redis.expire(NEW_ADDRS_HOUR_KEY, Math.ceil(ONE_HOUR_MS / 1_000) + 1);
