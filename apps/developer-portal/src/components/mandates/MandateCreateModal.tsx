@@ -64,18 +64,43 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
 
   function buildPayload(extra: Record<string, unknown>) {
     const payload: Record<string, unknown> = { ownerWalletId };
-    if (maxPerTx)    payload.maxPerTxMicroUsdc    = String(Math.round(parseFloat(maxPerTx)    * 1_000_000));
-    if (maxPer10Min) payload.maxPer10MinMicroUsdc = String(Math.round(parseFloat(maxPer10Min) * 1_000_000));
-    if (maxPerDay)   payload.maxPerDayMicroUsdc   = String(Math.round(parseFloat(maxPerDay)   * 1_000_000));
+    // Field names must match server's CreateMandateInput exactly (micro-USDC strings)
+    if (maxPerTx)    payload.maxPerTx    = String(Math.round(parseFloat(maxPerTx)    * 1_000_000));
+    if (maxPer10Min) payload.maxPer10Min = String(Math.round(parseFloat(maxPer10Min) * 1_000_000));
+    if (maxPerDay)   payload.maxPerDay   = String(Math.round(parseFloat(maxPerDay)   * 1_000_000));
     if (recipients.trim()) payload.allowedRecipients = recipients.split("\n").map((s) => s.trim()).filter(Boolean);
-    if (expiresAt)   payload.expiresAt = new Date(expiresAt).toISOString();
+    if (expiresAt)   payload.expiresAt = new Date(expiresAt).getTime(); // Unix ms — server expects number
     if (recurring && recurAmount && recurInterval) {
       payload.recurring = {
-        amountMicroUsdc: String(Math.round(parseFloat(recurAmount) * 1_000_000)),
+        amount:          String(Math.round(parseFloat(recurAmount) * 1_000_000)), // server field is "amount"
         intervalSeconds: parseInt(recurInterval, 10),
       };
     }
     return { ...payload, ...extra };
+  }
+
+  // Build the same canonical payload the server uses for the WebAuthn challenge hash.
+  // Key order must match buildCanonicalPayload() in mandateService.ts exactly.
+  function buildCanonicalPayload() {
+    return {
+      agentId,
+      allowedRecipients:  recipients.trim() ? recipients.split("\n").map((s) => s.trim()).filter(Boolean) : [],
+      expiresAt:          expiresAt ? new Date(expiresAt).getTime() : null,
+      maxPerDay:          maxPerDay   ? String(Math.round(parseFloat(maxPerDay)   * 1_000_000)) : null,
+      maxPer10Min:        maxPer10Min ? String(Math.round(parseFloat(maxPer10Min) * 1_000_000)) : null,
+      maxPerTx:           maxPerTx    ? String(Math.round(parseFloat(maxPerTx)    * 1_000_000)) : null,
+      ownerWalletId,
+      recurring:          (recurring && recurAmount && recurInterval)
+                            ? { amount: String(Math.round(parseFloat(recurAmount) * 1_000_000)), intervalSeconds: parseInt(recurInterval, 10) }
+                            : null,
+    };
+  }
+
+  // SHA256(nonce + ":" + canonicalJson) — mirrors the expectedChallenge computation on the server.
+  async function computeChallenge(nonce: string): Promise<ArrayBuffer> {
+    const canonicalJson = JSON.stringify(buildCanonicalPayload());
+    const data = new TextEncoder().encode(`${nonce}:${canonicalJson}`);
+    return crypto.subtle.digest("SHA-256", data);
   }
 
   // --- Liquid Auth path ---
@@ -110,17 +135,20 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
     setSubmitting(true);
     setError("");
     try {
-      // Get challenge
+      // Get challenge nonce from server
       const challengeRes = await fetch(`/api/agents/${agentId}/mandate/challenge`, { method: "POST" });
       if (!challengeRes.ok) throw new Error(`Challenge failed: HTTP ${challengeRes.status}`);
-      const { challenge, allowCredentials } = await challengeRes.json();
+      const { challenge: nonce, allowCredentials } = await challengeRes.json() as { challenge: string; allowCredentials?: { id: string; type: string }[] };
+
+      // Server verifies SHA256(nonce + ":" + canonicalPayloadJson) — compute it client-side
+      const challengeBuf = await computeChallenge(nonce);
 
       const assertion = await navigator.credentials.get({
         publicKey: {
-          challenge:        base64urlToBuf(challenge),
+          challenge:        challengeBuf,
           allowCredentials: (allowCredentials || []).map((c: { id: string; type: string }) => ({
             id:   base64urlToBuf(c.id),
-            type: c.type,
+            type: c.type as PublicKeyCredentialType,
           })),
           timeout:          60_000,
           userVerification: "preferred",

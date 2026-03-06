@@ -77,7 +77,8 @@ export default function MandateRevokeModal({ agentId, mandate, onRevoked, onClos
       const res = await fetch(`/api/agents/${agentId}/mandate/${mandate.mandateId}/revoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        // ownerWalletId is required by the server for both auth paths
+        body: JSON.stringify({ ownerWalletId: mandate.ownerWalletId, ...body }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -101,14 +102,18 @@ export default function MandateRevokeModal({ agentId, mandate, onRevoked, onClos
     try {
       const challengeRes = await fetch(`/api/agents/${agentId}/mandate/challenge`, { method: "POST" });
       if (!challengeRes.ok) throw new Error(`Challenge failed: HTTP ${challengeRes.status}`);
-      const { challenge, allowCredentials } = await challengeRes.json();
+      const { challenge: nonce, allowCredentials } = await challengeRes.json() as { challenge: string; allowCredentials?: { id: string; type: string }[] };
+
+      // Server expects SHA256(nonce + ":" + mandateId + ":revoke")
+      const data = new TextEncoder().encode(`${nonce}:${mandate.mandateId}:revoke`);
+      const challengeBuf = await crypto.subtle.digest("SHA-256", data);
 
       const assertion = await navigator.credentials.get({
         publicKey: {
-          challenge:        base64urlToBuf(challenge),
+          challenge:        challengeBuf,
           allowCredentials: (allowCredentials || []).map((c: { id: string; type: string }) => ({
             id:   base64urlToBuf(c.id),
-            type: c.type,
+            type: c.type as PublicKeyCredentialType,
           })),
           timeout:          60_000,
           userVerification: "preferred",
