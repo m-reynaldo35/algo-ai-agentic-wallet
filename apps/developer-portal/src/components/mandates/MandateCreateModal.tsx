@@ -79,29 +79,6 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
     return { ...payload, ...extra };
   }
 
-  // Build the same canonical payload the server uses for the WebAuthn challenge hash.
-  // Key order must match buildCanonicalPayload() in mandateService.ts exactly.
-  function buildCanonicalPayload() {
-    return {
-      agentId,
-      allowedRecipients:  recipients.trim() ? recipients.split("\n").map((s) => s.trim()).filter(Boolean) : [],
-      expiresAt:          expiresAt ? new Date(expiresAt).getTime() : null,
-      maxPerDay:          maxPerDay   ? String(Math.round(parseFloat(maxPerDay)   * 1_000_000)) : null,
-      maxPer10Min:        maxPer10Min ? String(Math.round(parseFloat(maxPer10Min) * 1_000_000)) : null,
-      maxPerTx:           maxPerTx    ? String(Math.round(parseFloat(maxPerTx)    * 1_000_000)) : null,
-      ownerWalletId,
-      recurring:          (recurring && recurAmount && recurInterval)
-                            ? { amount: String(Math.round(parseFloat(recurAmount) * 1_000_000)), intervalSeconds: parseInt(recurInterval, 10) }
-                            : null,
-    };
-  }
-
-  // SHA256(nonce + ":" + canonicalJson) — mirrors the expectedChallenge computation on the server.
-  async function computeChallenge(nonce: string): Promise<ArrayBuffer> {
-    const canonicalJson = JSON.stringify(buildCanonicalPayload());
-    const data = new TextEncoder().encode(`${nonce}:${canonicalJson}`);
-    return crypto.subtle.digest("SHA-256", data);
-  }
 
   // --- Liquid Auth path ---
   async function handleLiquidSubmit() {
@@ -140,8 +117,8 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
       if (!challengeRes.ok) throw new Error(`Challenge failed: HTTP ${challengeRes.status}`);
       const { challenge: nonce, allowCredentials } = await challengeRes.json() as { challenge: string; allowCredentials?: { id: string; type: string }[] };
 
-      // Server verifies SHA256(nonce + ":" + canonicalPayloadJson) — compute it client-side
-      const challengeBuf = await computeChallenge(nonce);
+      // Server verifies the raw nonce directly — pass it straight to the authenticator
+      const challengeBuf = base64urlToBuf(nonce);
 
       const assertion = await navigator.credentials.get({
         publicKey: {

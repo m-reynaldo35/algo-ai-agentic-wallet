@@ -429,13 +429,9 @@ export async function createMandate(
       throw new Error("ownerWalletId mismatch — not the registered owner of this agent");
     }
 
-    // Consume single-use nonce + bind to canonical payload.
-    // Client signs SHA256(nonce ":" canonical-payload-json) with their FIDO2 device.
-    const nonce = await consumeMandateChallenge(agentId);
-    const canonicalJson = JSON.stringify(buildCanonicalPayload(agentId, input));
-    const expectedChallenge = isoBase64URL.fromBuffer(
-      createHash("sha256").update(`${nonce}:${canonicalJson}`).digest(),
-    );
+    // Consume single-use nonce — client signs the raw nonce with their FIDO2 device.
+    // The nonce is 32-byte random, single-use, agent-scoped, and Redis-TTL'd.
+    const expectedChallenge = await consumeMandateChallenge(agentId);
 
     const { rpId, origins } = getWebAuthnConfig();
     let verification;
@@ -623,11 +619,8 @@ export async function revokeMandate(
 
   if (isWebAuthn) {
     // ── Standard WebAuthn path ────────────────────────────────
-    // Client signs SHA256(nonce ":" mandateId ":revoke") after calling /mandate/challenge.
-    const nonce = await consumeMandateChallenge(agentId);
-    const expectedChallenge = isoBase64URL.fromBuffer(
-      createHash("sha256").update(`${nonce}:${mandateId}:revoke`).digest(),
-    );
+    // Consume single-use nonce — client signs the raw nonce with their FIDO2 device.
+    const expectedChallenge = await consumeMandateChallenge(agentId);
 
     const { rpId, origins } = getWebAuthnConfig();
     let verification;

@@ -104,9 +104,8 @@ export default function MandateRevokeModal({ agentId, mandate, onRevoked, onClos
       if (!challengeRes.ok) throw new Error(`Challenge failed: HTTP ${challengeRes.status}`);
       const { challenge: nonce, allowCredentials } = await challengeRes.json() as { challenge: string; allowCredentials?: { id: string; type: string }[] };
 
-      // Server expects SHA256(nonce + ":" + mandateId + ":revoke")
-      const data = new TextEncoder().encode(`${nonce}:${mandate.mandateId}:revoke`);
-      const challengeBuf = await crypto.subtle.digest("SHA-256", data);
+      // Server verifies the raw nonce directly — pass it straight to the authenticator
+      const challengeBuf = base64urlToBuf(nonce);
 
       const assertion = await navigator.credentials.get({
         publicKey: {
