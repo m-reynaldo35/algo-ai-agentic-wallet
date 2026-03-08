@@ -39,13 +39,13 @@ export default function MandateUsageCard({ agentId, ownerAddress }: Props) {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`/api/agents/${agentId}/mandates`);
+      const res = await fetch(`/api/agents/${agentId}/mandates?includeRevoked=true`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as { mandates?: MandateRecord[] } | MandateRecord[];
       const list = Array.isArray(data)
         ? data
         : (data as { mandates?: MandateRecord[] }).mandates ?? [];
-      setMandates(list.filter((m) => m.status === "active"));
+      setMandates(list);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load mandates");
     } finally {
@@ -55,12 +55,25 @@ export default function MandateUsageCard({ agentId, ownerAddress }: Props) {
 
   useEffect(() => { loadMandates(); }, [loadMandates]);
 
+  const activeMandates  = mandates.filter((m) => m.status === "active");
+  const revokedMandates = mandates.filter((m) => m.status === "revoked");
+
   return (
     <>
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-5">
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xs text-zinc-500 uppercase tracking-wider">Active Mandates</h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-xs text-zinc-500 uppercase tracking-wider">Mandates</h2>
+            {!loading && (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-emerald-400 font-medium">{activeMandates.length} active</span>
+                {revokedMandates.length > 0 && (
+                  <span className="text-zinc-500">{revokedMandates.length} revoked</span>
+                )}
+              </div>
+            )}
+          </div>
           <button
             onClick={() => setShowCreate(true)}
             className="flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
@@ -80,9 +93,9 @@ export default function MandateUsageCard({ agentId, ownerAddress }: Props) {
           </div>
         ) : error ? (
           <p className="text-red-400 text-sm">{error}</p>
-        ) : mandates.length === 0 ? (
+        ) : activeMandates.length === 0 && revokedMandates.length === 0 ? (
           <p className="text-zinc-500 text-sm">
-            No active mandates.{" "}
+            No mandates yet.{" "}
             <button
               onClick={() => setShowCreate(true)}
               className="text-emerald-400 hover:text-emerald-300 underline transition-colors"
@@ -93,7 +106,10 @@ export default function MandateUsageCard({ agentId, ownerAddress }: Props) {
           </p>
         ) : (
           <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-            {mandates.map((m) => (
+            {activeMandates.length === 0 && (
+              <p className="text-zinc-500 text-sm mb-2">No active mandates.</p>
+            )}
+            {activeMandates.map((m) => (
               <div
                 key={m.mandateId}
                 className="bg-zinc-800/50 border border-zinc-700/60 rounded-md px-3 py-2.5"

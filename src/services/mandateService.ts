@@ -708,13 +708,16 @@ export async function revokeMandate(
  * List active mandates for an agent (not revoked, not expired).
  * Returns mandate records without the HMAC field.
  */
-export async function listMandates(agentId: string): Promise<Omit<Mandate, "hmac">[]> {
+export async function listMandates(
+  agentId: string,
+  options?: { includeRevoked?: boolean },
+): Promise<Omit<Mandate, "hmac">[]> {
   const redis = getRedis();
   if (!redis) return [];
 
   const now = Date.now();
 
-  // Prune expired members from the index
+  // Prune expired members from the index (only non-revoked expire naturally)
   await redis.zremrangebyscore(
     `${MANDATE_IDX_PREFIX}${agentId}`,
     0,
@@ -739,8 +742,8 @@ export async function listMandates(agentId: string): Promise<Omit<Mandate, "hmac
     try {
       // get() auto-parses JSON — raw may already be an object
       const m = (typeof raw === "string" ? JSON.parse(raw) : raw) as Mandate;
-      if (m.status === "revoked") continue;
-      if (m.expiresAt && m.expiresAt < now) continue;
+      if (m.status === "revoked" && !options?.includeRevoked) continue;
+      if (m.status !== "revoked" && m.expiresAt && m.expiresAt < now) continue;
       const { hmac: _hmac, ...pub } = m;
       results.push(pub);
     } catch { /* skip malformed */ }

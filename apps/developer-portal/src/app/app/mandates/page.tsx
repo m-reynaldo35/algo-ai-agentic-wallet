@@ -37,7 +37,7 @@ export default function CustomerMandatesPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`/api/agents/${session.agentId}/mandates`);
+      const res = await fetch(`/api/agents/${session.agentId}/mandates?includeRevoked=true`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as MandateRecord[] | { mandates?: MandateRecord[] };
       setMandates(Array.isArray(data) ? data : (data.mandates ?? []));

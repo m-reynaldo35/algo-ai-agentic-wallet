@@ -1655,8 +1655,9 @@ app.patch("/api/agents/:agentId/webauthn-pubkey", requirePortalAuth, async (req,
 
 app.get("/api/agents/:agentId/mandates", requirePortalAuth, async (req, res) => {
   const agentId = String(req.params.agentId || "");
+  const includeRevoked = req.query.includeRevoked === "true";
   try {
-    const mandates = await listMandates(agentId);
+    const mandates = await listMandates(agentId, { includeRevoked });
     res.json({ mandates, count: mandates.length });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
