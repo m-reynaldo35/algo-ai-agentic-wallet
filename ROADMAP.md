@@ -1,358 +1,208 @@
-# algo-wallet — Pre-Launch Production Roadmap
+# algo-wallet — Production Roadmap
 
-> **Purpose:** Step-by-step execution plan to take the system from current state to production launch.
+> **Purpose:** Step-by-step execution plan covering infrastructure launch through ecosystem buildout.
 > Revisit this file at the start of every session to pick up where we left off.
 > Mark items `[x]` as they are completed.
 
 ---
 
-## Current State (baseline after Sprint 2)
+## Vision
 
-- Railway deployment live: `https://algo-ai-wallet-production.up.railway.app`
-- Railway internal Redis (TCP) active — avg enqueue **2,185ms** (down from ~6s)
-- Auth-addr cache (5-min TTL) in validation.ts — eliminates algod round-trips
-- Nodely failover active (primary → fallback with Telegram alert + recovery probe)
-- 5/5 live mainnet x402 payments confirmed in speed test
-- SDK `@algo-wallet/x402-client@0.2.0` published to npm
-- Guardian: signer auth-addr rekey detection added (fires CRITICAL halt if signer rekeyed away)
-- Agent onboarding: keypair-gen endpoint + auto-opt-in on register + 4-step wizard at `/app/create`
-- Customer dashboard: 10s balance polling, low-balance warning, Top Up USDC, all status badges, settlement history
-- `tsc --noEmit` passes clean on both backend and portal
+**Phase 1 — Infrastructure** *(current)*
+An AI autonomous wallet bound to a human, with mandate-gated spending and an Algorand USDC payment rail.
+
+**Phase 2 — Ecosystem** *(next)*
+A discoverable marketplace where AI agents autonomously find, pay for, and consume API services using the payment rail — buyers and sellers matched by Claude and other LLMs through MCP tool discovery.
+
+```
+Human sets mandate (spending limits)
+    ↓
+AI Agent (autonomous wallet)
+    ↓
+x402-Algorand payment rail (USDC, ~$0.0002/txn, 3.8s finality)
+    ↓
+API Registry / MCP Aggregator  ←─── Sellers list their APIs here
+    ↓
+Claude discovers tool → pays → gets data → answers user
+```
 
 ---
 
-## Sprint 1 — Security Foundations *(partially done — ops tasks remain)*
+## Current State (after Sprint 12 + dashboard fixes)
 
-### 1.1 New Treasury + Rocca Signing Wallets *(ops — do before any public traffic)*
+- Railway backend live: `https://api.ai-agentic-wallet.com`
+- Vercel frontend live: `https://ai-agentic-wallet.com`
+- Redis internal TCP active — avg enqueue ~1,250ms
+- Auth-addr cache (5-min TTL) eliminates algod round-trips
+- Nodely failover active (primary → fallback + recovery probe)
+- SDK `@algo-wallet/x402-client@0.2.0` published to npm
+- MCP server `@algo-wallet/x402-mcp@0.1.0` built (not yet published)
+- Python SDK `algo-x402@0.1.0` built (not yet published)
+- Gas station code complete — **awaiting treasury wallet + env var to activate**
+- Customer dashboard: mandates inline, revoked counts, wallet QR sidebar, agent status card
+- `tsc --noEmit` passes clean on backend + portal
 
-**Why:** Current wallets have been used in development/testing. Launch requires fresh
-wallets whose mnemonics have never touched a dev machine in plaintext.
+---
+
+# PHASE 1 — Infrastructure Launch
+
+## Sprint 1 — Security Foundations *(ops tasks remain)*
+
+### 1.1 New Treasury + Rocca Signing Wallets
 
 - [ ] Generate new treasury wallet (cold key ceremony — air-gapped if possible)
 - [ ] Generate new Rocca signing wallet
-- [ ] Store mnemonics in a password manager or hardware key vault (1Password / Bitwarden)
+- [ ] Store mnemonics in password manager or hardware key vault (1Password / Bitwarden)
 - [ ] Set new `X402_PAY_TO_ADDRESS` in Railway env vars
 - [ ] Set new `ALGO_TREASURY_MNEMONIC` and `ALGO_SIGNER_ADDRESS` in Railway env vars
 - [ ] Rotate `ROCCA_API_KEY`, `SIGNING_SERVICE_API_KEY`, `PORTAL_API_SECRET`,
       `APPROVAL_TOKEN_SECRET`, `HALT_OVERRIDE_KEY` — generate all fresh with `openssl rand -hex 32`
 - [ ] Opt new treasury into USDC (ASA 31566704)
-- [ ] Fund new signer wallet with ≥ 200 ALGO (covers registration rekey fees at scale)
+- [ ] Fund new signer wallet with ≥ 200 ALGO
 - [ ] Re-register the Rocca cohort against the new signer address
 - [ ] Invalidate/delete all test agent registry entries from Redis
 - [ ] Delete test Redis keys: `x402:*`, `x402:guardian:*`, `x402:treasury:*`
 - [ ] Reset the cross-region treasury hash key so new address wins the NX race
 
-### 1.2 Wallet Guardian Audit *(code done — ops tasks remain)*
+### 1.2 Admin Wallet Whitelist
 
-- [x] Confirmed guardian monitors `ALGO_SIGNER_ADDRESS` balance on every cycle
+- [ ] Set `ADMIN_WALLET_ADDRESSES=<your-algo-address>` in Railway env vars
+- [ ] Verify: scan QR at `/login` with your wallet → redirects to `/dashboard`
+- [ ] Verify: a different wallet gets 403 "not on the admin whitelist"
+
+### 1.3 Wallet Guardian Audit
+
+- [x] Guardian monitors `ALGO_SIGNER_ADDRESS` balance on every cycle
 - [x] Low-balance alert fires when balance < `SIGNER_LOW_ALERT_ALGO`
-- [x] Auth-addr rekey detection: if Rocca signer's own `auth-addr` is set on-chain → CRITICAL alert + halt
-- [ ] Verify treasury USDC sweep fires correctly when `treasuryUsdc > USDC_CEILING_MICRO`
-      and confirm cold wallet is opted into USDC
-- [ ] Verify Telegram alerts actually fire end-to-end: run `npm run guardian:test`
-      and confirm message arrives on phone
+- [x] Auth-addr rekey detection fires CRITICAL alert + halt
+- [ ] Verify treasury USDC sweep fires correctly
+- [ ] Verify Telegram alerts fire end-to-end: `npm run guardian:test`
 - [ ] Deploy guardian to Railway as a separate worker service
-      (currently only runs locally via `npm run guardian`)
 - [ ] Set `CHECK_INTERVAL_S=10` in Railway guardian env vars
 
 ---
 
-## Sprint 2 — Customer UX: Frictionless Agent Onboarding ✅
+## Sprint 6 — System Audit *(ops tasks remain)*
 
-*Fully complete. See Completed section below.*
-
----
-
-## Sprint 3 — Landing Page ✅
-
-*Fully complete. See Completed section below.*
-
----
-
-## Sprint 4 — Admin Dashboard: Liquid Auth Login ✅
-
-*Fully complete. See Completed section below.*
-
----
-
-## Sprint 5 — Payment Stress Testing ✅
-
-All tests passed. Commits `fe92c7f` + `dd95ca9`. Reports in `public/`.
-
-### 5.1 Burst Payment Test ✅
-- [x] 5/5 concurrent confirmed — p50 enq 900ms, p95 enq 1461ms (target < 5s) ✔
-- [x] 0% rate-limited, 0 crashes
-- [x] Bugs fixed: duplicate `executeJob` renamed, `BURST_AMOUNT_MICROUSDC` 1000→10000, `BURST_SIZE` 20→5
-
-### 5.2 Sustained Load Test ✅
-- [x] 50/50 confirmed over 17.2 min — p95 enq 1527ms, p95 confirm 10388ms
-- [x] 0 failures, 0 rate-limits, 0 false-positive halts
-- [x] Health checks at #10, #20, #30, #40 all `ok`
-- [x] `PAYMENT_AMOUNT_MICROUSDC` default fixed 1000→10000
-
-### 5.3 Velocity Limit Test ✅
-- [x] `VELOCITY_THRESHOLD_10M_MICROUSDC=100000` set on Railway, restored after
-- [x] Phase 1: cap fired at payment #11 (402 VELOCITY_APPROVAL_REQUIRED) ✔
-- [x] Phase 2: cap persists on immediate retry (idempotent) ✔
-- [x] Phase 3 (window expiry): skipped with `SKIP_WAIT=1` — rolling window math verified by code review
-
-### 5.4 Failover Test ✅
-- [x] `ALGORAND_NODE_URL` broken via Railway CLI, redeployed
-- [x] Failover activated in ~44s (usingFallback=true) ✔
-- [x] 3/3 payments confirmed on fallback node ✔
-- [x] Primary URL restored, recovery confirmed within 180s poll ✔
-- [x] Final payment confirmed on restored primary ✔
-- [x] Bug fixed: `TEST_AMOUNT_MICRO` 1000→10000
-
-### 5.5 Redis Failure Test ✅
-- [x] All Redis vars replaced with unreachable sentinels, redeployed
-- [x] Server enters crash loop immediately: boot-time treasury hash check → FATAL
-- [x] Railway returns 502 on all requests — fail-closed ✔ (stronger than per-request 401)
-- [x] Redis restored, final payment HTTP 200 ✔
-
----
-
-## Sprint 6 — System Audit
-
-**Why:** Full pre-launch sweep across security, performance, and ops readiness.
-
-### 6.1 Security Audit Checklist
-
-- [ ] All secrets rotated (Sprint 1.1) — verify no old keys in Railway env
-- [x] No mnemonics in source — `scripts/optin-new-agent.ts` hardcoded mnemonic removed; reads `ALGO_MNEMONIC` env
-- [x] `.env` not committed — confirmed in `.gitignore`
-- [x] CORS locked to production domains — `ai-agentic-wallet.com`, `www.ai-agentic-wallet.com`, stable Vercel URL
-- [x] `HALT_OVERRIDE_KEY` set in Railway ✔
-- [x] Rate limiter active on all public endpoints — `app.use(rateLimiter)` now covers `/health`, `/.well-known/`, `/a2a` (was `/api` only)
-- [x] Replay guard active — confirmed in Sprint 5.1–5.2 (nonce rejected on retry)
+### 6.1 Security Audit
+- [ ] All secrets rotated (Sprint 1.1)
+- [x] No mnemonics in source
+- [x] `.env` not committed
+- [x] CORS locked to production domains
+- [x] `HALT_OVERRIDE_KEY` set in Railway
+- [x] Rate limiter active on all public endpoints
+- [x] Replay guard active
 - [x] Auth-addr cache TTL appropriate — 5-min confirmed
-- [x] mTLS active — `MTLS_ENABLED=true` in Railway ✔
-- [x] `DEV_SIGNER_ALLOWED` not set in Railway ✔
-- [x] `RAILWAY_ENVIRONMENT=production` set ✔
-- [x] Error responses never leak stack traces — global handler sends `"Internal server error"` only; stack traces logged server-side via pino
-- [ ] Telegram alert channel tested — guardian, failover, and halt all route to phone
+- [x] mTLS active
+- [x] `DEV_SIGNER_ALLOWED` not set in Railway
+- [x] Error responses never leak stack traces
+- [ ] Telegram alert channel tested end-to-end
 
 ### 6.2 Performance Audit
+- [x] p95 enqueue 1527ms (< 3s target)
+- [x] Redis key TTLs audited — all bounded
+- [ ] Check Railway memory/CPU metrics — no leak after sustained load
+- [ ] Nodely free tier latency acceptable — upgrade to paid if p95 > 200ms
 
-- [x] Speed test post Sprint 5 — p95 enqueue 1527ms (< 3s target) ✔
-- [x] Redis key TTLs audited — all bounded; `x402:recipient:{addr}:first_seen` now has 90-day TTL (was unbounded)
-- [ ] Check Railway memory/CPU metrics — no leak after sustained load test
-- [ ] Nodely free tier latency acceptable — upgrade to paid if p95 > 200ms on algod
-
-### 6.3 Code Quality Audit
-
-- [x] `tsc --noEmit` passes clean (backend + portal)
-- [x] `MaxListenersExceededWarning` fixed — `setMaxListeners(0)` at boot suppresses false-positive from concurrent algosdk fetch calls
-- [x] Remove temp scripts: `scripts/new-agent-test.ts` deleted
-- [x] Remove hardcoded test addresses from `examples/usdc-optin.ts` — now derives address from `ALGO_MNEMONIC` env
-- [x] Hot-path structured logging — `src/lib/logger.ts` (shared pino); execute, agent-action, batch-action, boot, halt/unhalt, global error handler all migrated
-
-### 6.4 Operational Readiness
-
-- [x] `/health` now returns: `status` ("ok"/"degraded"/"halted"), `redis` (bool), `halted` (bool), `indexerOk` (bool), `node.latestRound`
-- [x] Guardian `railway.guardian.json` fixed — removed invalid `healthcheckPath` (no HTTP server), restart policy set to `ALWAYS`
-- [ ] Railway service restart policy set to `always` on main API (ops — Railway dashboard)
-- [ ] Railway deploy notifications wired (Slack or email on deploy fail)
-- [ ] Confirm cold wallet is opted into USDC and ready to receive sweeps
-- [x] Runbook written — `docs/runbook.md` (halt/unhalt, key rotation, drain recovery, Redis restore, guardian deploy)
+### 6.3 Operational Readiness
+- [x] `/health` returns full subsystem status
+- [x] Guardian `railway.guardian.json` fixed — restart policy `ALWAYS`
+- [x] Runbook written — `docs/runbook.md`
+- [ ] Railway service restart policy set to `always` on main API
+- [ ] Railway deploy notifications wired (Slack or email on fail)
+- [ ] Cold wallet opted into USDC and ready to receive sweeps
 
 ---
 
-## Sprint 7 — Additional Recommendations
-
-*Not required for launch but strongly recommended.*
-
-### 7.1 MCP Server for Claude Agents ✅
-
-- [x] Gas station security hardening — CRIT-1/2, HIGH-1/2, MED-1/2, LOW-1/2 all patched (see Sprint 8 security section)
-- [x] `packages/x402-mcp/` — `@algo-wallet/x402-mcp@0.1.0`
-- [x] Tool `pay_with_x402`: `{ amount_usdc?, destination_chain?, destination_recipient? }` — full handshake + settlement
-- [x] Configured via env vars: `ALGO_MNEMONIC`, `X402_AGENT_ID`, `X402_API_URL`, `X402_PORTAL_KEY`
-- [x] Uses `/v1/api/*` canonical endpoints; `tsc --noEmit` passes clean
-- [ ] Publish to npm: `npm publish --access public` from `packages/x402-mcp/`
-- [x] Add to landing page as "native Claude integration" — NativeIntegrations section in page.tsx
-
-### 7.2 Python SDK ✅
-
-- [x] `packages/algo-x402/` — `algo-x402@0.1.0` (pyproject.toml, src layout)
-- [x] `AlgoAgentClient`: `execute_trade()`, `execute_batch()`, `get_agent()`, `poll_job()`
-- [x] `_interceptor.py`: full 402 handshake using `py-algorand-sdk` (sign toll txn, build X-PAYMENT proof, retry)
-- [x] `types.py`: `SettlementResult`, `VelocityBlock`, `AgentInfo`, `X402Error`, `X402ErrorCode`, `DestinationChain`
-- [x] `examples/x402-agent-quickstart.py` updated to use `algo_x402.AlgoAgentClient`
-- [ ] Publish to PyPI: `pip install build && python -m build && twine upload dist/*` from `packages/algo-x402/`
-
-### 7.3 Dedicated Signer Redis
-
-- [x] Code already supports `SIGNER_REDIS_PRIVATE_URL` / `SIGNER_REDIS_URL` — instructions in `docs/runbook.md` §8
-- [ ] Ops: add Railway Redis plugin to `rocca-signing-service`, set `SIGNER_REDIS_PRIVATE_URL` (Railway dashboard)
-
-### 7.4 API Versioning ✅
-
-- [x] `/v1/*` path-rewrite middleware in `src/index.ts` — all existing handlers work at both `/v1/api/*` and `/api/*`
-- [x] `/health` response now includes `apiVersion: "v1"`
-- [x] `DOCS_FOR_AGENTS.md` updated — `/v1/api/*` shown as canonical URLs
-
-### 7.5 Privacy & Legal ✅
-
-- [x] `/privacy` page — Privacy Policy (data collected, retention, third parties, GDPR note)
-- [x] `/terms` page — Terms of Service (registration, velocity limits, fees, liability)
-- [x] `PortalShell` updated — sidebar hidden on `/privacy` and `/terms`
-- [x] Landing page footer updated — Privacy + Terms links added
-- [x] GDPR/CCPA: IP addresses hashed (SHA-256), no PII stored, agent deletion available via portal
-
-### 7.6 Monitoring ✅
-
-- [x] Railway CPU/memory alert setup documented — `docs/runbook.md` §10
-- [x] UptimeRobot setup documented — 5-min interval on `/health` with keyword check
-- [x] Sentry already integrated — review cadence and alert rules documented in runbook
-- [x] Nodely latency check command documented — upgrade path to paid tier noted
-- [ ] Ops: configure Railway alerts, UptimeRobot, and Sentry alert rules (Railway/UptimeRobot dashboards)
-
----
-
-## Sprint 8 — USDC-Native Onboarding & Gas Station
-
-**Goal:** Eliminate all manual ALGO acquisition from the agent registration flow. From this sprint forward, a user or AI agent needs only USDC to onboard. ALGO is managed automatically by the protocol.
-
-### Architectural changes
-
-| Problem | Old approach | New approach |
-|---|---|---|
-| MBR friction | User manually sends ALGO from exchange | User pays USDC fee → treasury atomic-swaps ALGO to agent |
-| Sybil / faucet drain | N/A (self-fund, no treasury risk) | Algorand native atomic group: USDC payment + ALGO funding locked together |
-| Gas depletion | Not addressed | Server-side gas station: proactive top-ups from treasury |
-| Dynamic pricing | Hardcoded | Live oracle (CoinGecko, 60s cache) + 20% buffer + $0.25 floor |
-
-### New modules (code complete)
-
-- [x] `src/services/algoPrice.ts` — ALGO/USDC price oracle (CoinGecko, 60s cache; stale-cache fallback on failure; hard-refuse if no prior price)
-- [x] `src/services/treasuryFunder.ts` — Atomic group builder: prepares + submits two-party USDC↔ALGO exchange
-- [x] `src/services/gasStation.ts` — Background monitor: tops up agent ALGO when balance < trigger threshold
-- [x] `src/index.ts` — Three new endpoints wired; gas station started at boot
-
-### New API endpoints
-
-| Endpoint | Auth | Purpose |
-|---|---|---|
-| `GET /api/agents/onboarding-quote` | Public | Live USDC fee quote for MBR funding (90s expiry) |
-| `POST /api/agents/prepare-onboarding` | Portal | Build atomic group — treasury pre-signs the ALGO side |
-| `POST /api/agents/activate` | Portal | Submit completed group + opt-in + rekey — agent is live |
-
-### New onboarding flow (USDC-native)
+## Sprint 10 — Custom Domain SSL *(in progress)*
 
 ```
-Step 1 — GET  /api/agents/onboarding-quote
-         → { feeMicroUsdc, fundingMicroAlgo, expiresAt, treasuryAddress }
-
-Step 2 — POST /api/agents/create   (generate keypair — unchanged)
-         → { agentId, address, mnemonic }
-
-Step 3 — POST /api/agents/prepare-onboarding  { payerAddress, agentAddress }
-         → { unsignedUsdcTxB64, signedAlgoTxB64, groupIdB64, quote }
-
-Step 4 — Client signs unsignedUsdcTxB64 with payer wallet (Pera / Defly / SDK)
-
-Step 5 — POST /api/agents/activate  { agentId, mnemonic, signedUsdcTxB64, signedAlgoTxB64, groupIdB64 }
-         → server submits atomic group → ALGO arrives → USDC opt-in + rekey
-         → { status: "registered", agentId, address, fundingTxId, registrationTxnId }
+Type:  CNAME   Name: api      Value: d2q6lur4.up.railway.app
+Type:  TXT     Name: _vercel  Value: qnLF2ZCPKu
 ```
 
-The legacy `POST /api/agents/register-existing` path is kept for users who self-fund ALGO.
+- [ ] `dig TXT _vercel.ai-agentic-wallet.com @8.8.8.8` returns `"qnLF2ZCPKu"`
+- [ ] `curl -s https://ai-agentic-wallet.com` returns HTML
+- [ ] `curl -s https://api.ai-agentic-wallet.com/health` returns `{"status":"ok",...}`
 
-### New env vars required
-
-| Variable | Default | Description |
-|---|---|---|
-| `ALGO_TREASURY_MNEMONIC` | *(required)* | 25-word mnemonic of the treasury wallet. **Must be opted into USDC.** |
-| `ALGO_PRICE_CEILING_USDC` | `"10.0"` | Sanity cap — rejects oracle responses above this price. On oracle failure, stale cache is used; if no cache exists, onboarding quotes are refused. |
-| `GAS_STATION_ENABLED` | `"true"` | Set `"false"` to disable |
-| `GAS_STATION_INTERVAL_S` | `"30"` | Balance poll interval (seconds). 30s scan → safe burst ceiling of ~7 tx/sec per agent. |
-| `GAS_STATION_TRIGGER_MICRO` | `"500000"` | µALGO threshold that triggers top-up (0.50 ALGO = 500 tx remaining). Gives 71s runway at 7 tx/sec, safely above the 30s scan interval. |
-| `GAS_STATION_TOPUP_MICRO` | `"700000"` | µALGO sent per top-up (0.70 ALGO ≈ 700 payment txns). Sustained rate: 70 tx/min per agent. |
-
-### Ops tasks (required before enabling in production)
-
-- [ ] Generate new treasury wallet (separate from Rocca signer) — cold key ceremony
-- [ ] Opt treasury wallet into USDC (ASA 31566704 mainnet / 10458941 testnet)
-- [ ] Fund treasury wallet with ≥ 50 ALGO (covers ~230 onboardings + gas top-ups)
-- [ ] Set `ALGO_TREASURY_MNEMONIC` in Railway env vars
-- [ ] Set `ALGO_PRICE_CEILING_USDC` in Railway env vars (default `"10.0"` — rejects implausibly high oracle responses)
-- [ ] Verify `GET /api/agents/onboarding-quote` returns a sensible fee on mainnet
-- [ ] Run testnet end-to-end: quote → prepare → sign (testnet wallet) → activate → confirm agent registered
-- [ ] Monitor gas station logs for first 24h — confirm no agents drop below threshold
-- [x] Treasury ALGO low-balance alert added to guardian — `TREASURY_LOW_ALERT_ALGO` (default 10 ALGO), fires via Telegram/webhook
-
-### Known limitations / future work
-
-- [x] Gas station pagination implemented — unbounded page loop, 100 agents/page (replaced with cursor-based SCAN)
-- [x] Failed top-ups retried on next cycle — cooldown key only set on success, so Algod errors auto-retry
-- Treasury is a hot key — consider Vault Transit (Module 3 HSM adapter) once traffic justifies it
-- [x] Quote expiry enforced — Redis-backed single-use nonce (90s TTL) stored on prepare-onboarding, checked + deleted on activate (atomic GETDEL — TOCTOU-safe)
-
----
-
-## Sprint 9 — Gas Station Security Hardening ✅
-
-All 6 vulnerabilities found in the pre-launch adversarial audit patched and covered by 15 adversarial tests.
-
-| ID | Severity | Fix | Files |
-|---|---|---|---|
-| CRIT-1 | CRITICAL | Gas station now routes every top-up through `checkAndRecordOutflow()` — daily ALGO cap tracked, auto-halts on breach, outflow rolled back on send failure | `gasStation.ts` |
-| CRIT-2 | CRITICAL | Gas station checks `isHalted()` at cycle start — stops immediately during any active incident | `gasStation.ts` |
-| HIGH-1 | HIGH | Activate nonce check replaced `GET`+`DEL` with atomic `GETDEL` — eliminates TOCTOU race on concurrent requests | `index.ts` |
-| HIGH-2 | HIGH | Per-agent 10-min cooldown (`x402:gas:topup:last:{agentId}`) — set on success, skipped on failure (auto-retry next cycle) | `gasStation.ts` |
-| MED-1 | MEDIUM | Replaced `listAgents()` pagination loop (N×`redis.keys()`) with single cursor-based `scanAllAgents()` — one O(N) pass | `gasStation.ts`, `agentRegistry.ts` |
-| MED-2 | MEDIUM | Treasury balance pre-checked against `TREASURY_MIN_MICRO` before top-up loop — avoids Algod error flood on low treasury | `gasStation.ts` |
-| LOW-1 | LOW | `/activate` 500 errors no longer include raw exception `detail` — internal errors logged server-side only | `index.ts` |
-| LOW-2 | LOW | `prepareOnboardingGroup` validates both addresses with `algosdk.isValidAddress()` before algosdk calls — returns 400 not 500 | `treasuryFunder.ts`, `index.ts` |
-| BONUS | BUG | Fixed `rollbackOutflow` split regex — date in Redis key (`2026-03-06`) broke `/:(?=\d)/` pattern; replaced with `lastIndexOf(":")` | `treasuryOutflowGuard.ts` |
-
-Additional:
-- [x] `_setAlgodForTest` / `_setIndexerForTest` exported from `nodely.ts` — proper test helpers (fixes ESM namespace sealing issue that broke all existing adversarial tests on Node 25)
-- [x] `tests/gasStation.adversarial.test.ts` — 15 adversarial scenarios, all pass
-
----
-
-## Sprint 10 — Custom Domain SSL Fix *(IN PROGRESS — resume here)*
-
-**Goal:** Get `ai-agentic-wallet.com` (Vercel frontend) and `api.ai-agentic-wallet.com` (Railway backend) serving HTTPS correctly.
-
-### Root cause diagnosis (completed)
-
-| Domain | Issue | Fix applied |
-|---|---|---|
-| `api.ai-agentic-wallet.com` | Railway deleted+re-added domain → new CNAME target assigned (`d2q6lur4.up.railway.app`), old DNS record pointed to stale `57drlbac.up.railway.app` | Updated CNAME in Cloudflare ✅ |
-| `ai-agentic-wallet.com` | Missing `_vercel` TXT record → Vercel's edge never completed TLS cert deployment (`txtVerifiedAt: null`) | Added TXT record in Cloudflare ✅ |
-
-### DNS changes made (both complete)
-
-```
-Type:  CNAME   Name: api    Value: d2q6lur4.up.railway.app   ← Railway custom domain (re-added)
-Type:  TXT     Name: _vercel  Value: qnLF2ZCPKu              ← Vercel domain ownership proof
-```
-
-### State when paused
-
-- Both DNS records confirmed live via `dig` (TXT visible on `1.1.1.1`, not yet on `8.8.8.8` at pause time — still propagating)
-- Vercel: fresh cert issued (`cert_xlXOcINuw5CZyGZNjfc8EsQj`, 90d), project domains re-added (verified: true), new prod deployment pushed
-- Vercel `txtVerifiedAt` was still `null` at pause — will auto-update once Vercel's resolver sees the TXT record
-- Railway: domain re-added successfully, new CNAME in Cloudflare DNS
-
-### To verify on resume
-
-- [ ] `dig TXT _vercel.ai-agentic-wallet.com @8.8.8.8` returns `"qnLF2ZCPKu"` (Google DNS propagated)
-- [ ] `openssl s_client -connect 216.150.1.1:443 -servername ai-agentic-wallet.com` shows cert subject (not connection reset)
-- [ ] `curl -s https://ai-agentic-wallet.com` returns HTML (Vercel frontend live)
-- [ ] `curl -s https://api.ai-agentic-wallet.com/health` returns `{"status":"ok",...}` (Railway backend live)
-- [ ] If Vercel TLS still failing after propagation: trigger re-verify via `curl -s -X POST "https://api.vercel.com/v9/domains/ai-agentic-wallet.com/verify?teamId=team_8cItrO08VMrtjRiV6OSkOvPB" -H "Authorization: Bearer $(cat ~/.vercel/auth.json | python3 -c \"import json,sys; print(json.load(sys.stdin)['token'])\")"` then wait 5 min
-
-### Useful IDs (saved for resume)
-
+Useful IDs:
 - Vercel team: `team_8cItrO08VMrtjRiV6OSkOvPB`
 - Vercel project: `prj_sg4gyP9mnuLRWPODSfsNZ3q9PdRw`
 - Railway service: `c4f6d8ff-d6f6-4cb4-9954-bba818067a68`
-- Railway environment: `266b5fa8-c999-4066-9b6d-dbe76df9008d`
-- Vercel auth token: `~/.vercel/auth.json`
+
+---
+
+## Sprint 11 — Documentation & Security Hardening ✅
+
+- [x] `/docs` standalone public page — own nav, no admin sidebar, no login required
+- [x] `DOCS_FOR_AGENTS.md` rewritten — cross-chain removed, sections fixed
+- [x] Public test reports sanitised — internal URLs, env var names removed
+
+---
+
+## Sprint 12 — Customer Dashboard ✅
+
+- [x] `/app/mandates` — full mandate management (create/revoke, WebAuthn + Liquid Auth)
+- [x] `/app/history` — paginated transaction history with filters + search
+- [x] Mandate inline list on dashboard with active/revoked counts
+- [x] Revoked mandates visible in revoked tab + counted
+- [x] Wallet QR code moved to right sidebar (larger, sticky, with top-up links)
+- [x] Agent Status card: auth methods, signing type, network badge, status description
+- [x] Wallet address fixed (was showing `webauthn:...` prefix) — now uses `agent.address`
+- [x] Balance HTTP 400 fixed — was caused by synthetic webauthn address being passed to indexer
+- [x] Mandate expiry required — past dates greyed out in date picker
+- [x] `MandateRecord` field names fixed to match backend (`maxPerTx` etc.)
+
+---
+
+## Sprint 13 — Admin Portal *(next)*
+
+**Goal:** Operational control panel for the operator. Accessible only to admin-authenticated users.
+
+- [ ] **System Control** (`/dashboard`):
+      Live halt status banner, Halt/Unhalt button, health grid (Redis, algod, indexer,
+      signing service, guardian), active agent count, today's settlement volume
+
+- [ ] **Treasury Monitor** (`/treasury`):
+      ALGO + USDC live balances, daily outflow vs cap with progress bar,
+      gas station status (enabled/last cycle/top-ups today), sweep status
+
+- [ ] **Agent Management** (`/agents`):
+      Table of all agents (ID, address, status, registered date),
+      Suspend/Unsuspend, view mandate + outflow history, search + filter
+
+- [ ] **Security Events** (`/security`):
+      Real-time feed: DRAIN_VELOCITY_HALT, SIGNER_KEY_COMPROMISE,
+      RECIPIENT_ANOMALY, DAILY_CAP_BREACH — severity badges, acknowledge/dismiss
+
+- [ ] **Sidebar**: Dashboard | Treasury | Agents | Logs | Security | Settings
+
+---
+
+## Sprint 14 — CLI Tool *(planned)*
+
+```bash
+npx @algo-wallet/x402-cli balance --agent my-agent-001
+npx @algo-wallet/x402-cli mandate list --agent my-agent-001
+npx @algo-wallet/x402-cli mandate create --agent my-agent-001 --max-per-tx 1.00 --max-per-day 50.00
+npx @algo-wallet/x402-cli mandate revoke --agent my-agent-001 --id mandate-abc
+npx @algo-wallet/x402-cli history --agent my-agent-001 --limit 20
+npx @algo-wallet/x402-cli pay --agent my-agent-001 --amount 0.01
+```
+
+- [ ] `packages/x402-cli/` — Node.js CLI using `commander`
+- [ ] Auth via `ALGO_MNEMONIC` env var + `X402_AGENT_ID`
+- [ ] Mandate actions: Liquid Auth QR as ASCII in terminal, or `--webauthn` flag
+- [ ] Publish: `@algo-wallet/x402-cli`
+
+---
+
+## Sprint 15 — Publish SDKs *(planned)*
+
+- [ ] Publish MCP server: `npm publish --access public` from `packages/x402-mcp/`
+- [ ] Publish Python SDK: `python -m build && twine upload dist/*` from `packages/algo-x402/`
+- [ ] Update `DOCS_FOR_AGENTS.md` with published package names + install commands
+- [ ] Update `/docs` page with MCP install instructions
 
 ---
 
@@ -360,83 +210,325 @@ Type:  TXT     Name: _vercel  Value: qnLF2ZCPKu              ← Vercel domain o
 
 All items below must be `[x]` before going live.
 
-- [ ] Sprint 1 complete — new wallets generated, all secrets rotated, guardian deployed and verified
-- [x] Sprint 2 complete — agent creation wizard live, register-existing auto-opts into USDC
-- [x] Sprint 3 complete — landing page live, quickstart package name fixed
+- [ ] Sprint 1 complete — new wallets generated, all secrets rotated, guardian deployed
+- [ ] `ADMIN_WALLET_ADDRESSES` set — admin portal locked to your Algorand wallet
+- [x] Sprint 2 complete — agent creation wizard live
+- [x] Sprint 3 complete — landing page live
 - [x] Sprint 4 complete — admin dashboard uses Liquid Auth
-- [x] Sprint 5 complete — burst, sustained, velocity, failover, and Redis failure tests pass
-- [ ] Sprint 6 complete — security audit clean, runbook written
-- [ ] New treasury and signer wallets holding correct balances on mainnet
+- [x] Sprint 5 complete — burst, sustained, velocity, failover, Redis failure tests pass
+- [ ] Sprint 6 complete — security audit clean, Telegram alerts verified
+- [x] Sprint 8 complete — USDC-native onboarding + gas station live
+- [x] Sprint 9 complete — gas station security hardening
+- [ ] Sprint 10 complete — DNS + TLS verified on both domains
+- [x] Sprint 11 complete — docs standalone, security hardening
+- [x] Sprint 12 complete — customer dashboard complete
+- [ ] Sprint 13 complete — admin portal operational
+- [ ] Treasury and signer wallets holding correct balances on mainnet
 - [ ] Cold wallet opted into USDC and verified
 - [ ] Telegram alerts verified working on real phone
-- [ ] DNS: `api.ai-agentic-wallet.com` → Railway, `ai-agentic-wallet.com` → Vercel *(DNS records updated — awaiting TLS propagation, see Sprint 10)*
+- [ ] `api.ai-agentic-wallet.com` → Railway, `ai-agentic-wallet.com` → Vercel
 - [ ] CORS locked to production domains
 - [ ] mTLS active
 - [ ] `/health` returns fully green across all subsystems
 
 ---
 
-## Completed
+# PHASE 2 — Ecosystem (The Marketplace)
 
-### Security & Infrastructure
+> **Why this matters:** The buyer side is built — an AI agent with a wallet, mandate-gated
+> spending, and a payment rail. Phase 2 builds the seller side and the discovery layer that
+> connects them. Claude and other LLMs do the matching automatically through MCP tool discovery.
+> This is the AI agent economy layer that EVM x402 cannot serve due to gas economics.
+
+---
+
+## Sprint 16 — Gas Station Activation + End-to-End Payment Test
+
+**Why first:** Everything in Phase 2 depends on agents being able to pay autonomously.
+The gas station ensures ALGO for fees is always available. Without it, payments fail
+when the agent wallet runs low on gas regardless of USDC balance.
+
+### 16.1 Treasury Wallet Setup
+- [ ] Generate a dedicated treasury wallet (separate from agent wallet `S2P45K7N...`)
+- [ ] Fund treasury with ≥ 5 ALGO (covers ~7 gas top-ups at 0.70 ALGO each)
+- [ ] Opt treasury into USDC (ASA 31566704) — required to receive USDC sweeps
+- [ ] Set `ALGO_TREASURY_MNEMONIC` in Railway env vars → gas station activates automatically
+- [ ] Verify in Railway logs: `[GasStation] Starting — interval 30s, trigger < 500000 µALGO`
+- [ ] Confirm first top-up fires: agent wallet `S2P45K7N...` receives 0.70 ALGO from treasury
+
+### 16.2 Weather Endpoint (Entry #1 in future registry)
+- [ ] Add `GET /api/weather?city=Lagos` behind `x402Paywall` — proxies Open-Meteo (free, no API key)
+- [ ] Price: 1000 micro-USDC ($0.001) per call
+- [ ] Returns: temperature, wind speed, weather code, timestamp
+
+### 16.3 End-to-End Payment Test Script
+- [ ] Write `scripts/buy-weather.ts` using `@algo-wallet/x402-client`:
+      - Points at agent wallet `S2P45K7N...`
+      - Calls `POST https://api.ai-agentic-wallet.com/api/weather?city=Lagos`
+      - Absorbs 402 → pays 0.001 USDC → receives weather data
+      - Logs: payment txn ID, weather response, mandate usage
+- [ ] Confirm mandate enforcement fires (per-tx cap respected)
+- [ ] Confirm payment appears in agent transaction history on dashboard
+- [ ] Confirm on-chain USDC transfer visible on Pera Explorer
+
+**Success criteria:** Agent autonomously pays $0.001 USDC for real weather data with no human
+approval of the individual transaction. Mandate set by human covers it.
+
+---
+
+## Sprint 17 — x402-Algorand Formal Standard
+
+**Why:** The payment format is already built. Publishing it as a named, versioned spec
+lets other developers build compatible sellers and buyers without reading source code.
+Positions as "x402 on Algorand" — extending Coinbase's x402 brand rather than competing.
+
+### 17.1 Spec Document
+- [ ] Create `docs/x402-algorand-spec.md` — the canonical spec:
+      - Payment request format (402 response body)
+      - Payment proof format (`X-PAYMENT` header)
+      - Network identifier: `algorand-mainnet` / `algorand-testnet`
+      - Asset: USDC (ASA 31566704 mainnet, 10458941 testnet)
+      - Replay protection: `expiresAt` Unix ms, nonce uniqueness
+      - Error codes and retry behaviour
+- [ ] Publish spec as public GitHub Gist or dedicated repo `x402-algorand-spec`
+
+### 17.2 Discovery Headers
+- [ ] Add to 402 response: `X-Payment-Network: algorand-mainnet`
+- [ ] Add to 402 response: `X-Payment-Asset: USDC`
+- [ ] Add `GET /.well-known/x402` endpoint:
+      ```json
+      {
+        "version": "x402-algo-v1",
+        "networks": ["algorand-mainnet"],
+        "assets": ["USDC"],
+        "assetIds": { "algorand-mainnet": 31566704 }
+      }
+      ```
+- [ ] x402-client: auto-detect network from `X-Payment-Network` header before building proof
+
+### 17.3 Package Positioning
+- [ ] Add `x402-algorand` as an npm alias for `@algo-wallet/x402-client` (discoverability)
+- [ ] Add `x402-algorand-middleware` as an alias for the server middleware
+- [ ] README: "x402 payment protocol implemented for Algorand USDC"
+- [ ] Update package keywords: `x402`, `algorand`, `usdc`, `micropayments`, `ai-agents`
+
+---
+
+## Sprint 18 — Seller SDK
+
+**Why:** The seller side is the missing half. Developers need to be able to add
+x402-Algorand payment to their API in one import. The easier it is to become a seller,
+the faster the registry fills.
+
+### 18.1 x402-mcp Seller SDK (complete the existing package)
+- [ ] Single import API:
+      ```typescript
+      import { x402tool } from "@algo-wallet/x402-mcp";
+
+      x402tool({
+        name:        "get_weather",
+        description: "Current weather for any city. Costs $0.001 USDC.",
+        price:       1000,         // micro-USDC
+        payTo:       "ALGO_ADDRESS",
+        input:       { city: "string" },
+        handler:     async ({ city }) => fetchWeather(city),
+      });
+      ```
+- [ ] Handles: 402 response generation, payment proof verification, mandate enforcement check
+- [ ] Express adapter: `app.use(x402express({ price, payTo }))` — one-line middleware
+- [ ] FastAPI adapter (Python): `@x402(price=1000, pay_to="ALGO_ADDRESS")`
+- [ ] Seller CLI: `npx x402-algorand register --tool get_weather --endpoint https://myapi.com`
+
+### 18.2 Seller Documentation
+- [ ] Quickstart: "Add x402 payment to your API in 5 minutes"
+- [ ] Pricing guide: micro-USDC denomination, recommended price tiers
+- [ ] Security guide: replay protection, mandate-aware rate limiting
+
+---
+
+## Sprint 19 — API Registry
+
+**Why:** Discovery without a registry is impossible. The registry is the catalogue that
+agents query to find what's available to buy. It also creates the flywheel: more sellers
+→ more useful APIs for agents → more agents → more revenue for sellers.
+
+### 19.1 Backend Registry
+- [ ] `POST /api/registry/list` — register a new tool:
+      ```json
+      {
+        "name":        "get_weather",
+        "description": "Current weather for any city",
+        "endpoint":    "https://myapi.com/weather",
+        "price":       1000,
+        "category":    "data",
+        "network":     "algorand-mainnet"
+      }
+      ```
+- [ ] `GET /api/registry` — list all verified tools (JSON + optional category filter)
+- [ ] Verification: server pings `endpoint/.well-known/x402` — only verified endpoints listed
+- [ ] Add weather endpoint (`/api/weather`) as entry #1 automatically at boot
+
+### 19.2 Registry Frontend Page
+- [ ] New public page at `ai-agentic-wallet.com/registry`:
+      - Card grid of listed APIs: name, description, price, category
+      - Filter by category (data, compute, finance, AI, utility)
+      - "List your API" button → seller registration form
+      - Copy MCP endpoint URL button per listing
+- [ ] No auth required to browse — public discovery page
+
+### 19.3 Registry in DOCS_FOR_AGENTS.md
+- [ ] Section: "Discoverable APIs" — lists all registry entries with endpoint + price
+- [ ] Agents reading the docs can find what's available to buy without querying the API
+
+---
+
+## Sprint 20 — Aggregator MCP Server (The Bazaar)
+
+**Why:** This is the highest-leverage piece. Instead of users adding one MCP server per API,
+they add one aggregator MCP server and instantly get access to every listed API.
+Claude picks the right tool for the task. Payment fires automatically. The human's mandate covers it.
+
+### 20.1 Aggregator Architecture
+```
+User → "check the weather in Lagos"
+    ↓
+Claude scans available tools via aggregator MCP
+    ↓
+Finds: get_weather (costs $0.001 USDC, via x402-Algorand)
+    ↓
+Claude calls tool → aggregator fires x402 payment from agent wallet
+    ↓
+Mandate check passes → USDC paid → weather data returned
+    ↓
+Claude answers user
+```
+
+### 20.2 Implementation
+- [ ] `packages/x402-mcp/src/aggregator.ts` — MCP server that:
+      - Polls `/api/registry` on start + every 5 min
+      - Exposes each registry entry as an MCP tool dynamically
+      - Handles x402 payment on tool call using agent wallet credentials
+      - Returns tool result to the calling LLM
+- [ ] Tool schema auto-generated from registry entry `input` schema
+- [ ] Payment credentials: agent provides `AGENT_MNEMONIC` + `AGENT_ID` env vars
+- [ ] Mandate enforcement: aggregator checks mandate before every payment
+- [ ] Publish: `npx @algo-wallet/x402-mcp` — one command starts the aggregator
+
+### 20.3 Configuration
+```bash
+# .env for the aggregator MCP server
+X402_REGISTRY_URL=https://api.ai-agentic-wallet.com/api/registry
+AGENT_ID=my-agent-001
+AGENT_MNEMONIC=<25 words>
+MAX_PER_CALL_USDC=1.00   # hard ceiling per tool call
+```
+
+### 20.4 Claude Desktop Integration
+- [ ] `claude_desktop_config.json` snippet in docs:
+      ```json
+      {
+        "mcpServers": {
+          "x402-marketplace": {
+            "command": "npx",
+            "args": ["@algo-wallet/x402-mcp"],
+            "env": {
+              "AGENT_ID": "my-agent-001",
+              "AGENT_MNEMONIC": "..."
+            }
+          }
+        }
+      }
+      ```
+- [ ] Submit to Anthropic MCP integrations directory
+- [ ] Submit to `mcp.so` and `smithery.ai` registries
+
+---
+
+## Sprint 21 — Seller Acquisition & Registry Growth
+
+**Why:** A marketplace with one listing is not a marketplace. Need to seed the registry
+with enough variety that agents have real choices. Target: 10 listed APIs across 5 categories.
+
+### 21.1 First-Party APIs (build these on the backend — dogfood the seller SDK)
+- [ ] `GET /api/weather?city=` — current weather via Open-Meteo ($0.001)
+- [ ] `GET /api/fx?from=USD&to=NGN` — FX rates via Open Exchange Rates ($0.002)
+- [ ] `GET /api/news?topic=` — headlines via NewsData.io free tier ($0.005)
+- [ ] `GET /api/geocode?address=` — address → lat/lng via Nominatim ($0.001)
+- [ ] `GET /api/crypto/price?symbol=ALGO` — crypto price via CoinGecko free ($0.001)
+
+### 21.2 Third-Party Seller Outreach
+- [ ] Write "Become a Seller" landing page at `/sell`:
+      - "Your API earns USDC every time an AI agent calls it"
+      - Setup guide: 3 steps, one npm install
+      - Earnings calculator: N calls/day × $0.001 = $X/month
+- [ ] Reach out to 5 API providers in the Algorand ecosystem
+- [ ] Write blog post: "How to monetise your API for AI agents with Algorand USDC"
+
+### 21.3 Matching Quality
+- [ ] Registry entries include structured tags: `["weather", "geo", "real-time"]`
+- [ ] Aggregator MCP tool descriptions written for LLM tool selection (not humans)
+- [ ] Test: Claude correctly picks `get_weather` over `get_news` for "what's the weather"
+
+---
+
+## Phase 2 Milestone — The Full Loop
+
+The ecosystem is live when all of the following work in a single uninterrupted flow:
+
+- [ ] Human creates agent, sets mandate ($1/tx, $10/day)
+- [ ] Agent wallet auto-topped with ALGO by gas station (no human action)
+- [ ] User asks Claude: *"What's the weather in Lagos and the ALGO price?"*
+- [ ] Claude calls aggregator MCP → discovers `get_weather` + `get_crypto_price`
+- [ ] Two x402 payments fire: $0.001 + $0.001 USDC from agent wallet
+- [ ] Both within mandate → both settle on-chain
+- [ ] Claude answers with real data
+- [ ] Human sees both transactions in dashboard history
+- [ ] Total cost: $0.002 USDC + ~$0.0004 ALGO in fees
+
+---
+
+# Completed
+
+## Security & Infrastructure
 - [x] Treasury outflow guard (daily ALGO/USDC signing cap, auto-halt on breach)
 - [x] Wallet guardian: velocity drain detection, Redis-backed halt
-- [x] Wallet guardian: Rocca signer auth-addr rekey detection (CRITICAL halt if signer rekeyed away)
+- [x] Wallet guardian: Rocca signer auth-addr rekey detection
 - [x] HSM adapter pattern (Vault Transit / env mnemonic)
 - [x] Recipient anomaly detector
 - [x] Cold wallet SHA-256 hash anchoring in Redis
 - [x] On-chain monitor (Indexer reconciliation vs Gate 5 authorized totals)
-- [x] envGuard updated to accept Railway Redis vars
+- [x] Gas station security hardening — all 6 vulnerabilities patched
+- [x] Public test reports sanitized
 
-### Performance
-- [x] Redis migration: Upstash HTTP → Railway internal TCP (ioredis shim, all 30+ call sites)
-- [x] Auth-addr cache in Rule 3 validation (5-min TTL, eager invalidation on suspend)
-- [x] Nodely primary/fallback failover with Telegram alert + recovery probe
-- [x] Speed test: 5/5 mainnet payments @ avg 2,185ms enqueue
+## Performance
+- [x] Redis migration: Upstash HTTP → Railway internal TCP (ioredis shim)
+- [x] Auth-addr cache in validation (5-min TTL, eager invalidation on suspend)
+- [x] Nodely primary/fallback failover with alert + recovery probe
+- [x] p95 enqueue 1527ms
 
-### Customer Onboarding (Sprint 2)
-- [x] `POST /api/agents/create` — server-side keypair generation, no treasury cost, 10/IP/hour rate limit
-- [x] `register-existing` enhanced: auto-opts into USDC if not opted in (atomic group: opt-in + rekey)
-- [x] `GET /api/agents/:agentId/settlements` — per-agent settlement history endpoint
-- [x] 4-step onboarding wizard at `/app/create` (generate → save mnemonic → fund + poll → activate)
-- [x] Customer dashboard: 10s balance auto-polling, low-balance warning ($0.05 threshold)
-- [x] WalletCard: Top Up USDC section with Pera / Defly / `algorand://` deep links
-- [x] AgentStatusCard: full status matrix (active / registered / halted / suspended / orphaned)
-- [x] Dashboard "Create Agent" button linking to `/app/create`
-- [x] Balance endpoint made public for unauthenticated wizard polling
+## Customer Dashboard (Sprints 2, 12)
+- [x] 4-step agent creation wizard at `/app/create`
+- [x] `/app/login` — Liquid Auth QR + WebAuthn dual-path
+- [x] `/app/dashboard` — agent status, wallet QR sidebar, balance auto-poll, mandate summary, recent txns
+- [x] `/app/mandates` — full mandate management with WebAuthn/Liquid Auth gate per action
+- [x] `/app/history` — paginated transaction history with filters + search
+- [x] Mandate double-parse bug fixed (listMandates was silently dropping all mandates)
+- [x] Mandate ZADD float error fixed (Number.MAX_SAFE_INTEGER → valid score)
+- [x] Revoked mandates returned and counted via `?includeRevoked=true` query param
+- [x] Agent Status card: auth methods registered, signing type, network badge, status description
+- [x] Cohort field removed from customer dashboard (internal infra concept, irrelevant to users)
+- [x] Wallet address fixed — uses `agent.address` not synthetic `webauthn:...` identifier
+- [x] Mandate expiry required — past dates unselectable in date picker
 
-### Admin Login (Sprint 4)
-- [x] `src/auth/adminAuth.ts` — standalone admin Liquid Auth + WebAuthn service (no agent record required)
-- [x] Backend: 8 new public routes at `/api/admin/auth/*` (liquid-challenge/sign/status/consume, webauthn-register-challenge/register/login-challenge/login)
-- [x] Portal: `/api/admin/auth/[...path]/route.ts` — public proxy (no PORTAL_API_SECRET injected)
-- [x] Portal: `/api/auth/login/route.ts` — dual-path: liquidAuthSessionId → consume+whitelist+JWT, webauthnAssertion → verify+JWT, password fallback kept
-- [x] Portal: `/api/auth/session/route.ts` — returns session expiry for Sidebar banner
-- [x] Portal: `/login/page.tsx` — replaced password form with Liquid Auth QR + WebAuthn dual-path (mirrors `/app/login`)
-- [x] Portal: `Sidebar.tsx` — session expiry banner (amber, warns when < 30 min remain)
-- [x] `proxy.ts` — `/api/admin/auth/*` added to public bypass
-- [x] `ADMIN_WALLET_ADDRESSES` env var — comma-separated whitelist; if empty → dev open
-- [x] `PORTAL_API_SECRET` bearer token kept for machine-to-machine calls (Railway guardian, CI)
+## SDK & Integrations
+- [x] `@algo-wallet/x402-client@0.2.0` published to npm
+- [x] `@algo-wallet/x402-mcp` MCP server built (not yet published)
+- [x] `algo-x402` Python SDK built (not yet published)
+- [x] API versioning: `/v1/api/*` canonical, `/api/*` legacy alias
 
-### Landing Page & Quickstart (Sprint 3)
-- [x] Landing page at portal root (`/`) — hero, how-it-works, use cases, pricing, SDK quickstart, CTA
-- [x] `PortalShell` updated: sidebar hidden on `/` (landing page)
-- [x] Mobile responsive, no external analytics
-- [x] Package name fixed: `@m-reynaldo35/x402-client` → `@algo-wallet/x402-client` in all examples
-      (`x402-agent-quickstart.ts`, `x402-agent-quickstart.sh`, `autonomous-trader.ts`)
-
-### Payment Stress Testing (Sprint 5)
-- [x] Burst test: 5/5 concurrent payments, p95 enqueue 1461ms, 0 crashes, 0 rate-limited
-- [x] Sustained test: 50/50 payments over 17.2 min, p95 enqueue 1527ms, 0 failures, 0 halts
-- [x] Velocity cap: VELOCITY_APPROVAL_REQUIRED fires correctly, cap idempotent on retry
-- [x] Nodely failover: activates in ~44s, 3/3 payments on fallback, recovery automatic
-- [x] Redis failure: boot-time FATAL on all Redis unavailable — fail-closed (502)
-- [x] Bugs fixed: clock-skew tolerance 5s→30s, ALGO_CLIENT_NODE_URL override, BURST_SIZE/amounts corrected
-- [x] All test reports saved to `public/*.json`
-
-### Portal & SDK
-- [x] x402 Developer Portal (Next.js, Vercel)
-- [x] Customer Agent Dashboard (`/app/*` with Liquid Auth + WebAuthn)
-- [x] Mandate Management UI (Liquid Auth QR + WebAuthn dual-path)
-- [x] Domain split: portal (Vercel) + API (Railway)
-- [x] SDK: `@algo-wallet/x402-client@0.2.0` published to npm
-- [x] `tsc --noEmit` clean on backend + portal
+## Payment Stress Testing (Sprint 5)
+- [x] Burst: 5/5 concurrent, p95 enqueue 1461ms
+- [x] Sustained: 50/50 over 17.2 min, 0 failures
+- [x] Velocity cap: fires correctly, idempotent on retry
+- [x] Nodely failover: activates in ~44s, auto-recovery
+- [x] Redis failure: boot-time FATAL — fail-closed (502)
