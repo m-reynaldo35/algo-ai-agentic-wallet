@@ -23,8 +23,7 @@ export default function WalletQRPanel({ address }: Props) {
     }
   }, [address]);
 
-  const algoUri  = `algorand://${address}?asset=${USDC_ASSET_ID}`;
-  const peraUrl  = "https://app.perawallet.app/";
+  const peraUrl  = "https://perawallet.app/";
   const deflyUrl = "https://defly.app/";
 
   const truncated = address.length > 20
@@ -52,35 +51,24 @@ export default function WalletQRPanel({ address }: Props) {
         Scan with Pera or Defly to send USDC (asset {USDC_ASSET_ID}) to this address.
       </p>
 
-      {/* Links */}
-      <div className="flex flex-col gap-2 w-full">
+      {/* Wallet app links */}
+      <div className="flex gap-2 w-full">
         <a
-          href={algoUri}
-          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-md transition-colors"
+          href={peraUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex-1 flex items-center justify-center px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-md transition-colors"
         >
-          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-          </svg>
-          Open in Wallet App
+          Pera Wallet
         </a>
-        <div className="flex gap-2">
-          <a
-            href={peraUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex-1 flex items-center justify-center px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-md transition-colors"
-          >
-            Pera
-          </a>
-          <a
-            href={deflyUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex-1 flex items-center justify-center px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-md transition-colors"
-          >
-            Defly
-          </a>
-        </div>
+        <a
+          href={deflyUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex-1 flex items-center justify-center px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-md transition-colors"
+        >
+          Defly
+        </a>
       </div>
     </div>
   );

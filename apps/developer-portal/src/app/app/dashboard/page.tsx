@@ -16,13 +16,13 @@ interface Session {
 
 interface AgentInfo {
   agentId: string;
+  address?: string;    // permanent on-chain Algorand address
+  authAddr?: string;   // Rocca signer / auth-addr
   status?: string;
   halted?: boolean;
   cohort?: string;
   registeredAt?: string;
   createdAt?: string;
-  signerAddress?: string;
-  walletAddress?: string;
 }
 
 export default function CustomerDashboard() {
@@ -76,12 +76,16 @@ export default function CustomerDashboard() {
 
   if (!session) return null;
 
-  // Prefer the signer address from agent info for the wallet card
-  const walletAddress =
-    agent?.signerAddress || agent?.walletAddress || session.ownerAddress;
+  // Use the agent's on-chain Algorand address for balance and QR.
+  // agent.address is the permanent account address; agent.authAddr is the
+  // Rocca signer. Fall back to ownerAddress but strip any "webauthn:" prefix
+  // (synthetic ID assigned when no Liquid Auth session existed at registration).
+  const rawOwner = session.ownerAddress ?? "";
+  const ownerAlgoAddress = rawOwner.startsWith("webauthn:") ? "" : rawOwner;
+  const walletAddress = agent?.address || agent?.authAddr || ownerAlgoAddress;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+    <div className="max-w-7xl mx-auto px-6 sm:px-8 py-10">
       {/* Page header */}
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-sm text-zinc-400">Dashboard</h1>
@@ -106,7 +110,7 @@ export default function CustomerDashboard() {
               agent={agent}
               error={agentError}
             />
-            <WalletCard address={walletAddress} showQR={false} />
+            {walletAddress && <WalletCard address={walletAddress} showQR={false} />}
           </div>
 
           {/* Mandates */}
@@ -119,10 +123,12 @@ export default function CustomerDashboard() {
           <RecentTransactions agentId={session.agentId} />
         </div>
 
-        {/* Right — QR top-up panel */}
-        <div className="w-64 shrink-0 hidden lg:block sticky top-6">
-          <WalletQRPanel address={walletAddress} />
-        </div>
+        {/* Right — QR top-up panel (only when a real Algorand address is known) */}
+        {walletAddress && (
+          <div className="w-72 shrink-0 hidden lg:block sticky top-6">
+            <WalletQRPanel address={walletAddress} />
+          </div>
+        )}
       </div>
     </div>
   );

@@ -85,10 +85,8 @@ export default function WalletCard({ address, showQR = true }: Props) {
 
   const isLowBalance = balance !== null && balance.microUsdc < LOW_BALANCE_THRESHOLD_MICRO;
 
-  // Algorand URI for wallet apps that support it
-  const algoUri = `algorand://${address}?asset=${USDC_ASSET_ID}`;
-  const peraUrl  = `https://app.perawallet.app/`;
-  const deflyUrl = `https://defly.app/`;
+  const peraUrl  = "https://perawallet.app/";
+  const deflyUrl = "https://defly.app/";
 
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-5">
@@ -204,15 +202,6 @@ export default function WalletCard({ address, showQR = true }: Props) {
           Top up USDC (asset {USDC_ASSET_ID}) to this address:
         </p>
         <div className="flex flex-wrap gap-2">
-          <a
-            href={algoUri}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-md transition-colors"
-          >
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-            </svg>
-            Open in Wallet
-          </a>
           <a
             href={peraUrl}
             target="_blank"
