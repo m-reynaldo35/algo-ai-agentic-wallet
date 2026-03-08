@@ -16,11 +16,13 @@ interface Session {
 
 interface AgentInfo {
   agentId: string;
-  address?: string;    // permanent on-chain Algorand address
-  authAddr?: string;   // Rocca signer / auth-addr
+  address?: string;              // permanent on-chain Algorand address
+  authAddr?: string;             // Rocca signer / auth-addr
   status?: string;
   halted?: boolean;
-  cohort?: string;
+  custody?: "rocca" | "user";
+  ownerWalletId?: string;        // set if Liquid Auth was used at registration
+  webauthnPublicKey?: string;    // set if a passkey is registered
   registeredAt?: string;
   createdAt?: string;
 }

@@ -2,11 +2,17 @@
 
 import { useState } from "react";
 
+const NETWORK = process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? "testnet";
+
 interface AgentInfo {
   agentId: string;
+  address?: string;
+  authAddr?: string;
   status?: string;
   halted?: boolean;
-  cohort?: string;
+  custody?: "rocca" | "user";
+  ownerWalletId?: string;
+  webauthnPublicKey?: string;
   registeredAt?: string;
   createdAt?: string;
 }
@@ -29,14 +35,29 @@ function resolveStatus(agent: AgentInfo): StatusKind {
   return "unknown";
 }
 
-const STATUS_STYLES: Record<StatusKind, { pill: string; dot: string; label: string }> = {
-  active:     { pill: "bg-emerald-900/40 text-emerald-400 border-emerald-800", dot: "bg-emerald-400", label: "Active" },
-  registered: { pill: "bg-emerald-900/40 text-emerald-400 border-emerald-800", dot: "bg-emerald-400", label: "Registered" },
-  halted:     { pill: "bg-red-900/40 text-red-400 border-red-800",             dot: "bg-red-400",     label: "Halted" },
-  suspended:  { pill: "bg-amber-900/40 text-amber-400 border-amber-800",       dot: "bg-amber-400",   label: "Suspended" },
-  orphaned:   { pill: "bg-purple-900/40 text-purple-400 border-purple-800",    dot: "bg-purple-400",  label: "Orphaned" },
-  unknown:    { pill: "bg-zinc-800 text-zinc-400 border-zinc-700",             dot: "bg-zinc-400",    label: "Unknown" },
+const STATUS_STYLES: Record<StatusKind, { pill: string; dot: string; label: string; desc: string }> = {
+  active:     { pill: "bg-emerald-900/40 text-emerald-400 border-emerald-800", dot: "bg-emerald-400", label: "Active",     desc: "Processing payments normally" },
+  registered: { pill: "bg-emerald-900/40 text-emerald-400 border-emerald-800", dot: "bg-emerald-400", label: "Registered", desc: "Ready to process payments" },
+  halted:     { pill: "bg-red-900/40 text-red-400 border-red-800",             dot: "bg-red-400",     label: "Halted",     desc: "Payments blocked — security alert" },
+  suspended:  { pill: "bg-amber-900/40 text-amber-400 border-amber-800",       dot: "bg-amber-400",   label: "Suspended",  desc: "Temporarily paused" },
+  orphaned:   { pill: "bg-purple-900/40 text-purple-400 border-purple-800",    dot: "bg-purple-400",  label: "Orphaned",   desc: "No active signing key" },
+  unknown:    { pill: "bg-zinc-800 text-zinc-400 border-zinc-700",             dot: "bg-zinc-400",    label: "Unknown",    desc: "" },
 };
+
+function CheckIcon({ ok }: { ok: boolean }) {
+  if (ok) {
+    return (
+      <svg className="w-3.5 h-3.5 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="w-3.5 h-3.5 text-zinc-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+    </svg>
+  );
+}
 
 export default function AgentStatusCard({ agentId, agent, error }: Props) {
   const [copied, setCopied] = useState(false);
@@ -52,23 +73,42 @@ export default function AgentStatusCard({ agentId, agent, error }: Props) {
   const style = STATUS_STYLES[statusKind];
   const registeredDate = agent?.registeredAt || agent?.createdAt;
 
+  // Auth method derivation
+  const hasLiquidAuth  = !!agent?.ownerWalletId && !agent.ownerWalletId.startsWith("webauthn:");
+  const hasPasskey     = !!agent?.webauthnPublicKey;
+
+  // Custody label
+  const custodyLabel = agent?.custody === "user"
+    ? "Self-custody"
+    : "Server-managed";
+  const custodyDesc  = agent?.custody === "user"
+    ? "You hold the signing key"
+    : "Rocca signs on your behalf";
+
+  const networkLabel = NETWORK === "mainnet" ? "Mainnet" : "Testnet";
+  const networkStyle = NETWORK === "mainnet"
+    ? "bg-emerald-900/30 text-emerald-400 border-emerald-800"
+    : "bg-amber-900/30 text-amber-400 border-amber-800";
+
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-5">
-      <h2 className="text-xs text-zinc-500 uppercase tracking-wider mb-4">
-        Agent Status
-      </h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xs text-zinc-500 uppercase tracking-wider">Agent Status</h2>
+        {/* Network badge */}
+        <span className={`text-xs px-2 py-0.5 rounded border font-medium ${networkStyle}`}>
+          {networkLabel}
+        </span>
+      </div>
 
       {error ? (
         <p className="text-red-400 text-sm">{error}</p>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-4">
           {/* Agent ID */}
           <div>
             <label className="block text-xs text-zinc-600 mb-1">Agent ID</label>
             <div className="flex items-center gap-2">
-              <span className="font-mono text-zinc-200 text-xs break-all flex-1">
-                {agentId}
-              </span>
+              <span className="font-mono text-zinc-200 text-xs break-all flex-1">{agentId}</span>
               <button
                 onClick={copyId}
                 title="Copy agent ID"
@@ -89,19 +129,52 @@ export default function AgentStatusCard({ agentId, agent, error }: Props) {
 
           {/* Status badge */}
           {agent && (
-            <div className="flex items-center gap-2">
-              <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${style.pill}`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`} />
-                {style.label}
-              </span>
+            <div>
+              <label className="block text-xs text-zinc-600 mb-1">Status</label>
+              <div className="flex items-center gap-2">
+                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${style.pill}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`} />
+                  {style.label}
+                </span>
+                {style.desc && (
+                  <span className="text-xs text-zinc-500">{style.desc}</span>
+                )}
+              </div>
             </div>
           )}
 
-          {/* Cohort */}
-          {agent?.cohort && (
+          {/* Auth methods */}
+          {agent && (
             <div>
-              <label className="block text-xs text-zinc-600 mb-1">Cohort</label>
-              <span className="text-zinc-300 text-sm">{agent.cohort}</span>
+              <label className="block text-xs text-zinc-600 mb-2">Auth Methods</label>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <CheckIcon ok={hasLiquidAuth} />
+                  <span className={`text-xs ${hasLiquidAuth ? "text-zinc-300" : "text-zinc-600"}`}>
+                    Algorand Wallet (Pera / Defly QR)
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <CheckIcon ok={hasPasskey} />
+                  <span className={`text-xs ${hasPasskey ? "text-zinc-300" : "text-zinc-600"}`}>
+                    Device Passkey (Touch ID / Face ID / YubiKey)
+                  </span>
+                </div>
+              </div>
+              {!hasLiquidAuth && !hasPasskey && (
+                <p className="mt-2 text-xs text-amber-400">No auth method registered — you cannot create or revoke mandates.</p>
+              )}
+            </div>
+          )}
+
+          {/* Custody */}
+          {agent && (
+            <div>
+              <label className="block text-xs text-zinc-600 mb-1">Signing</label>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-zinc-300">{custodyLabel}</span>
+                <span className="text-xs text-zinc-500">— {custodyDesc}</span>
+              </div>
             </div>
           )}
 
@@ -109,11 +182,9 @@ export default function AgentStatusCard({ agentId, agent, error }: Props) {
           {registeredDate && (
             <div>
               <label className="block text-xs text-zinc-600 mb-1">Registered</label>
-              <span className="text-zinc-400 text-sm">
+              <span className="text-zinc-400 text-xs">
                 {new Date(registeredDate).toLocaleDateString(undefined, {
-                  year: "numeric",
-                  month: "short",
-                  day: "numeric",
+                  year: "numeric", month: "short", day: "numeric",
                 })}
               </span>
             </div>
@@ -124,6 +195,7 @@ export default function AgentStatusCard({ agentId, agent, error }: Props) {
             <div className="animate-pulse space-y-2">
               <div className="h-3 bg-zinc-800 rounded w-3/4" />
               <div className="h-3 bg-zinc-800 rounded w-1/2" />
+              <div className="h-3 bg-zinc-800 rounded w-2/3" />
             </div>
           )}
         </div>
