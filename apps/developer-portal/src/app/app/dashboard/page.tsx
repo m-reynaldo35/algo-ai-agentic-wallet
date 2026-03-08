@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import AgentStatusCard from "@/components/customer/AgentStatusCard";
 import WalletCard from "@/components/customer/WalletCard";
+import WalletQRPanel from "@/components/customer/WalletQRPanel";
 import MandateUsageCard from "@/components/customer/MandateUsageCard";
 import RecentTransactions from "@/components/customer/RecentTransactions";
 
@@ -80,9 +81,9 @@ export default function CustomerDashboard() {
     agent?.signerAddress || agent?.walletAddress || session.ownerAddress;
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-5">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
       {/* Page header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between mb-6">
         <h1 className="text-sm text-zinc-400">Dashboard</h1>
         <Link
           href="/app/create"
@@ -95,24 +96,34 @@ export default function CustomerDashboard() {
         </Link>
       </div>
 
-      {/* Top row — Agent Status + Wallet */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <AgentStatusCard
-          agentId={session.agentId}
-          agent={agent}
-          error={agentError}
-        />
-        <WalletCard address={walletAddress} />
+      <div className="flex gap-6 items-start">
+        {/* Left — main content */}
+        <div className="flex-1 min-w-0 space-y-5">
+          {/* Agent Status + Wallet (balance only, no QR) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <AgentStatusCard
+              agentId={session.agentId}
+              agent={agent}
+              error={agentError}
+            />
+            <WalletCard address={walletAddress} showQR={false} />
+          </div>
+
+          {/* Mandates */}
+          <MandateUsageCard
+            agentId={session.agentId}
+            ownerAddress={session.ownerAddress}
+          />
+
+          {/* Recent Transactions */}
+          <RecentTransactions agentId={session.agentId} />
+        </div>
+
+        {/* Right — QR top-up panel */}
+        <div className="w-64 shrink-0 hidden lg:block sticky top-6">
+          <WalletQRPanel address={walletAddress} />
+        </div>
       </div>
-
-      {/* Mandates */}
-      <MandateUsageCard
-        agentId={session.agentId}
-        ownerAddress={session.ownerAddress}
-      />
-
-      {/* Recent Transactions */}
-      <RecentTransactions agentId={session.agentId} />
     </div>
   );
 }

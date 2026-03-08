@@ -10,6 +10,7 @@ const LOW_BALANCE_THRESHOLD_MICRO = 50_000;
 
 interface Props {
   address: string;
+  showQR?: boolean;
 }
 
 interface Balance {
@@ -25,7 +26,7 @@ function formatUsdc(microUsdc: number): string {
   return (microUsdc / 1_000_000).toFixed(2);
 }
 
-export default function WalletCard({ address }: Props) {
+export default function WalletCard({ address, showQR = true }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [copied, setCopied] = useState(false);
   const [balance, setBalance] = useState<Balance | null>(null);
@@ -108,16 +109,18 @@ export default function WalletCard({ address }: Props) {
       )}
 
       <div className="flex gap-4">
-        {/* QR Code */}
-        <div className="shrink-0">
-          <div
-            className="bg-zinc-800 rounded-md flex items-center justify-center"
-            style={{ width: 80, height: 80 }}
-          >
-            <canvas ref={canvasRef} style={{ width: 80, height: 80 }} />
+        {/* QR Code — hidden when showQR=false (promoted to sidebar) */}
+        {showQR && (
+          <div className="shrink-0">
+            <div
+              className="bg-zinc-800 rounded-md flex items-center justify-center"
+              style={{ width: 80, height: 80 }}
+            >
+              <canvas ref={canvasRef} style={{ width: 80, height: 80 }} />
+            </div>
+            <p className="text-xs text-zinc-600 mt-1 text-center">Scan</p>
           </div>
-          <p className="text-xs text-zinc-600 mt-1 text-center">Scan</p>
-        </div>
+        )}
 
         {/* Address + balances */}
         <div className="flex-1 min-w-0 space-y-3">
