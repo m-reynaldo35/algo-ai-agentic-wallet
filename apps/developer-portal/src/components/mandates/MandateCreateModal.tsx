@@ -82,6 +82,7 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
 
   // --- Liquid Auth path ---
   async function handleLiquidSubmit() {
+    if (!expiresAt) { setError("An expiry date is required."); return; }
     if (!sessionId) { setShowQR(true); return; }
     setSubmitting(true);
     setError("");
@@ -105,6 +106,7 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
 
   // --- WebAuthn path ---
   async function handleWebAuthn() {
+    if (!expiresAt) { setError("An expiry date is required."); return; }
     if (!window.PublicKeyCredential) {
       setError("Passkeys are not supported in this browser.");
       return;
@@ -237,10 +239,14 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
 
             {/* Expiry */}
             <div>
-              <label className="block text-xs text-zinc-500 mb-1">Expiry (optional)</label>
+              <label className="block text-xs text-zinc-500 mb-1">
+                Expiry <span className="text-red-400">*</span>
+              </label>
               <input
                 type="date"
+                required
                 value={expiresAt}
+                min={new Date().toISOString().split("T")[0]}
                 onChange={(e) => setExpiresAt(e.target.value)}
                 className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-white text-sm focus:outline-none focus:border-zinc-500"
               />
