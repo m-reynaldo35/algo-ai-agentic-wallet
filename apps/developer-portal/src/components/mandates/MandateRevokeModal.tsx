@@ -53,9 +53,10 @@ function microUsdcToUsdc(val: string | number | undefined): string {
   }
 }
 
-function formatExpiry(expiresAt?: string | null): string {
+function formatExpiry(expiresAt?: number | string | null): string {
   if (!expiresAt) return "No expiry";
-  const diff = new Date(expiresAt).getTime() - Date.now();
+  const ts = typeof expiresAt === "number" ? expiresAt : new Date(expiresAt).getTime();
+  const diff = ts - Date.now();
   if (diff <= 0) return "Expired";
   const days  = Math.floor(diff / 86_400_000);
   const hours = Math.floor((diff % 86_400_000) / 3_600_000);
@@ -154,11 +155,11 @@ export default function MandateRevokeModal({ agentId, mandate, onRevoked, onClos
             </div>
             <div className="flex justify-between">
               <span className="text-zinc-500">Per-Tx cap</span>
-              <span className="text-zinc-300">{mandate.maxPerTxMicroUsdc !== undefined ? `$${microUsdcToUsdc(mandate.maxPerTxMicroUsdc)}` : "—"}</span>
+              <span className="text-zinc-300">{mandate.maxPerTx !== undefined ? `$${microUsdcToUsdc(mandate.maxPerTx)}` : "—"}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-zinc-500">Per-Day cap</span>
-              <span className="text-zinc-300">{mandate.maxPerDayMicroUsdc !== undefined ? `$${microUsdcToUsdc(mandate.maxPerDayMicroUsdc)}` : "—"}</span>
+              <span className="text-zinc-300">{mandate.maxPerDay !== undefined ? `$${microUsdcToUsdc(mandate.maxPerDay)}` : "—"}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-zinc-500">Expiry</span>

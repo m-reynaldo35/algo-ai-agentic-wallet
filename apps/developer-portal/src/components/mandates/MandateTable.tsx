@@ -2,13 +2,15 @@
 
 export interface MandateRecord {
   mandateId:          string;
+  agentId?:           string;
   ownerWalletId:      string;
-  maxPerTxMicroUsdc?: string | number;
-  maxPer10MinMicroUsdc?: string | number;
-  maxPerDayMicroUsdc?: string | number;
-  expiresAt?:         string | null;
+  maxPerTx?:          string | number;
+  maxPer10Min?:       string | number;
+  maxPerDay?:         string | number;
+  expiresAt?:         number | string | null;
   status:             "active" | "revoked" | string;
   allowedRecipients?: string[];
+  recurring?:         { amount: string; intervalSeconds: number } | null;
 }
 
 interface Props {
@@ -25,9 +27,10 @@ function microUsdcToUsdc(val: string | number | undefined): string {
   }
 }
 
-function formatExpiry(expiresAt?: string | null): string {
+function formatExpiry(expiresAt?: number | string | null): string {
   if (!expiresAt) return "No expiry";
-  const diff = new Date(expiresAt).getTime() - Date.now();
+  const ts = typeof expiresAt === "number" ? expiresAt : new Date(expiresAt).getTime();
+  const diff = ts - Date.now();
   if (diff <= 0) return "Expired";
   const days  = Math.floor(diff / 86_400_000);
   const hours = Math.floor((diff % 86_400_000) / 3_600_000);
@@ -70,13 +73,13 @@ export default function MandateTable({ mandates, onRevoke }: Props) {
                   {m.ownerWalletId.slice(0, 16)}…
                 </td>
                 <td className="py-3 px-4 text-zinc-300 text-right whitespace-nowrap">
-                  {m.maxPerTxMicroUsdc !== undefined ? `$${microUsdcToUsdc(m.maxPerTxMicroUsdc)}` : "—"}
+                  {m.maxPerTx !== undefined ? `$${microUsdcToUsdc(m.maxPerTx)}` : "—"}
                 </td>
                 <td className="py-3 px-4 text-zinc-300 text-right whitespace-nowrap">
-                  {m.maxPer10MinMicroUsdc !== undefined ? `$${microUsdcToUsdc(m.maxPer10MinMicroUsdc)}` : "—"}
+                  {m.maxPer10Min !== undefined ? `$${microUsdcToUsdc(m.maxPer10Min)}` : "—"}
                 </td>
                 <td className="py-3 px-4 text-zinc-300 text-right whitespace-nowrap">
-                  {m.maxPerDayMicroUsdc !== undefined ? `$${microUsdcToUsdc(m.maxPerDayMicroUsdc)}` : "—"}
+                  {m.maxPerDay !== undefined ? `$${microUsdcToUsdc(m.maxPerDay)}` : "—"}
                 </td>
                 <td className="py-3 px-4 text-zinc-400 whitespace-nowrap">
                   {formatExpiry(m.expiresAt)}
