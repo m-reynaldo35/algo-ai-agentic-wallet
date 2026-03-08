@@ -612,11 +612,11 @@ export async function revokeMandate(
     throw new Error("ownerWalletId mismatch");
   }
 
-  // Load mandate
-  const raw = await redis.get(`${MANDATE_PREFIX}${agentId}:${mandateId}`) as string | null;
+  // Load mandate — get() auto-parses JSON so raw may already be an object
+  const raw = await redis.get(`${MANDATE_PREFIX}${agentId}:${mandateId}`);
   if (!raw) throw new Error(`Mandate not found: ${mandateId}`);
   let mandate: Mandate;
-  try { mandate = JSON.parse(raw) as Mandate; }
+  try { mandate = (typeof raw === "string" ? JSON.parse(raw) : raw) as Mandate; }
   catch { throw new Error("Corrupt mandate record"); }
 
   if (!verifyMandateHmac(mandate)) {
@@ -730,16 +730,15 @@ export async function listMandates(agentId: string): Promise<Omit<Mandate, "hmac
   if (!mandateIds.length) return [];
 
   const raws = await Promise.all(
-    mandateIds.map((id) =>
-      redis.get(`${MANDATE_PREFIX}${agentId}:${id}`) as Promise<string | null>,
-    ),
+    mandateIds.map((id) => redis.get(`${MANDATE_PREFIX}${agentId}:${id}`)),
   );
 
   const results: Omit<Mandate, "hmac">[] = [];
   for (const raw of raws) {
     if (!raw) continue;
     try {
-      const m = JSON.parse(raw) as Mandate;
+      // get() auto-parses JSON — raw may already be an object
+      const m = (typeof raw === "string" ? JSON.parse(raw) : raw) as Mandate;
       if (m.status === "revoked") continue;
       if (m.expiresAt && m.expiresAt < now) continue;
       const { hmac: _hmac, ...pub } = m;
@@ -843,9 +842,10 @@ export async function loadRawMandate(
 ): Promise<Mandate | null> {
   const redis = getRedis();
   if (!redis) return null;
-  const raw = await redis.get(`${MANDATE_PREFIX}${agentId}:${mandateId}`) as string | null;
+  // get() auto-parses JSON — raw may already be an object
+  const raw = await redis.get(`${MANDATE_PREFIX}${agentId}:${mandateId}`);
   if (!raw) return null;
-  try { return JSON.parse(raw) as Mandate; }
+  try { return (typeof raw === "string" ? JSON.parse(raw) : raw) as Mandate; }
   catch { return null; }
 }
 
