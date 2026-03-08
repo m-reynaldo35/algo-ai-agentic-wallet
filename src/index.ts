@@ -1668,7 +1668,12 @@ app.post("/api/agents/:agentId/mandate/challenge", requirePortalAuth, async (req
   const agentId = String(req.params.agentId || "");
   try {
     const challenge = await issueMandateChallenge(agentId);
-    res.json({ agentId, challenge });
+    // Also return allowCredentials so the browser pre-selects the registered passkey.
+    const agent = await getAgent(agentId);
+    const allowCredentials = agent?.webauthnCredentialId
+      ? [{ id: agent.webauthnCredentialId, type: "public-key" as const }]
+      : [];
+    res.json({ agentId, challenge, allowCredentials });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: msg });
@@ -1680,9 +1685,17 @@ app.post("/api/agents/:agentId/mandate/create", requirePortalAuth, async (req, r
 
   const {
     ownerWalletId, maxPerTx, maxPer10Min, maxPerDay,
-    allowedRecipients, recurring, expiresAt,
+    allowedRecipients, recurring,
     webauthnAssertion, liquidAuthSessionId,
   } = req.body;
+
+  // Coerce expiresAt to a finite integer — guards against NaN/Infinity slipping
+  // through (NaN is not caught by ??, so must be validated explicitly).
+  const rawExpiry = req.body.expiresAt;
+  const expiresAt: number | undefined =
+    rawExpiry !== undefined && rawExpiry !== null
+      ? (Number.isFinite(Number(rawExpiry)) ? Number(rawExpiry) : undefined)
+      : undefined;
 
   if (!ownerWalletId || (!webauthnAssertion && !liquidAuthSessionId)) {
     res.status(400).json({

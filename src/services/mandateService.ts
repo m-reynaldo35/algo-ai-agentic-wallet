@@ -520,17 +520,27 @@ export async function createMandate(
 
   const setOpts = ttlSeconds && ttlSeconds > 0 ? { ex: ttlSeconds } : {};
 
-  await Promise.all([
-    redis.set(
+  // Guard: NaN is NOT caught by ??, so validate explicitly before ZADD.
+  const rawScore = input.expiresAt ?? 9_999_999_999_999;
+  const zaddScore = Number.isFinite(rawScore) ? rawScore : 9_999_999_999_999;
+  console.log(`[mandate] storing mandateId=${mandateId} zaddScore=${zaddScore} (type=${typeof zaddScore})`);
+  try {
+    await redis.set(
       `${MANDATE_PREFIX}${agentId}:${mandateId}`,
       JSON.stringify(mandate),
       setOpts,
-    ),
-    redis.zadd(
+    );
+  } catch (err) {
+    throw new Error(`mandate-set failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    await redis.zadd(
       `${MANDATE_IDX_PREFIX}${agentId}`,
-      { score: input.expiresAt ?? 9_999_999_999_999, member: mandateId },
-    ),
-  ]);
+      { score: zaddScore, member: mandateId },
+    );
+  } catch (err) {
+    throw new Error(`mandate-zadd failed (score=${zaddScore}): ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // Recurring schedule
   if (recurring) {
