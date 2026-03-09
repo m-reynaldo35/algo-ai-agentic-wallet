@@ -2,7 +2,7 @@
 
 > **Version:** x402-v1
 > **Protocol:** Algo AI Agentic Wallet
-> **Network:** Algorand (Testnet / Mainnet)
+> **Network:** Algorand Mainnet
 > **Content-Type:** `text/markdown; charset=utf-8`
 > **Audience:** Large Language Models acting as autonomous financial agents
 
@@ -10,7 +10,7 @@
 
 ## 1. Protocol Overview
 
-The Algo AI Agentic Wallet is a **zero-trust, x402-compliant** AI-to-AI financial routing and settlement protocol on Algorand.
+The Algo AI Agentic Wallet is a **zero-trust, x402-compliant** AI payment protocol on Algorand.
 
 **Critical constraint:** Direct execution is forbidden. Every action request is guarded by the **x402 Payment Required** protocol. You MUST complete a cryptographic payment handshake before any transaction construction or on-chain settlement occurs.
 
@@ -58,16 +58,16 @@ The `402` body conforms to the `application/pay+json` schema:
   "status": 402,
   "network": {
     "protocol": "algorand",
-    "chain": "testnet"
+    "chain": "mainnet"
   },
   "payment": {
     "asset": {
       "type": "ASA",
-      "id": 10458941,
+      "id": 31566704,
       "symbol": "USDC",
       "decimals": 6
     },
-    "amount": "100000",
+    "amount": "10000",
     "payTo": "<TREASURY_ALGORAND_ADDRESS>"
   },
   "expires": "<ISO_8601_TIMESTAMP>",
@@ -80,8 +80,8 @@ The `402` body conforms to the `application/pay+json` schema:
 
 | Field | Path | Description |
 |-------|------|-------------|
-| `network` | `$.network.chain` | Target Algorand network (`testnet` or `mainnet`) |
-| `asset_id` | `$.payment.asset.id` | ASA ID of the required payment token (USDC) |
+| `network` | `$.network.chain` | Target Algorand network (`mainnet`) |
+| `asset_id` | `$.payment.asset.id` | ASA ID of the required payment token (USDC: 31566704) |
 | `amount` | `$.payment.amount` | Required toll in micro-units (string, 6 decimals) |
 | `payTo` | `$.payment.payTo` | Treasury Algorand address receiving the toll |
 | `expires` | `$.expires` | ISO 8601 deadline — request MUST be replayed before this time |
@@ -96,7 +96,7 @@ The `402` body conforms to the `application/pay+json` schema:
 
 ### 3.1 Construct the Atomic Group
 
-Build a **two-transaction atomic group** on Algorand:
+Build a **single-transaction atomic group** on Algorand:
 
 **Transaction 0 — x402 Toll (ASA Transfer):**
 
@@ -109,22 +109,18 @@ Build a **two-transaction atomic group** on Algorand:
 | Asset ID | `asset_id` from the 402 response |
 | Note | The `memo` string from the 402 response |
 
-**Transaction 1 — Application Call (Bridge / Action):**
-
-The second transaction depends on your intent. For cross-chain NTT bridging via Folks Finance, construct an application call with ABI arguments. IF you do not require bridging, you may omit this transaction and submit a single-transaction group.
-
-**Assign the group ID** to all transactions using `algosdk.assignGroupID()`. This produces a SHA-512/256 hash binding them atomically.
+**Assign the group ID** using `algosdk.assignGroupID([tollTxn])`. This produces a SHA-512/256 hash binding the group.
 
 ### 3.2 Sign and Encode
 
-1. Sign **every transaction** in the group with your Ed25519 private key (the key corresponding to `senderAddress`).
+1. Sign the transaction with your Ed25519 private key (the key corresponding to `senderAddress`).
 2. Produce an Ed25519 **signature over the raw `groupId` bytes**: `algosdk.signBytes(groupIdBytes, secretKey)`.
 3. Construct the proof payload:
 
 ```json
 {
   "groupId": "<BASE64_GROUP_ID_BYTES>",
-  "transactions": ["<BASE64_SIGNED_TXN_0>", "<BASE64_SIGNED_TXN_1>"],
+  "transactions": ["<BASE64_SIGNED_TXN_0>"],
   "senderAddr": "<YOUR_ALGORAND_ADDRESS>",
   "signature": "<BASE64_ED25519_SIGNATURE_OVER_GROUP_ID>"
 }
@@ -143,9 +139,7 @@ X-SLIPPAGE-BIPS: 50
 
 {
   "senderAddress": "<YOUR_ALGORAND_ADDRESS>",
-  "amount": 100000,
-  "destinationChain": "ethereum",
-  "destinationRecipient": "<0x_ETH_ADDRESS>"
+  "amount": 10000
 }
 ```
 
@@ -161,9 +155,7 @@ X-SLIPPAGE-BIPS: 50
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
 | `senderAddress` | YES | string | Your Algorand address |
-| `amount` | NO | integer | Micro-USDC amount (defaults to protocol toll) |
-| `destinationChain` | NO | string | Wormhole target chain (default: `"ethereum"`) |
-| `destinationRecipient` | NO | string | Recipient on the destination chain |
+| `amount` | NO | integer | Micro-USDC amount (default: 10000 = $0.01) |
 
 **Expected response:** `HTTP 200 OK`
 
@@ -174,26 +166,24 @@ X-SLIPPAGE-BIPS: 50
     "sandboxId": "vk-sandbox-<UUID>",
     "sealedAt": "<ISO_8601>",
     "atomicGroup": {
-      "transactions": ["<BASE64_UNSIGNED_TXN>", "..."],
+      "transactions": ["<BASE64_UNSIGNED_TXN>"],
       "groupId": "<BASE64_GROUP_HASH>",
-      "manifest": ["[0] x402 Toll: 100000 microUSDC", "[1] NTT Bridge: ..."],
-      "txnCount": 2
+      "manifest": ["[0] x402 Toll: 10000 microUSDC"],
+      "txnCount": 1
     },
     "routing": {
       "requiredSigner": "<SENDER_ADDRESS>",
       "tollReceiver": "<TREASURY_ADDRESS>",
-      "bridgeDestination": "ethereum",
-      "network": "algorand-testnet"
+      "network": "algorand-mainnet"
     },
     "slippage": {
       "toleranceBips": 50,
-      "expectedAmount": "100000",
-      "minAmountOut": "99500"
+      "expectedAmount": "10000",
+      "minAmountOut": "9950"
     }
   },
   "instructions": [
-    "1. POST this export to /api/execute with your agentId to settle on-chain.",
-    "2. Or route atomicGroup.transactions[] to Rocca Wallet manually."
+    "1. POST this export to /api/execute with your agentId to settle on-chain."
   ]
 }
 ```
@@ -210,7 +200,7 @@ X-SLIPPAGE-BIPS: 50
 
 ## 4. Execution Handoff — On-Chain Settlement
 
-The `SandboxExport` returned from Step 3.3 is **inert** — it contains unsigned transaction blobs sealed inside a VibeKit sandbox. No on-chain activity has occurred yet.
+The `SandboxExport` returned from Step 3.3 is **inert** — it contains unsigned transaction blobs sealed inside a sandbox. No on-chain activity has occurred yet.
 
 To trigger Algorand atomic settlement, forward the export to the execution pipeline.
 
@@ -251,7 +241,7 @@ Validation Gatekeeper → Liquid Auth (FIDO2) → Rocca Wallet (Sign) → Algora
     "confirmedRound": 12345,
     "txnId": "<ALGORAND_TXN_ID>",
     "groupId": "<BASE64_GROUP_ID>",
-    "txnCount": 2,
+    "txnCount": 1,
     "settledAt": "<ISO_8601>"
   }
 }
@@ -290,7 +280,7 @@ Agent                         x402 Server                    Algorand
   │◄─── 402 Payment Required ──────┤                            │
   │     (application/pay+json)     │                            │
   │                                │                            │
-  │  [Build atomic group]          │                            │
+  │  [Build toll transaction]      │                            │
   │  [Sign groupId with Ed25519]   │                            │
   │  [Encode X-PAYMENT header]     │                            │
   │                                │                            │
@@ -337,8 +327,7 @@ interface SandboxExport {
   routing: {
     requiredSigner: string;    // Algorand address that must sign
     tollReceiver: string;      // Treasury address
-    bridgeDestination: string; // "ethereum", "solana", etc.
-    network: string;           // "algorand-testnet" or "algorand-mainnet"
+    network: string;           // "algorand-mainnet"
   };
   slippage: {
     toleranceBips: number;     // 50 = 0.5%
@@ -367,16 +356,16 @@ interface PayJsonResponse {
   status: 402;
   network: {
     protocol: "algorand";
-    chain: "testnet" | "mainnet";
+    chain: "mainnet";
   };
   payment: {
     asset: {
       type: "ASA";
-      id: number;              // Algorand Standard Asset ID
+      id: 31566704;            // USDC on Algorand mainnet
       symbol: "USDC";
       decimals: 6;
     };
-    amount: string;            // Micro-units as string
+    amount: string;            // Micro-units as string (default: "10000" = $0.01)
     payTo: string;             // Treasury Algorand address
   };
   expires: string;             // ISO 8601 — 5-minute validity window
@@ -392,4 +381,4 @@ interface PayJsonResponse {
 - **Slippage:** `X-SLIPPAGE-BIPS` must be an integer between `0` and `500`. Values above `500` are rejected.
 - **Atomicity:** You cannot submit individual transactions. The group is all-or-nothing.
 - **Idempotency:** Each `sandboxExport` has a unique `sandboxId`. Do not resubmit a settled export.
-- **Network:** Always verify `$.network.chain` matches your configured Algorand node.
+- **Network:** All settlements execute on Algorand mainnet. USDC ASA ID: 31566704.

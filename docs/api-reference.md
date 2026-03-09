@@ -1,6 +1,6 @@
 # x402 AI Agentic Wallet — Public API Reference
 
-**Base URL:** `https://ai-agentic-wallet.com`
+**Base URL:** `https://api.ai-agentic-wallet.com`
 **Protocol:** x402-v1 on Algorand mainnet
 **USDC Asset ID:** 31566704 (mainnet)
 
@@ -133,20 +133,16 @@ endpoint directly without the SDK.
 
 ```json
 {
-  "senderAddress":        "ABCXYZ7MOPQ...",
-  "amount":               1000000,
-  "destinationChain":     "ethereum",
-  "destinationRecipient": "0xYourEthereumAddress"
+  "senderAddress": "ABCXYZ7MOPQ...",
+  "amount":        10000
 }
 ```
 
-| Field                  | Type   | Required | Notes                                    |
-|------------------------|--------|----------|------------------------------------------|
-| `senderAddress`        | string | yes      | Agent's Algorand address (58-char Base32)|
-| `amount`               | number | no       | µUSDC; omit to use server default toll   |
-| `destinationChain`     | string | no       | `ethereum` `solana` `base` `algorand`    |
-| `destinationRecipient` | string | no       | Address on destination chain             |
-| `X-SLIPPAGE-BIPS`      | header | no       | Integer; default 50 (0.5%), max 500      |
+| Field             | Type   | Required | Notes                                    |
+|-------------------|--------|----------|------------------------------------------|
+| `senderAddress`   | string | yes      | Agent's Algorand address (58-char Base32)|
+| `amount`          | number | no       | µUSDC; omit to use server default (10000)|
+| `X-SLIPPAGE-BIPS` | header | no       | Integer; default 50 (0.5%), max 500      |
 
 #### Response `200 OK`
 
@@ -157,21 +153,20 @@ endpoint directly without the SDK.
     "sandboxId":   "uuid-v4",
     "sealedAt":    "2024-01-01T00:00:00.000Z",
     "atomicGroup": {
-      "transactions": ["base64-encoded-txn", "..."],
+      "transactions": ["base64-encoded-txn"],
       "groupId":      "base64-group-id",
-      "manifest":     ["Toll: 1.000 USDC → treasury", "Bridge: Algorand → Ethereum"],
-      "txnCount":     2
+      "manifest":     ["[0] x402 Toll: 10000 microUSDC"],
+      "txnCount":     1
     },
     "routing": {
-      "requiredSigner":    "ABCXYZ7MOPQ...",
-      "tollReceiver":      "TREASURY_ADDR...",
-      "bridgeDestination": "0xYourEthereumAddress",
-      "network":           "algorand-mainnet"
+      "requiredSigner": "ABCXYZ7MOPQ...",
+      "tollReceiver":   "TREASURY_ADDR...",
+      "network":        "algorand-mainnet"
     },
     "slippage": {
       "toleranceBips": 50,
-      "expectedAmount": "1000000",
-      "minAmountOut":   "995000"
+      "expectedAmount": "10000",
+      "minAmountOut":   "9950"
     }
   },
   "instructions": ["1. POST this export to /api/execute with your agentId."]
@@ -187,7 +182,7 @@ endpoint directly without the SDK.
   "network": { "protocol": "algorand", "chain": "mainnet" },
   "payment": {
     "asset":  { "type": "ASA", "id": 31566704, "symbol": "USDC", "decimals": 6 },
-    "amount": "1000000",
+    "amount": "10000",
     "payTo":  "TREASURY_ADDR..."
   },
   "expires": "2024-01-01T00:05:00.000Z",
@@ -243,7 +238,7 @@ All 429 and 503 responses include `Retry-After: <seconds>`.
     "confirmedRound": 38291847,
     "txnId":          "TXABC123...",
     "groupId":        "GRPABC123...",
-    "txnCount":       2,
+    "txnCount":       1,
     "settledAt":      "2024-01-01T00:00:01.123Z"
   }
 }
@@ -345,7 +340,7 @@ Returns the server's rate limit and network configuration.
 ```json
 {
   "network":    "algorand-mainnet",
-  "serverUrl":  "https://ai-agentic-wallet.com",
+  "serverUrl":  "https://api.ai-agentic-wallet.com",
   "rateLimits": {
     "ipMax":          30,
     "ipWindow":       "10s",

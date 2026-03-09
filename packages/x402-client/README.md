@@ -16,7 +16,7 @@ npm install @algo-wallet/x402-client algosdk
 import { AlgoAgentClient } from "@algo-wallet/x402-client";
 
 const client = new AlgoAgentClient({
-  baseUrl: "https://your-x402-server.vercel.app",
+  baseUrl: "https://api.ai-agentic-wallet.com",
   privateKey: yourAlgorandSecretKey, // 64-byte Uint8Array
 });
 
@@ -61,9 +61,7 @@ Full handshake → settlement in one call.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `senderAddress` | `string` | Yes | Your Algorand address |
-| `amount` | `number` | No | Micro-USDC amount |
-| `destinationChain` | `string` | No | Wormhole target (default: `"ethereum"`) |
-| `destinationRecipient` | `string` | No | Recipient on destination chain |
+| `amount` | `number` | No | Micro-USDC amount (default: 10000 = $0.01) |
 
 ### `client.requestSandboxExport(params): Promise<AgentActionResponse>`
 

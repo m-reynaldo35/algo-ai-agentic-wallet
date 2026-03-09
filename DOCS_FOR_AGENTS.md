@@ -20,8 +20,21 @@ POST /v1/api/execute       →  HTTP 200  →  settlement confirmed on-chain
 
 ## 1. Install the SDK
 
+> **Note:** The npm packages are pending initial publish. Until published, clone the repo and use the local packages.
+> Once published, installation will be:
+
 ```bash
+# TypeScript / Node.js SDK (pending publish)
 npm install @algo-wallet/x402-client
+
+# MCP server for Claude Desktop / Claude Code (pending publish)
+npx @algo-wallet/x402-mcp
+
+# Python SDK (pending publish to PyPI)
+pip install algo-x402
+
+# Developer CLI (pending publish)
+npx @algo-wallet/x402-cli health
 ```
 
 ---
@@ -203,7 +216,7 @@ honda_v1|success|2026-02-19T12:34:56.789Z|algorand|10000musd
 ```typescript
 // Query the Algorand indexer for all our confirmed settlements
 const auditUrl = "https://mainnet-idx.algonode.cloud/v2/accounts/" +
-  "E46PHV7THPP4MAIE6YX4FALPZTPDDN56SRHZBDRVCO6NZYOGNXYTQ6FHQE" +
+  "7PGFB4JI3GJGLYVUZ5666PI5UIXSNEC5TLM44UP2N4XL7WYA2OV2Y4YOUA" +
   "/transactions?note-prefix=aG9uZGFfdjE%3D&limit=100";
 
 const response = await fetch(auditUrl);
