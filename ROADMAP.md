@@ -28,18 +28,21 @@ Claude discovers tool → pays → gets data → answers user
 
 ---
 
-## Current State (after Sprint 12 + dashboard fixes)
+## Current State (after Sprint 13 + CLI)
 
 - Railway backend live: `https://api.ai-agentic-wallet.com`
 - Vercel frontend live: `https://ai-agentic-wallet.com`
 - Redis internal TCP active — avg enqueue ~1,250ms
 - Auth-addr cache (5-min TTL) eliminates algod round-trips
 - Nodely failover active (primary → fallback + recovery probe)
-- SDK `@algo-wallet/x402-client@0.2.0` published to npm
-- MCP server `@algo-wallet/x402-mcp@0.1.0` built (not yet published)
-- Python SDK `algo-x402@0.1.0` built (not yet published)
+- SDK `@algo-wallet/x402-client@0.2.0` — built, not yet published to npm
+- MCP server `@algo-wallet/x402-mcp@0.1.0` — built, not yet published
+- Python SDK `algo-x402@0.1.0` — built, not yet published
+- CLI `@algo-wallet/x402-cli@0.1.0` — built, not yet published
 - Gas station code complete — **awaiting treasury wallet + env var to activate**
 - Customer dashboard: mandates inline, revoked counts, wallet QR sidebar, agent status card
+- Admin portal: all pages built (dashboard, treasury, agents, security, logs, settings)
+- Treasury page: live ALGO/USDC balances + gas station status via `/api/portal/treasury-status`
 - `tsc --noEmit` passes clean on backend + portal
 
 ---
@@ -50,23 +53,24 @@ Claude discovers tool → pays → gets data → answers user
 
 ### 1.1 New Treasury + Rocca Signing Wallets
 
-- [ ] Generate new treasury wallet (cold key ceremony — air-gapped if possible)
-- [ ] Generate new Rocca signing wallet
-- [ ] Store mnemonics in password manager or hardware key vault (1Password / Bitwarden)
-- [ ] Set new `X402_PAY_TO_ADDRESS` in Railway env vars
-- [ ] Set new `ALGO_TREASURY_MNEMONIC` and `ALGO_SIGNER_ADDRESS` in Railway env vars
-- [ ] Rotate `ROCCA_API_KEY`, `SIGNING_SERVICE_API_KEY`, `PORTAL_API_SECRET`,
-      `APPROVAL_TOKEN_SECRET`, `HALT_OVERRIDE_KEY` — generate all fresh with `openssl rand -hex 32`
-- [ ] Opt new treasury into USDC (ASA 31566704)
-- [ ] Fund new signer wallet with ≥ 200 ALGO
-- [ ] Re-register the Rocca cohort against the new signer address
-- [ ] Invalidate/delete all test agent registry entries from Redis
-- [ ] Delete test Redis keys: `x402:*`, `x402:guardian:*`, `x402:treasury:*`
-- [ ] Reset the cross-region treasury hash key so new address wins the NX race
+- [x] Generate new treasury wallet
+- [x] Generate new signer wallet
+- [x] Generate new cold wallet
+- [x] Store mnemonics in password manager
+- [x] Set new `X402_PAY_TO_ADDRESS` in Railway env vars
+- [x] Set new `ALGO_TREASURY_MNEMONIC` and `ALGO_SIGNER_ADDRESS` in Railway shared vars
+- [x] Rotate `ROCCA_API_KEY`, `PORTAL_API_SECRET`, `APPROVAL_TOKEN_SECRET`, `HALT_OVERRIDE_KEY`, `IP_HASH_SALT`
+- [x] Opt treasury into USDC (ASA 31566704)
+- [x] Opt cold wallet into USDC (ASA 31566704)
+- [x] Fund signer wallet with 200 ALGO
+- [x] Re-register the Rocca cohort against the new signer address
+- [x] Wipe test Redis data: `REDIS_URL="..." npm run reset-test-data`
+- [x] Redeploy `algo-ai-wallet` on Railway after Redis wipe (healthcheck passing, service healthy)
+- [x] Delete the failed duplicate service `algo-ai-agentic-wallet` from Railway
 
 ### 1.2 Admin Wallet Whitelist
 
-- [ ] Set `ADMIN_WALLET_ADDRESSES=<your-algo-address>` in Railway env vars
+- [x] Set `ADMIN_WALLET_ADDRESSES=<your-algo-address>` on Vercel developer portal env vars
 - [ ] Verify: scan QR at `/login` with your wallet → redirects to `/dashboard`
 - [ ] Verify: a different wallet gets 403 "not on the admin whitelist"
 
@@ -75,10 +79,10 @@ Claude discovers tool → pays → gets data → answers user
 - [x] Guardian monitors `ALGO_SIGNER_ADDRESS` balance on every cycle
 - [x] Low-balance alert fires when balance < `SIGNER_LOW_ALERT_ALGO`
 - [x] Auth-addr rekey detection fires CRITICAL alert + halt
+- [x] Deploy guardian to Railway as a separate worker service
+- [x] Set `CHECK_INTERVAL_S=10`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` in Railway guardian vars
+- [x] Verify Telegram alerts fire end-to-end: `npm run guardian:test`
 - [ ] Verify treasury USDC sweep fires correctly
-- [ ] Verify Telegram alerts fire end-to-end: `npm run guardian:test`
-- [ ] Deploy guardian to Railway as a separate worker service
-- [ ] Set `CHECK_INTERVAL_S=10` in Railway guardian env vars
 
 ---
 
@@ -96,7 +100,7 @@ Claude discovers tool → pays → gets data → answers user
 - [x] mTLS active
 - [x] `DEV_SIGNER_ALLOWED` not set in Railway
 - [x] Error responses never leak stack traces
-- [ ] Telegram alert channel tested end-to-end
+- [x] Telegram alert channel tested end-to-end
 
 ### 6.2 Performance Audit
 - [x] p95 enqueue 1527ms (< 3s target)
@@ -108,9 +112,9 @@ Claude discovers tool → pays → gets data → answers user
 - [x] `/health` returns full subsystem status
 - [x] Guardian `railway.guardian.json` fixed — restart policy `ALWAYS`
 - [x] Runbook written — `docs/runbook.md`
-- [ ] Railway service restart policy set to `always` on main API
+- [x] Railway service restart policy set to `always` on main API
 - [ ] Railway deploy notifications wired (Slack or email on fail)
-- [ ] Cold wallet opted into USDC and ready to receive sweeps
+- [x] Cold wallet opted into USDC and ready to receive sweeps (UI3LOTUJ...)
 
 ---
 
@@ -121,9 +125,9 @@ Type:  CNAME   Name: api      Value: d2q6lur4.up.railway.app
 Type:  TXT     Name: _vercel  Value: qnLF2ZCPKu
 ```
 
-- [ ] `dig TXT _vercel.ai-agentic-wallet.com @8.8.8.8` returns `"qnLF2ZCPKu"`
-- [ ] `curl -s https://ai-agentic-wallet.com` returns HTML
-- [ ] `curl -s https://api.ai-agentic-wallet.com/health` returns `{"status":"ok",...}`
+- [x] `dig TXT _vercel.ai-agentic-wallet.com @8.8.8.8` returns `"qnLF2ZCPKu"`
+- [x] `curl -s https://ai-agentic-wallet.com` returns HTML
+- [x] `curl -s https://api.ai-agentic-wallet.com/health` returns `{"status":"ok",...}`
 
 Useful IDs:
 - Vercel team: `team_8cItrO08VMrtjRiV6OSkOvPB`
@@ -155,45 +159,56 @@ Useful IDs:
 
 ---
 
-## Sprint 13 — Admin Portal *(next)*
+## Sprint 13 — Admin Portal ✅
 
 **Goal:** Operational control panel for the operator. Accessible only to admin-authenticated users.
 
-- [ ] **System Control** (`/dashboard`):
+- [x] **System Control** (`/dashboard`):
       Live halt status banner, Halt/Unhalt button, health grid (Redis, algod, indexer,
-      signing service, guardian), active agent count, today's settlement volume
+      signing service), telemetry metrics, settlement volume chart
 
-- [ ] **Treasury Monitor** (`/treasury`):
-      ALGO + USDC live balances, daily outflow vs cap with progress bar,
-      gas station status (enabled/last cycle/top-ups today), sweep status
+- [x] **Treasury Monitor** (`/treasury`):
+      ALGO + USDC live balances from on-chain, gas station status (enabled/configured/top-up
+      amount), daily outflow guard (velocity halts, cap breaches, mass drain, circuit breaker),
+      settlement volume cards + daily breakdown table
 
-- [ ] **Agent Management** (`/agents`):
-      Table of all agents (ID, address, status, registered date),
-      Suspend/Unsuspend, view mandate + outflow history, search + filter
+- [x] **Agent Management** (`/agents`):
+      Table of all agents (ID, address, status, cohort, registered date),
+      Suspend/Unsuspend, search by agent ID or address, active/suspended filter
 
-- [ ] **Security Events** (`/security`):
+- [x] **Security Events** (`/security`):
       Real-time feed: DRAIN_VELOCITY_HALT, SIGNER_KEY_COMPROMISE,
-      RECIPIENT_ANOMALY, DAILY_CAP_BREACH — severity badges, acknowledge/dismiss
+      RECIPIENT_ANOMALY, DAILY_CAP_BREACH — severity badges, mass drain clear dialog
+      with HALT_OVERRIDE_KEY, 24h event counts grid, top alerted agents
 
-- [ ] **Sidebar**: Dashboard | Treasury | Agents | Logs | Security | Settings
+- [x] **Event Logs** (`/logs`):
+      SSE live stream with polling fallback, filter by type, search by agent ID, pause/resume
+
+- [x] **Settings** (`/settings`):
+      Alert thresholds, notification toggles (localStorage), rate limits table, config info
+
+- [x] **Sidebar**: Dashboard | Treasury | Agents | Logs | Security | Settings
 
 ---
 
-## Sprint 14 — CLI Tool *(planned)*
+## Sprint 14 — CLI Tool ✅
 
 ```bash
-npx @algo-wallet/x402-cli balance --agent my-agent-001
+npx @algo-wallet/x402-cli health
+npx @algo-wallet/x402-cli balance    --agent my-agent-001
 npx @algo-wallet/x402-cli mandate list --agent my-agent-001
-npx @algo-wallet/x402-cli mandate create --agent my-agent-001 --max-per-tx 1.00 --max-per-day 50.00
-npx @algo-wallet/x402-cli mandate revoke --agent my-agent-001 --id mandate-abc
-npx @algo-wallet/x402-cli history --agent my-agent-001 --limit 20
-npx @algo-wallet/x402-cli pay --agent my-agent-001 --amount 0.01
+npx @algo-wallet/x402-cli mandate list --agent my-agent-001 --all   # includes revoked
+npx @algo-wallet/x402-cli agents list
+npx @algo-wallet/x402-cli history   --agent my-agent-001 --limit 20
 ```
 
-- [ ] `packages/x402-cli/` — Node.js CLI using `commander`
-- [ ] Auth via `ALGO_MNEMONIC` env var + `X402_AGENT_ID`
-- [ ] Mandate actions: Liquid Auth QR as ASCII in terminal, or `--webauthn` flag
-- [ ] Publish: `@algo-wallet/x402-cli`
+Env vars required:
+- `X402_PORTAL_KEY` — Portal API key (from /dashboard → API Keys)
+- `X402_API_URL`    — optional override (default: https://api.ai-agentic-wallet.com)
+- `X402_NETWORK`    — optional: `testnet` (default) or `mainnet`
+
+- [x] `packages/x402-cli/` — Node.js CLI using `commander`
+- [ ] Publish: `@algo-wallet/x402-cli` to npm
 
 ---
 
@@ -206,6 +221,93 @@ npx @algo-wallet/x402-cli pay --agent my-agent-001 --amount 0.01
 
 ---
 
+## Sprint L — Liquid Auth Native Integration *(current)*
+
+**Goal:** Replace the custom `algorand-liquid-auth` JSON QR protocol (which Pera does not
+understand) with the official AVM Labs Liquid Auth open-source stack. Pera wallet has
+native support for this protocol — no WalletConnect dependency required.
+
+**Reference:** https://github.com/algorandfoundation/liquid-auth
+
+### Architecture
+
+```
+Browser (portal)          Signal Server (Railway)         Pera Wallet (mobile)
+      │                           │                               │
+      ├─ create session ─────────►│                               │
+      │◄─ sessionId + QR URL ─────┤                               │
+      │                           │◄─── scan QR, connect ─────────┤
+      │  [poll for verified]       │◄─── sign challenge ───────────┤
+      │◄─ status: verified ────────┤                               │
+      │                           │                               │
+      ├─ POST /api/*/liquid-consume (our backend, verifies via signal server)
+      │◄─ address + admin JWT
+```
+
+### L.1 — Signal Server Setup
+
+- [ ] Review `https://github.com/algorandfoundation/liquid-auth` architecture (NestJS + Redis)
+- [ ] Fork or clone liquid-auth signal server into `packages/liquid-auth-server/`
+- [ ] Add `railway.liquid-auth.json` config (healthcheck `/health`, restart `ALWAYS`)
+- [ ] Create new Railway service `liquid-auth-signal` linked to this path
+- [ ] Set env vars on signal server: `REDIS_URL` (shared Redis), `PORT`, `CORS_ORIGIN`
+- [ ] Verify signal server health: `curl https://liquid-auth.api.ai-agentic-wallet.com/health`
+- [ ] Add `LIQUID_AUTH_SERVER_URL=https://liquid-auth.api.ai-agentic-wallet.com` to all Railway services
+- [ ] Add custom domain `liquid-auth.api.ai-agentic-wallet.com` → signal server on Railway
+
+### L.2 — Admin Login (`/login`)
+
+- [ ] Install `@algorandfoundation/liquid-auth-client-js` in `apps/developer-portal`
+- [ ] Rewrite `LiquidAuthPanel` in `src/app/login/page.tsx`:
+      - Use SDK to create session → get QR URL from signal server
+      - Render QR from URL string (not JSON blob) using existing `qrcode` canvas
+      - Poll signal server (or use SDK callback) for `verified` status
+      - On verified: POST sessionId to `/api/auth/login` → issue admin JWT → redirect
+- [ ] Update backend `src/auth/adminAuth.ts`:
+      - `issueAdminLiquidChallenge()` → proxy session creation to signal server
+      - `submitAdminLiquidSignature()` → no longer needed (signal server handles signing)
+      - `consumeAdminLiquidSession()` → query signal server for verified address
+- [ ] Update `/api/admin/auth/liquid-*` routes in `src/index.ts` to match new flow
+- [ ] Test: scan QR at `ai-agentic-wallet.com/login` with Pera → signs → lands on `/dashboard`
+- [ ] Test: wrong wallet address → 403 "not on admin whitelist"
+
+### L.3 — Customer Login (`/app/login`)
+
+- [ ] Rewrite `LiquidAuthPanel` in `src/app/app/login/page.tsx` (same SDK, same pattern)
+- [ ] Update backend `src/auth/humanAuth.ts`:
+      - `issueAlgorandChallenge()` → proxy to signal server
+      - `submitAlgorandSignature()` → no longer needed
+      - `consumeVerifiedSession()` → query signal server for verified address
+- [ ] Update `/api/agents/:agentId/auth/liquid-*` routes in `src/index.ts`
+- [ ] Test: customer wallet scan → signs → lands on `/app/dashboard`
+
+### L.4 — Mandate Operations
+
+- [ ] Rewrite `LiquidAuthQRModal.tsx` in `apps/developer-portal/src/components/mandates/`:
+      - Replace canvas QR of JSON payload with URL-based QR from signal server
+      - Replace polling loop with SDK status callback
+- [ ] Test mandate create: QR scan → sign → mandate active in dashboard
+- [ ] Test mandate revoke: QR scan → sign → mandate revoked in dashboard
+
+### L.5 — Cleanup
+
+- [ ] Remove `qrcode` npm package from `apps/developer-portal` (replaced by URL QR)
+- [ ] Delete dead code: `submitAdminLiquidSignature`, `submitAlgorandSignature` from backend
+- [ ] Remove `LIQUID_AUTH_SERVER_URL=` placeholder from `.env` (was empty, now required)
+- [ ] Update `public/skill.md` and `DOCS_FOR_AGENTS.md` auth section to reference Liquid Auth
+- [ ] `tsc --noEmit` passes clean on backend + portal
+
+### L.6 — E2E Verification
+
+- [ ] Admin login: 3 consecutive QR → Pera scan → sign → `/dashboard` successes
+- [ ] Admin login: wrong wallet → 403 confirmed
+- [ ] Customer login: 3 consecutive successes
+- [ ] Mandate create: end-to-end with real Pera scan
+- [ ] Mandate revoke: end-to-end with real Pera scan
+- [ ] WebAuthn path still works alongside Liquid Auth (regression check)
+
+---
+
 ## Launch Gate Checklist
 
 All items below must be `[x]` before going live.
@@ -214,7 +316,7 @@ All items below must be `[x]` before going live.
 - [ ] `ADMIN_WALLET_ADDRESSES` set — admin portal locked to your Algorand wallet
 - [x] Sprint 2 complete — agent creation wizard live
 - [x] Sprint 3 complete — landing page live
-- [x] Sprint 4 complete — admin dashboard uses Liquid Auth
+- [ ] Sprint L complete — Liquid Auth native integration (Pera QR sign-in working)
 - [x] Sprint 5 complete — burst, sustained, velocity, failover, Redis failure tests pass
 - [ ] Sprint 6 complete — security audit clean, Telegram alerts verified
 - [x] Sprint 8 complete — USDC-native onboarding + gas station live
@@ -222,9 +324,9 @@ All items below must be `[x]` before going live.
 - [ ] Sprint 10 complete — DNS + TLS verified on both domains
 - [x] Sprint 11 complete — docs standalone, security hardening
 - [x] Sprint 12 complete — customer dashboard complete
-- [ ] Sprint 13 complete — admin portal operational
+- [x] Sprint 13 complete — admin portal operational
 - [ ] Treasury and signer wallets holding correct balances on mainnet
-- [ ] Cold wallet opted into USDC and verified
+- [x] Cold wallet opted into USDC and verified (UI3LOTUJ...)
 - [ ] Telegram alerts verified working on real phone
 - [ ] `api.ai-agentic-wallet.com` → Railway, `ai-agentic-wallet.com` → Vercel
 - [ ] CORS locked to production domains
@@ -521,9 +623,10 @@ The ecosystem is live when all of the following work in a single uninterrupted f
 - [x] Mandate expiry required — past dates unselectable in date picker
 
 ## SDK & Integrations
-- [x] `@algo-wallet/x402-client@0.2.0` published to npm
-- [x] `@algo-wallet/x402-mcp` MCP server built (not yet published)
-- [x] `algo-x402` Python SDK built (not yet published)
+- [x] `@algo-wallet/x402-client@0.2.0` built (publish to npm pending)
+- [x] `@algo-wallet/x402-mcp@0.1.0` MCP server built (publish pending)
+- [x] `algo-x402@0.1.0` Python SDK built (publish pending)
+- [x] `@algo-wallet/x402-cli@0.1.0` CLI built (publish pending)
 - [x] API versioning: `/v1/api/*` canonical, `/api/*` legacy alias
 
 ## Payment Stress Testing (Sprint 5)
