@@ -227,84 +227,127 @@ Env vars required:
 understand) with the official AVM Labs Liquid Auth open-source stack. Pera wallet has
 native support for this protocol — no WalletConnect dependency required.
 
-**Reference:** https://github.com/algorandfoundation/liquid-auth
+**References:**
+- Signal server: https://github.com/algorandfoundation/liquid-auth (NestJS)
+- JS client SDK: https://github.com/algorandfoundation/liquid-auth-js
+- UI helpers: https://github.com/algorandfoundation/liquid-auth-use-wallet-client
+- Docs: https://docs.liquidauth.com/architecture/
 
-### Architecture
+### True Architecture (WebRTC + FIDO2 + WebSocket)
+
+This is NOT a simple QR → HTTP callback flow. The official protocol uses WebRTC for
+peer-to-peer communication, with the signal server brokering the WebRTC handshake.
+FIDO2 credentials (derived from the Algorand private key in Pera) replace our current
+`algosdk.signBytes` approach.
 
 ```
-Browser (portal)          Signal Server (Railway)         Pera Wallet (mobile)
-      │                           │                               │
-      ├─ create session ─────────►│                               │
-      │◄─ sessionId + QR URL ─────┤                               │
-      │                           │◄─── scan QR, connect ─────────┤
-      │  [poll for verified]       │◄─── sign challenge ───────────┤
-      │◄─ status: verified ────────┤                               │
-      │                           │                               │
-      ├─ POST /api/*/liquid-consume (our backend, verifies via signal server)
+Browser (portal)         Signal Server            Pera Wallet (mobile)
+      │                       │                          │
+      ├─ POST /auth/start ───►│                          │
+      │◄─ sessionId + QR ─────┤                          │
+      │                       │                          │
+      │  [open WebSocket]      │◄─ scan QR, connect ─────┤
+      │◄─ link:status ─────────┤                          │
+      │                       │                          │
+      │  [WebRTC offer] ──────►│──────────────────────────►│
+      │◄─ [WebRTC answer] ─────┤◄─────────────────────────┤
+      │  [ICE candidates exchange via signal server]       │
+      │                        │                          │
+      │◄══ WebRTC Data Channel established ══════════════►│
+      │                                                   │
+      │◄══ FIDO2 PublicKeyCredential (signed by Pera) ════┤
+      │                                                   │
+      ├─ POST /auth/verify (signal server validates FIDO2)─►│
+      │◄─ verified + Algorand address ────────────────────┤
+      │                                                   │
+      ├─ POST /api/admin/auth/liquid-consume (our backend)
       │◄─ address + admin JWT
 ```
 
-### L.1 — Signal Server Setup
+**Infrastructure required beyond current stack:**
+- NestJS signal server (new Railway service)
+- STUN server (public free: `stun.l.google.com:19302`)
+- TURN server (needed for strict NAT — use Twilio TURN or self-host coturn)
+- WebSocket support (persistent connections, no scale-to-zero)
 
-- [ ] Review `https://github.com/algorandfoundation/liquid-auth` architecture (NestJS + Redis)
-- [ ] Fork or clone liquid-auth signal server into `packages/liquid-auth-server/`
-- [ ] Add `railway.liquid-auth.json` config (healthcheck `/health`, restart `ALWAYS`)
-- [ ] Create new Railway service `liquid-auth-signal` linked to this path
-- [ ] Set env vars on signal server: `REDIS_URL` (shared Redis), `PORT`, `CORS_ORIGIN`
-- [ ] Verify signal server health: `curl https://liquid-auth.api.ai-agentic-wallet.com/health`
-- [ ] Add `LIQUID_AUTH_SERVER_URL=https://liquid-auth.api.ai-agentic-wallet.com` to all Railway services
-- [ ] Add custom domain `liquid-auth.api.ai-agentic-wallet.com` → signal server on Railway
+### L.1 — Signal Server Deploy
 
-### L.2 — Admin Login (`/login`)
+- [ ] Study `algorandfoundation/liquid-auth` repo structure and env var requirements
+- [ ] Identify all required env vars: `DATABASE_URL`, `REDIS_URL`, `CORS_ORIGIN`, `STUN_URL`, `TURN_URL`, `TURN_USERNAME`, `TURN_PASSWORD`, `PORT`
+- [ ] Decide on TURN provider: Twilio (free tier) or self-hosted coturn on Railway
+- [ ] If Twilio: create account, get TURN credentials, add to env
+- [ ] Clone/fork signal server — do NOT copy into monorepo (keep as separate Railway-linked repo or subdirectory)
+- [ ] Add `railway.liquid-auth.json` (healthcheck `/health`, restart `ALWAYS`)
+- [ ] Create Railway service `liquid-auth-signal`, link to signal server codebase
+- [ ] Connect signal server to shared Redis plugin
+- [ ] Add custom domain `liquid-auth.api.ai-agentic-wallet.com` → signal server
+- [ ] Verify: `curl https://liquid-auth.api.ai-agentic-wallet.com/health` returns 200
+- [ ] Add `LIQUID_AUTH_SERVER_URL=https://liquid-auth.api.ai-agentic-wallet.com` to `algo-ai-wallet` and `developer-portal` Railway vars
 
-- [ ] Install `@algorandfoundation/liquid-auth-client-js` in `apps/developer-portal`
+### L.2 — Backend: Replace Custom Auth with FIDO2 Verification
+
+The current `algosdk.verifyBytes` signature check is replaced by FIDO2 credential
+verification delegated to the signal server.
+
+- [ ] Update `src/auth/adminAuth.ts`:
+      - `issueAdminLiquidChallenge()` → POST to signal server `/auth/start`, store returned `sessionId` in Redis, return QR URL (not JSON payload)
+      - `submitAdminLiquidSignature()` → DELETE (signal server handles this; wallet communicates directly)
+      - `consumeAdminLiquidSession()` → POST to signal server `/auth/status/:sessionId`, verify FIDO2 response, extract Algorand address
+- [ ] Update `src/auth/humanAuth.ts` (agent governance) with same pattern
+- [ ] Remove `POST /api/admin/auth/liquid-sign` route (wallet no longer POSTs here)
+- [ ] Remove `POST /api/agents/:agentId/auth/liquid-sign` route (same reason)
+- [ ] Add signal server API client utility in `src/services/liquidAuthClient.ts`:
+      - `createSession(intent, callbackUrl)` → returns `{ sessionId, qrUrl }`
+      - `getSessionStatus(sessionId)` → returns `{ status, address? }`
+- [ ] Update `LIQUID_AUTH_SERVER_URL` guard in `src/protection/envGuard.ts` — fatal if unset in production
+- [ ] `tsc --noEmit` passes clean
+
+### L.3 — Frontend: Admin Login (`/login`)
+
+- [ ] Install `@algorandfoundation/liquid-auth-js` in `apps/developer-portal`
 - [ ] Rewrite `LiquidAuthPanel` in `src/app/login/page.tsx`:
-      - Use SDK to create session → get QR URL from signal server
-      - Render QR from URL string (not JSON blob) using existing `qrcode` canvas
-      - Poll signal server (or use SDK callback) for `verified` status
-      - On verified: POST sessionId to `/api/auth/login` → issue admin JWT → redirect
-- [ ] Update backend `src/auth/adminAuth.ts`:
-      - `issueAdminLiquidChallenge()` → proxy session creation to signal server
-      - `submitAdminLiquidSignature()` → no longer needed (signal server handles signing)
-      - `consumeAdminLiquidSession()` → query signal server for verified address
-- [ ] Update `/api/admin/auth/liquid-*` routes in `src/index.ts` to match new flow
-- [ ] Test: scan QR at `ai-agentic-wallet.com/login` with Pera → signs → lands on `/dashboard`
-- [ ] Test: wrong wallet address → 403 "not on admin whitelist"
+      - Call `/api/admin/auth/liquid-challenge` → get `{ sessionId, qrUrl }`
+      - Render QR from `qrUrl` string (simpler than JSON — `qrurl` library or existing canvas)
+      - Initialise `liquid-auth-js` SDK, open WebSocket to signal server
+      - SDK fires callback when FIDO2 credential received and verified
+      - On verified: POST `sessionId` to `/api/auth/login` → issue admin JWT → redirect
+- [ ] Remove countdown timer and manual poll loop (SDK provides real-time callback)
+- [ ] Test: scan QR at `ai-agentic-wallet.com/login` with Pera → WebRTC + FIDO2 → `/dashboard`
+- [ ] Test: wrong wallet → 403 "not on admin whitelist"
 
-### L.3 — Customer Login (`/app/login`)
+### L.4 — Frontend: Customer Login (`/app/login`)
 
 - [ ] Rewrite `LiquidAuthPanel` in `src/app/app/login/page.tsx` (same SDK, same pattern)
-- [ ] Update backend `src/auth/humanAuth.ts`:
-      - `issueAlgorandChallenge()` → proxy to signal server
-      - `submitAlgorandSignature()` → no longer needed
-      - `consumeVerifiedSession()` → query signal server for verified address
-- [ ] Update `/api/agents/:agentId/auth/liquid-*` routes in `src/index.ts`
-- [ ] Test: customer wallet scan → signs → lands on `/app/dashboard`
+- [ ] Test: customer wallet scan → FIDO2 → `/app/dashboard`
 
-### L.4 — Mandate Operations
+### L.5 — Frontend: Mandate Operations
 
-- [ ] Rewrite `LiquidAuthQRModal.tsx` in `apps/developer-portal/src/components/mandates/`:
-      - Replace canvas QR of JSON payload with URL-based QR from signal server
-      - Replace polling loop with SDK status callback
-- [ ] Test mandate create: QR scan → sign → mandate active in dashboard
-- [ ] Test mandate revoke: QR scan → sign → mandate revoked in dashboard
+- [ ] Rewrite `LiquidAuthQRModal.tsx`:
+      - Replace JSON QR canvas with URL QR
+      - Replace polling interval with SDK WebSocket callback
+- [ ] Test mandate create: QR scan → FIDO2 → mandate active
+- [ ] Test mandate revoke: QR scan → FIDO2 → mandate revoked
 
-### L.5 — Cleanup
+### L.6 — Cleanup
 
-- [ ] Remove `qrcode` npm package from `apps/developer-portal` (replaced by URL QR)
-- [ ] Delete dead code: `submitAdminLiquidSignature`, `submitAlgorandSignature` from backend
-- [ ] Remove `LIQUID_AUTH_SERVER_URL=` placeholder from `.env` (was empty, now required)
-- [ ] Update `public/skill.md` and `DOCS_FOR_AGENTS.md` auth section to reference Liquid Auth
-- [ ] `tsc --noEmit` passes clean on backend + portal
+- [ ] Delete `src/auth/humanAuth.ts` functions: `submitAlgorandSignature`
+- [ ] Delete `src/auth/adminAuth.ts` functions: `submitAdminLiquidSignature`
+- [ ] Remove `/api/*/auth/liquid-sign` Express routes from `src/index.ts`
+- [ ] Remove `qrcode` npm package from `apps/developer-portal` if no longer needed
+- [ ] Update `.env` and `.env.example` with new required vars (`LIQUID_AUTH_SERVER_URL`, TURN credentials)
+- [ ] Update `public/skill.md` auth section
+- [ ] `tsc --noEmit` clean on backend + portal
 
-### L.6 — E2E Verification
+### L.7 — E2E Verification
 
-- [ ] Admin login: 3 consecutive QR → Pera scan → sign → `/dashboard` successes
+- [ ] Admin login: 3 consecutive QR → Pera scan → FIDO2 → `/dashboard` successes
 - [ ] Admin login: wrong wallet → 403 confirmed
 - [ ] Customer login: 3 consecutive successes
 - [ ] Mandate create: end-to-end with real Pera scan
 - [ ] Mandate revoke: end-to-end with real Pera scan
-- [ ] WebAuthn path still works alongside Liquid Auth (regression check)
+- [ ] WebAuthn path still works (regression check)
+- [ ] Signal server restart does not break in-flight sessions (reconnect test)
+- [ ] Load test: 10 concurrent QR sessions on signal server (no dropped WebSockets)
 
 ---
 
