@@ -35,7 +35,40 @@ async function issueAdminSession(): Promise<NextResponse> {
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({})) as Record<string, unknown>;
 
-  // ── Path 1: Liquid Auth — exchange verified sessionId for admin JWT ────────
+  // ── Path 1: Pera Connect — exchange verified challengeId for admin JWT ──────
+
+  if (typeof body.peraSessionId === "string") {
+    const challengeId = body.peraSessionId;
+
+    let address: string;
+    try {
+      const r = await fetch(`${API_URL}/api/admin/auth/pera-consume`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ challengeId }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({})) as { error?: string };
+        return NextResponse.json({ error: err.error ?? `Upstream ${r.status}` }, { status: r.status });
+      }
+      const data = await r.json() as { address: string };
+      address = data.address;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return NextResponse.json({ error: `Upstream unreachable: ${msg}` }, { status: 502 });
+    }
+
+    if (!isAdminAddress(address)) {
+      return NextResponse.json(
+        { error: "Access denied — this Algorand address is not on the admin whitelist." },
+        { status: 403 },
+      );
+    }
+
+    return issueAdminSession();
+  }
+
+  // ── Path 1b: Liquid Auth (legacy) — exchange verified sessionId for admin JWT
 
   if (typeof body.liquidAuthSessionId === "string") {
     const sessionId = body.liquidAuthSessionId;

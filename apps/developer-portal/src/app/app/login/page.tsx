@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useCallback, Suspense } from "react";
+import { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import LiquidAuthQRModal from "@/components/mandates/LiquidAuthQRModal";
+import type { PeraWalletConnect as PeraWalletConnectType } from "@perawallet/connect";
 
 // ── WebAuthn helpers ──────────────────────────────────────────────
 
@@ -14,9 +14,7 @@ function bufToBase64url(buf: ArrayBuffer): string {
 }
 
 function base64urlToBuf(b64: string): ArrayBuffer {
-  const padded = b64
-    .replace(/-/g, "+")
-    .replace(/_/g, "/")
+  const padded = b64.replace(/-/g, "+").replace(/_/g, "/")
     .padEnd(Math.ceil(b64.length / 4) * 4, "=");
   const str = atob(padded);
   const buf = new ArrayBuffer(str.length);
@@ -58,7 +56,7 @@ function serializeAssertion(assertion: PublicKeyCredential) {
 
 // ── Types ─────────────────────────────────────────────────────────
 
-type AuthMethod = "liquid" | "webauthn";
+type AuthMethod = "pera" | "webauthn";
 
 interface RegistrationChallenge {
   challenge:       string;
@@ -77,6 +75,123 @@ interface LoginChallenge {
   rpId:             string;
 }
 
+// ── Pera Connect inline panel ──────────────────────────────────────
+
+function PeraConnectButton({
+  agentId,
+  onVerified,
+}: {
+  agentId: string;
+  onVerified: (peraSessionId: string) => void;
+}) {
+  const peraRef = useRef<PeraWalletConnectType | null>(null);
+  const [status, setStatus] = useState<"idle" | "connecting" | "signing" | "verifying" | "error">("idle");
+  const [errorMsg, setErrorMsg] = useState("");
+
+  useEffect(() => {
+    import("@perawallet/connect").then(({ PeraWalletConnect }) => {
+      peraRef.current = new PeraWalletConnect();
+    });
+    return () => { peraRef.current?.disconnect().catch(() => {}); };
+  }, []);
+
+  const handleConnect = useCallback(async () => {
+    const pera = peraRef.current;
+    if (!pera) { setStatus("error"); setErrorMsg("Wallet library not loaded — refresh the page"); return; }
+
+    setStatus("connecting");
+    setErrorMsg("");
+
+    try {
+      // 1. Get challenge for this agent/intent
+      const chalRes = await fetch(`/api/agents/${agentId}/auth/pera-challenge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ intent: "register" }),
+      });
+      if (!chalRes.ok) {
+        const b = await chalRes.json().catch(() => ({})) as { error?: string };
+        throw new Error(b.error ?? `HTTP ${chalRes.status}`);
+      }
+      const { challengeId, challengeB64 } = await chalRes.json() as {
+        challengeId: string; challengeB64: string;
+      };
+
+      // 2. Connect wallet
+      const accounts = await pera.connect();
+      const address = accounts[0];
+
+      // 3. Sign challenge
+      setStatus("signing");
+      const challengeBytes = Uint8Array.from(atob(challengeB64), (c) => c.charCodeAt(0));
+      const signatures = await pera.signData(
+        [{ data: challengeBytes, message: `Register as owner of agent ${agentId}` }],
+        address,
+      );
+      const signatureB64 = btoa(String.fromCharCode(...signatures[0]));
+
+      // 4. Verify on backend
+      setStatus("verifying");
+      const verifyRes = await fetch(`/api/agents/${agentId}/auth/pera-verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ challengeId, intent: "register", address, signatureB64 }),
+      });
+      if (!verifyRes.ok) {
+        const b = await verifyRes.json().catch(() => ({})) as { error?: string };
+        throw new Error(b.error ?? `HTTP ${verifyRes.status}`);
+      }
+      const { verifiedSessionId } = await verifyRes.json() as { verifiedSessionId: string };
+
+      onVerified(verifiedSessionId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("Session currently disconnected") || msg.toLowerCase().includes("cancel") || msg.toLowerCase().includes("closed")) {
+        setStatus("idle");
+      } else {
+        setStatus("error");
+        setErrorMsg(msg);
+      }
+    }
+  }, [agentId, onVerified]);
+
+  const busy = status === "connecting" || status === "signing" || status === "verifying";
+  const buttonLabel = {
+    idle:       "Connect Pera Wallet",
+    connecting: "Opening wallet…",
+    signing:    "Sign in Pera app…",
+    verifying:  "Verifying…",
+    error:      "Retry",
+  }[status];
+
+  return (
+    <div className="flex flex-col gap-3">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={handleConnect}
+        className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg px-4 py-3 text-sm font-medium transition-colors"
+      >
+        {busy && (
+          <svg className="animate-spin w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+        )}
+        {buttonLabel}
+      </button>
+      {status === "signing" && (
+        <p className="text-zinc-500 text-xs text-center">Check your Pera app — approve the sign request</p>
+      )}
+      {status === "error" && errorMsg && (
+        <div className="rounded-lg bg-red-950/50 border border-red-800 px-3 py-2 text-xs text-red-300 text-center">
+          {errorMsg}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main login form ───────────────────────────────────────────────
 
 function LoginForm() {
@@ -85,18 +200,16 @@ function LoginForm() {
   const from = searchParams.get("from") || "/app/dashboard";
 
   const [agentIdInput, setAgentIdInput] = useState(searchParams.get("agentId") ?? "");
-  const [authMethod,   setAuthMethod]   = useState<AuthMethod>("liquid");
-  const [showQR,       setShowQR]       = useState(false);
+  const [authMethod,   setAuthMethod]   = useState<AuthMethod>("pera");
   const [submitting,   setSubmitting]   = useState(false);
   const [step,         setStep]         = useState<string>("");
   const [error,        setError]        = useState("");
 
   const agentId = agentIdInput.trim();
 
-  // ── Liquid Auth path ────────────────────────────────────────────
+  // ── Pera Connect path ────────────────────────────────────────────
 
-  async function handleLiquidVerified(sessionId: string) {
-    setShowQR(false);
+  const handlePeraVerified = useCallback(async (peraSessionId: string) => {
     setSubmitting(true);
     setError("");
     setStep("Signing in…");
@@ -104,7 +217,7 @@ function LoginForm() {
       const res = await fetch("/api/customer/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentId, liquidAuthSessionId: sessionId }),
+        body: JSON.stringify({ agentId, peraSessionId }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -117,32 +230,21 @@ function LoginForm() {
       setSubmitting(false);
       setStep("");
     }
-  }
+  }, [agentId, from, router]);
 
   // ── WebAuthn path ────────────────────────────────────────────────
-  //
-  // Flow:
-  //   1. GET login challenge → hasCredentials?
-  //   2a. hasCredentials=true  → navigator.credentials.get() → POST login
-  //   2b. hasCredentials=false → GET register challenge → navigator.credentials.create()
-  //                           → POST webauthn-register (stores credential + sets JWT)
 
   const handleWebAuthn = useCallback(async () => {
     if (!agentId) { setError("Enter your Agent ID first."); return; }
     if (!window.PublicKeyCredential) {
-      setError("Passkeys are not supported in this browser. Use Algorand Wallet QR instead.");
+      setError("Passkeys are not supported in this browser. Use Algorand Wallet instead.");
       return;
     }
-
     setSubmitting(true);
     setError("");
-
     try {
-      // ── Step 1: probe for existing credential ─────────────────
       setStep("Checking device credentials…");
-      const lcRes = await fetch(`/api/agents/${agentId}/auth/webauthn-login-challenge`, {
-        method: "POST",
-      });
+      const lcRes = await fetch(`/api/agents/${agentId}/auth/webauthn-login-challenge`, { method: "POST" });
       if (!lcRes.ok) {
         const b = await lcRes.json().catch(() => ({}));
         throw new Error((b as { error?: string }).error || `HTTP ${lcRes.status}`);
@@ -150,27 +252,21 @@ function LoginForm() {
       const lc = await lcRes.json() as LoginChallenge;
 
       if (lc.hasCredentials) {
-        // ── 2a: Authenticate with existing credential ──────────
         setStep("Touch your security key or use biometrics…");
         const assertion = await navigator.credentials.get({
           publicKey: {
             challenge:        base64urlToBuf(lc.challenge),
             allowCredentials: lc.allowCredentials.map((c) => ({
-              id:   base64urlToBuf(c.id),
-              type: c.type as PublicKeyCredentialType,
+              id: base64urlToBuf(c.id), type: c.type as PublicKeyCredentialType,
             })),
-            rpId:             lc.rpId,
-            timeout:          60_000,
-            userVerification: "preferred",
+            rpId: lc.rpId, timeout: 60_000, userVerification: "preferred",
           },
         }) as PublicKeyCredential | null;
-
         if (!assertion) throw new Error("Passkey authentication cancelled.");
 
         setStep("Verifying…");
         const loginRes = await fetch("/api/customer/auth/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+          method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ agentId, webauthnAssertion: serializeAssertion(assertion) }),
         });
         if (!loginRes.ok) {
@@ -180,12 +276,8 @@ function LoginForm() {
         router.push(from);
 
       } else {
-        // ── 2b: Register a new credential (first time) ─────────
         setStep("Registering new passkey…");
-        const rcRes = await fetch(
-          `/api/agents/${agentId}/auth/webauthn-register-challenge`,
-          { method: "POST" },
-        );
+        const rcRes = await fetch(`/api/agents/${agentId}/auth/webauthn-register-challenge`, { method: "POST" });
         if (!rcRes.ok) {
           const b = await rcRes.json().catch(() => ({}));
           throw new Error((b as { error?: string }).error || `HTTP ${rcRes.status}`);
@@ -195,42 +287,25 @@ function LoginForm() {
         setStep("Create a passkey — follow your device prompt…");
         const credential = await navigator.credentials.create({
           publicKey: {
-            challenge:     base64urlToBuf(rc.challenge),
-            rp:            { id: rc.rpId, name: rc.rpName },
-            user: {
-              id:          base64urlToBuf(rc.userId),
-              name:        rc.userName,
-              displayName: rc.userDisplayName,
-            },
-            pubKeyCredParams: [
-              { type: "public-key", alg: -7   }, // ES256
-              { type: "public-key", alg: -257  }, // RS256
-            ],
-            timeout:          60_000,
-            attestation:      "none",
-            authenticatorSelection: {
-              residentKey:       "preferred",
-              userVerification:  "preferred",
-            },
+            challenge: base64urlToBuf(rc.challenge),
+            rp: { id: rc.rpId, name: rc.rpName },
+            user: { id: base64urlToBuf(rc.userId), name: rc.userName, displayName: rc.userDisplayName },
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+            timeout: 60_000, attestation: "none",
+            authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
           },
         }) as PublicKeyCredential | null;
-
         if (!credential) throw new Error("Passkey creation cancelled.");
 
         setStep("Storing credential…");
         const regRes = await fetch("/api/customer/auth/webauthn-register", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            agentId,
-            registrationResponse: serializeRegistrationResponse(credential),
-          }),
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agentId, registrationResponse: serializeRegistrationResponse(credential) }),
         });
         if (!regRes.ok) {
           const b = await regRes.json().catch(() => ({}));
           throw new Error((b as { error?: string }).error || `HTTP ${regRes.status}`);
         }
-        // Registration also sets the customer session cookie
         router.push(from);
       }
     } catch (err) {
@@ -247,7 +322,6 @@ function LoginForm() {
     <div className="min-h-screen bg-black flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
 
-        {/* Logo */}
         <div className="text-center mb-10">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-emerald-900/50 border border-emerald-800 mb-4">
             <svg className="w-6 h-6 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -260,52 +334,27 @@ function LoginForm() {
         </div>
 
         <div className="space-y-5">
-
-          {/* Agent ID */}
           <div>
-            <label htmlFor="agentId" className="block text-xs text-zinc-400 uppercase tracking-wider mb-2">
-              Agent ID
-            </label>
+            <label htmlFor="agentId" className="block text-xs text-zinc-400 uppercase tracking-wider mb-2">Agent ID</label>
             <input
-              id="agentId"
-              type="text"
-              value={agentIdInput}
+              id="agentId" type="text" value={agentIdInput}
               onChange={(e) => setAgentIdInput(e.target.value)}
-              placeholder="sdk-abc123…"
-              autoFocus
-              autoComplete="off"
+              placeholder="sdk-abc123…" autoFocus autoComplete="off"
               className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-3 text-white font-mono placeholder-zinc-600 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600/30 transition-colors"
             />
           </div>
 
-          {/* Auth method toggle */}
           <div className="flex gap-2 p-1 bg-zinc-900 border border-zinc-800 rounded-lg">
-            <button
-              type="button"
-              onClick={() => setAuthMethod("liquid")}
-              className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${
-                authMethod === "liquid"
-                  ? "bg-zinc-700 text-white"
-                  : "text-zinc-400 hover:text-white"
-              }`}
-            >
-              Algorand Wallet QR{" "}
-              <span className="text-xs text-emerald-400">(Recommended)</span>
+            <button type="button" onClick={() => setAuthMethod("pera")}
+              className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${authMethod === "pera" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"}`}>
+              Algorand Wallet <span className="text-xs text-emerald-400">(Recommended)</span>
             </button>
-            <button
-              type="button"
-              onClick={() => setAuthMethod("webauthn")}
-              className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${
-                authMethod === "webauthn"
-                  ? "bg-zinc-700 text-white"
-                  : "text-zinc-400 hover:text-white"
-              }`}
-            >
+            <button type="button" onClick={() => setAuthMethod("webauthn")}
+              className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${authMethod === "webauthn" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"}`}>
               Device Passkey
             </button>
           </div>
 
-          {/* In-progress step indicator */}
           {submitting && step && (
             <div className="flex items-center gap-2 text-zinc-400 text-sm px-1">
               <svg className="animate-spin w-4 h-4 shrink-0 text-emerald-400" viewBox="0 0 24 24" fill="none">
@@ -316,35 +365,27 @@ function LoginForm() {
             </div>
           )}
 
-          {/* Error */}
           {error && (
-            <div className="rounded-lg bg-red-950/50 border border-red-800 px-4 py-3 text-sm text-red-300">
-              {error}
-            </div>
+            <div className="rounded-lg bg-red-950/50 border border-red-800 px-4 py-3 text-sm text-red-300">{error}</div>
           )}
 
-          {/* Action button */}
-          {authMethod === "liquid" ? (
-            <button
-              type="button"
-              disabled={!canProceed}
-              onClick={() => { setError(""); setShowQR(true); }}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg px-4 py-3 text-sm font-medium transition-colors"
-            >
-              Scan QR with Pera / Defly
+          {authMethod === "pera" && !submitting && canProceed && (
+            <PeraConnectButton agentId={agentId} onVerified={handlePeraVerified} />
+          )}
+          {authMethod === "pera" && !submitting && !canProceed && (
+            <button type="button" disabled
+              className="w-full bg-emerald-600 opacity-40 cursor-not-allowed text-white rounded-lg px-4 py-3 text-sm font-medium">
+              Connect Pera Wallet
             </button>
-          ) : (
-            <button
-              type="button"
-              disabled={!canProceed}
-              onClick={handleWebAuthn}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg px-4 py-3 text-sm font-medium transition-colors"
-            >
+          )}
+
+          {authMethod === "webauthn" && (
+            <button type="button" disabled={!canProceed} onClick={handleWebAuthn}
+              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg px-4 py-3 text-sm font-medium transition-colors">
               {submitting ? "Working…" : "Continue with Passkey"}
             </button>
           )}
 
-          {/* WebAuthn hint text */}
           {authMethod === "webauthn" && !submitting && (
             <p className="text-xs text-zinc-600 text-center px-2">
               First time? A new passkey is created on your device. Returning? Your device unlocks automatically.
@@ -352,19 +393,8 @@ function LoginForm() {
           )}
         </div>
 
-        <p className="text-center text-zinc-700 text-xs mt-8">
-          x402 Protocol · Algorand Settlement Layer
-        </p>
+        <p className="text-center text-zinc-700 text-xs mt-8">x402 Protocol · Algorand Settlement Layer</p>
       </div>
-
-      {showQR && agentId && (
-        <LiquidAuthQRModal
-          agentId={agentId}
-          intent="register"
-          onVerified={handleLiquidVerified}
-          onClose={() => setShowQR(false)}
-        />
-      )}
     </div>
   );
 }

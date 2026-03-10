@@ -363,3 +363,100 @@ export async function verifyAdminWebAuthnLoginAssertion(
   };
   await redis.set(WEBAUTHN_CRED_KEY, JSON.stringify(updated));
 }
+
+// ── Pera Connect Auth ─────────────────────────────────────────────────────
+
+const PERA_PREFIX = "x402:admin:pera:"; // {challengeId} → JSON
+const PERA_TTL_S  = 300;               // 5 minutes
+
+interface AdminPeraSession {
+  challengeId:  string;
+  challengeHex: string;
+  status:       "pending" | "verified";
+  address?:     string;
+  expiresAt:    number; // ms epoch
+}
+
+export async function issueAdminPeraChallenge(): Promise<{
+  challengeId:  string;
+  challengeB64: string;
+  expiresAt:    number;
+}> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const challengeId  = randomUUID();
+  const challengeBuf = randomBytes(32);
+  const expiresAt    = Date.now() + PERA_TTL_S * 1_000;
+
+  const session: AdminPeraSession = {
+    challengeId,
+    challengeHex: challengeBuf.toString("hex"),
+    status: "pending",
+    expiresAt,
+  };
+
+  await redis.set(`${PERA_PREFIX}${challengeId}`, JSON.stringify(session), { ex: PERA_TTL_S });
+  return { challengeId, challengeB64: challengeBuf.toString("base64"), expiresAt };
+}
+
+export async function verifyAdminPeraSignature(
+  challengeId:  string,
+  address:      string,
+  signatureB64: string,
+): Promise<{ verifiedSessionId: string }> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const raw = await redis.get(`${PERA_PREFIX}${challengeId}`) as unknown;
+  if (!raw) throw new Error("Challenge not found — expired or invalid");
+
+  const session: AdminPeraSession = typeof raw === "string"
+    ? JSON.parse(raw) as AdminPeraSession
+    : raw as AdminPeraSession;
+
+  if (Date.now() > session.expiresAt) throw new Error("Challenge expired");
+  if (session.status === "verified") return { verifiedSessionId: challengeId };
+  if (!algosdk.isValidAddress(address)) throw new Error(`Invalid Algorand address: ${address}`);
+
+  const challengeBytes = Buffer.from(session.challengeHex, "hex");
+  const signatureBytes = Buffer.from(signatureB64, "base64");
+
+  let valid: boolean;
+  try {
+    valid = algosdk.verifyBytes(challengeBytes, signatureBytes, address);
+  } catch (err) {
+    throw new Error(`Signature error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!valid) throw new Error("Invalid signature — address did not sign this challenge");
+
+  const postVerifyTtl = Math.min(60, Math.max(Math.ceil((session.expiresAt - Date.now()) / 1_000), 1));
+  await redis.set(
+    `${PERA_PREFIX}${challengeId}`,
+    JSON.stringify({ ...session, status: "verified", address }),
+    { ex: postVerifyTtl },
+  );
+
+  console.log(`[AdminAuth] Pera Connect verified: address=${address}`);
+  return { verifiedSessionId: challengeId };
+}
+
+export async function consumeAdminPeraSession(
+  challengeId: string,
+): Promise<{ address: string }> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const raw = await redis.getdel(`${PERA_PREFIX}${challengeId}`) as unknown;
+  if (!raw) throw new Error("Pera session not found — expired or already used");
+
+  const session: AdminPeraSession = typeof raw === "string"
+    ? JSON.parse(raw) as AdminPeraSession
+    : raw as AdminPeraSession;
+
+  if (session.status !== "verified") throw new Error("Session not yet verified");
+  if (Date.now() > session.expiresAt) throw new Error("Session expired");
+  if (!session.address) throw new Error("Session missing verified address");
+
+  return { address: session.address };
+}

@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@perawallet/connect": "^1.5.1",
     "@sentry/nextjs": "^10.39.0",
     "@upstash/redis": "^1.36.2",
     "jose": "^6.1.3",

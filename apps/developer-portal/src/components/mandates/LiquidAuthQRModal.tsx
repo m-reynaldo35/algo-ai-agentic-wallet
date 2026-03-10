@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
-import QRCode from "qrcode";
+import type { PeraWalletConnect as PeraWalletConnectType } from "@perawallet/connect";
 
 interface Props {
   agentId:    string;
@@ -12,103 +12,102 @@ interface Props {
 }
 
 const INTENT_LABELS: Record<Props["intent"], string> = {
-  "register":       "Scan to register your Algorand wallet as governance key for this agent.",
-  "mandate-create": "Scan to authorize mandate creation with your Algorand wallet.",
-  "mandate-revoke": "Scan to authorize mandate revocation with your Algorand wallet.",
+  "register":       "Connect your Algorand wallet to register as governance key for this agent.",
+  "mandate-create": "Connect your Algorand wallet to authorize mandate creation.",
+  "mandate-revoke": "Connect your Algorand wallet to authorize mandate revocation.",
 };
 
-function formatCountdown(ms: number): string {
-  if (ms <= 0) return "0:00";
-  const totalSecs = Math.ceil(ms / 1000);
-  const m = Math.floor(totalSecs / 60);
-  const s = totalSecs % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
 export default function LiquidAuthQRModal({ agentId, intent, onVerified, onClose }: Props) {
-  const canvasRef   = useRef<HTMLCanvasElement>(null);
-  const pollRef     = useRef<ReturnType<typeof setInterval> | null>(null);
-  const tickRef     = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const [sessionId, setSessionId]   = useState<string | null>(null);
-  const [expiresAt, setExpiresAt]   = useState<number | null>(null);
-  const [msLeft,    setMsLeft]      = useState<number>(0);
-  const [status,    setStatus]      = useState<"loading" | "scanning" | "verified" | "expired" | "error">("loading");
-  const [errorMsg,  setErrorMsg]    = useState<string>("");
-
-  const stopTimers = useCallback(() => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
-  }, []);
-
-  const issueChallenge = useCallback(async () => {
-    setStatus("loading");
-    setErrorMsg("");
-    stopTimers();
-
-    try {
-      const res = await fetch(`/api/agents/${agentId}/auth/liquid-challenge`, { method: "POST" });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `HTTP ${res.status}`);
-      }
-      const data: { sessionId: string; qrPayload: unknown; expiresAt: string } = await res.json();
-
-      setSessionId(data.sessionId);
-      const expMs = new Date(data.expiresAt).getTime();
-      setExpiresAt(expMs);
-      setMsLeft(expMs - Date.now());
-      setStatus("scanning");
-
-      // Render QR
-      if (canvasRef.current) {
-        await QRCode.toCanvas(canvasRef.current, JSON.stringify(data.qrPayload), {
-          width: 240,
-          margin: 2,
-          color: { dark: "#000000", light: "#ffffff" },
-        });
-      }
-
-      // Countdown ticker
-      tickRef.current = setInterval(() => {
-        const remaining = expMs - Date.now();
-        if (remaining <= 0) {
-          setMsLeft(0);
-          setStatus("expired");
-          stopTimers();
-        } else {
-          setMsLeft(remaining);
-        }
-      }, 500);
-
-      // Poll for verification
-      pollRef.current = setInterval(async () => {
-        try {
-          const pollRes = await fetch(`/api/agents/${agentId}/auth/liquid-status/${data.sessionId}`);
-          if (!pollRes.ok) return;
-          const pollData: { status: string } = await pollRes.json();
-          if (pollData.status === "verified") {
-            stopTimers();
-            setStatus("verified");
-            onVerified(data.sessionId);
-          }
-        } catch {
-          // transient network error — keep polling
-        }
-      }, 2000);
-
-    } catch (err) {
-      setStatus("error");
-      setErrorMsg(err instanceof Error ? err.message : String(err));
-    }
-  }, [agentId, onVerified, stopTimers]);
+  const peraRef = useRef<PeraWalletConnectType | null>(null);
+  const [status, setStatus] = useState<"idle" | "connecting" | "signing" | "verifying" | "verified" | "error">("idle");
+  const [errorMsg, setErrorMsg] = useState("");
 
   useEffect(() => {
-    issueChallenge();
-    return stopTimers;
-  }, [issueChallenge, stopTimers]);
+    import("@perawallet/connect").then(({ PeraWalletConnect }) => {
+      peraRef.current = new PeraWalletConnect();
+      // Auto-start on mount
+      handleConnect();
+    });
+    return () => { peraRef.current?.disconnect().catch(() => {}); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const isAmber = msLeft > 0 && msLeft < 60_000;
+  const handleConnect = useCallback(async () => {
+    const pera = peraRef.current;
+    if (!pera) return;
+
+    setStatus("connecting");
+    setErrorMsg("");
+
+    try {
+      // 1. Get challenge
+      const chalRes = await fetch(`/api/agents/${agentId}/auth/pera-challenge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ intent }),
+      });
+      if (!chalRes.ok) {
+        const b = await chalRes.json().catch(() => ({})) as { error?: string };
+        throw new Error(b.error ?? `HTTP ${chalRes.status}`);
+      }
+      const { challengeId, challengeB64 } = await chalRes.json() as {
+        challengeId: string; challengeB64: string;
+      };
+
+      // 2. Connect wallet — opens WalletConnect modal
+      const accounts = await pera.connect();
+      const address = accounts[0];
+
+      // 3. Sign challenge
+      setStatus("signing");
+      const challengeBytes = Uint8Array.from(atob(challengeB64), (c) => c.charCodeAt(0));
+      const intentMsg = {
+        "register":       `Register as owner of agent ${agentId}`,
+        "mandate-create": `Authorize mandate creation for agent ${agentId}`,
+        "mandate-revoke": `Authorize mandate revocation for agent ${agentId}`,
+      }[intent];
+      const signatures = await pera.signData(
+        [{ data: challengeBytes, message: intentMsg }],
+        address,
+      );
+      const signatureB64 = btoa(String.fromCharCode(...signatures[0]));
+
+      // 4. Verify
+      setStatus("verifying");
+      const verifyRes = await fetch(`/api/agents/${agentId}/auth/pera-verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ challengeId, intent, address, signatureB64 }),
+      });
+      if (!verifyRes.ok) {
+        const b = await verifyRes.json().catch(() => ({})) as { error?: string };
+        throw new Error(b.error ?? `HTTP ${verifyRes.status}`);
+      }
+      const { verifiedSessionId } = await verifyRes.json() as { verifiedSessionId: string };
+
+      setStatus("verified");
+      onVerified(verifiedSessionId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("Session currently disconnected") || msg.toLowerCase().includes("cancel") || msg.toLowerCase().includes("closed")) {
+        setStatus("idle");
+      } else {
+        setStatus("error");
+        setErrorMsg(msg);
+      }
+    }
+  }, [agentId, intent, onVerified]);
+
+  const busy = status === "connecting" || status === "signing" || status === "verifying";
+
+  const statusLine: Record<typeof status, string | null> = {
+    idle:       null,
+    connecting: "Opening wallet — scan the QR in the Pera app…",
+    signing:    "Sign the request in your Pera app…",
+    verifying:  "Verifying…",
+    verified:   "Verified ✓",
+    error:      null,
+  };
 
   const modal = (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={onClose}>
@@ -119,7 +118,7 @@ export default function LiquidAuthQRModal({ agentId, intent, onVerified, onClose
       >
         {/* Header */}
         <div className="w-full flex items-start justify-between">
-          <h2 className="text-white font-semibold text-lg">Scan with Pera or Defly</h2>
+          <h2 className="text-white font-semibold text-lg">Connect Algorand Wallet</h2>
           <button onClick={onClose} className="text-zinc-400 hover:text-white transition-colors ml-4">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -127,60 +126,58 @@ export default function LiquidAuthQRModal({ agentId, intent, onVerified, onClose
           </button>
         </div>
 
-        {/* Intent description */}
         <p className="text-zinc-400 text-sm text-center">{INTENT_LABELS[intent]}</p>
 
-        {/* QR Canvas */}
-        <div className="relative flex items-center justify-center bg-zinc-800 rounded-md" style={{ width: 240, height: 240 }}>
-          <canvas ref={canvasRef} style={{ display: status === "scanning" || status === "verified" ? "block" : "none" }} />
-          {(status === "loading") && (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="w-8 h-8 border-2 border-zinc-600 border-t-emerald-400 rounded-full animate-spin" />
-            </div>
-          )}
-          {status === "expired" && (
-            <div className="absolute inset-0 flex items-center justify-center bg-zinc-900/80 rounded-md">
-              <span className="text-zinc-400 text-sm">QR expired</span>
-            </div>
-          )}
-          {status === "error" && (
-            <div className="absolute inset-0 flex items-center justify-center bg-zinc-900/80 rounded-md px-3">
-              <span className="text-red-400 text-xs text-center">{errorMsg}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Status line */}
-        {status === "scanning" && (
-          <div className="flex items-center gap-2 text-zinc-400 text-sm">
-            <div className="w-4 h-4 border-2 border-zinc-600 border-t-zinc-300 rounded-full animate-spin" />
-            Waiting for wallet signature…
-          </div>
-        )}
-        {status === "verified" && (
-          <div className="flex items-center gap-2 text-emerald-400 text-sm font-medium">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-            Verified ✓
+        {/* Status */}
+        {statusLine[status] && (
+          <div className="flex items-center gap-2 text-sm">
+            {(status === "connecting" || status === "signing" || status === "verifying") && (
+              <svg className="animate-spin w-4 h-4 shrink-0 text-emerald-400" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            )}
+            {status === "verified" && (
+              <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+            <span className={status === "verified" ? "text-emerald-400 font-medium" : "text-zinc-400"}>
+              {statusLine[status]}
+            </span>
           </div>
         )}
 
-        {/* Countdown */}
-        {(status === "scanning") && expiresAt && (
-          <p className={`text-xs ${isAmber ? "text-amber-400" : "text-zinc-500"}`}>
-            Expires in {formatCountdown(msLeft)}
-          </p>
+        {status === "error" && errorMsg && (
+          <div className="rounded-lg bg-red-950/50 border border-red-800 px-3 py-2 text-xs text-red-300 text-center w-full">
+            {errorMsg}
+          </div>
         )}
 
-        {/* Refresh / Cancel */}
+        <p className="text-zinc-600 text-xs text-center">
+          Works with Pera, Defly, Kibisis, and any WalletConnect-compatible Algorand wallet
+        </p>
+
+        {/* Action buttons */}
         <div className="flex gap-3 w-full mt-1">
-          {(status === "expired" || status === "error") && (
+          {(status === "idle" || status === "error") && (
             <button
-              onClick={issueChallenge}
+              onClick={handleConnect}
               className="flex-1 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-colors"
             >
-              Refresh QR
+              {status === "error" ? "Retry" : "Connect Wallet"}
+            </button>
+          )}
+          {busy && (
+            <button
+              disabled
+              className="flex-1 py-2 rounded-md bg-emerald-600 opacity-50 cursor-not-allowed text-white text-sm font-medium flex items-center justify-center gap-2"
+            >
+              <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Working…
             </button>
           )}
           <button

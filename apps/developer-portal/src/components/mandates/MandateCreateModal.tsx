@@ -90,7 +90,7 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
       const res = await fetch(`/api/agents/${agentId}/mandate/create`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload({ liquidAuthSessionId: sessionId })),
+        body: JSON.stringify(buildPayload({ peraSessionId: sessionId })),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));

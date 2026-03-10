@@ -33,7 +33,7 @@ import {
 import { getRedis }                            from "./redis.js";
 import { getAgent, updateAgentRecord }         from "./agentRegistry.js";
 import { emitSecurityEvent }                   from "./securityAudit.js";
-import { consumeVerifiedSession }              from "../auth/humanAuth.js";
+import { consumeVerifiedSession, consumeVerifiedPeraSession } from "../auth/humanAuth.js";
 import type { Mandate, RecurringConfig }       from "../types/mandate.js";
 
 // ── Redis key constants ───────────────────────────────────────────
@@ -377,20 +377,22 @@ export interface CreateMandateInput {
   expiresAt?:          number;
   // Auth — provide exactly one:
   webauthnAssertion?:  AuthenticationResponseJSON;   // Standard WebAuthn (device passkey)
-  liquidAuthSessionId?: string;                       // Liquid Auth (Algorand wallet QR)
+  liquidAuthSessionId?: string;                       // Liquid Auth (legacy QR)
+  peraSessionId?:      string;                        // Pera Connect (WalletConnect)
 }
 
 /**
  * Create a new mandate. Human auth required — exactly one of:
  *   - webauthnAssertion   (Standard WebAuthn / device passkey)
- *   - liquidAuthSessionId (Liquid Auth / Algorand wallet QR)
+ *   - liquidAuthSessionId (Liquid Auth legacy QR)
+ *   - peraSessionId       (Pera Connect / WalletConnect)
  *
  * Steps:
  *   1. Validate constraints (fast, no I/O)
  *   2. Validate exactly one auth method provided
  *   3. Load agent
  *   4. Auth path — WebAuthn: verify assertion + update counter
- *               — Liquid Auth: consume verified session, check address binding
+ *               — Liquid/Pera Auth: consume verified session, check address binding
  *   5. Build mandate, HMAC-sign, store in Redis, emit event
  */
 export async function createMandate(
@@ -403,11 +405,12 @@ export async function createMandate(
   // ── Step 2: Validate exactly one auth method ──────────────────
   const isWebAuthn   = !!input.webauthnAssertion;
   const isLiquidAuth = !!input.liquidAuthSessionId;
-  if (!isWebAuthn && !isLiquidAuth) {
-    throw new Error("Provide webauthnAssertion or liquidAuthSessionId for mandate creation");
+  const isPeraAuth   = !!input.peraSessionId;
+  if (!isWebAuthn && !isLiquidAuth && !isPeraAuth) {
+    throw new Error("Provide webauthnAssertion, liquidAuthSessionId, or peraSessionId for mandate creation");
   }
-  if (isWebAuthn && isLiquidAuth) {
-    throw new Error("Provide only one auth method: webauthnAssertion or liquidAuthSessionId");
+  if ([isWebAuthn, isLiquidAuth, isPeraAuth].filter(Boolean).length > 1) {
+    throw new Error("Provide only one auth method");
   }
 
   const redis = getRedis();
@@ -460,25 +463,23 @@ export async function createMandate(
     await updateAgentRecord({ ...agent, webauthnCounter: verification.authenticationInfo.newCounter });
 
   } else {
-    // ── Liquid Auth path (Algorand wallet QR) ─────────────────
+    // ── Liquid Auth / Pera Connect path ───────────────────────
     if (!agent.ownerWalletId) {
       throw new Error(
         "No owner address registered for this agent. " +
-        "Call POST /api/agents/:agentId/auth/liquid-register first.",
+        "Call POST /api/agents/:agentId/auth/pera-register first.",
       );
     }
     if (agent.ownerWalletId !== input.ownerWalletId) {
       throw new Error("ownerWalletId mismatch — not the registered owner of this agent");
     }
 
-    // consumeVerifiedSession: atomically GETDEL, checks agentId + intent binding
-    const { address } = await consumeVerifiedSession(
-      input.liquidAuthSessionId!,
-      agentId,
-      "mandate-create",
-    );
+    const { address } = isPeraAuth
+      ? await consumeVerifiedPeraSession(input.peraSessionId!, agentId, "mandate-create")
+      : await consumeVerifiedSession(input.liquidAuthSessionId!, agentId, "mandate-create");
+
     if (address !== agent.ownerWalletId) {
-      throw new Error("Liquid Auth session address does not match registered owner");
+      throw new Error("Session address does not match registered owner");
     }
   }
 
@@ -576,7 +577,8 @@ export interface RevokeMandateInput {
   ownerWalletId:        string;
   // Auth — provide exactly one:
   webauthnAssertion?:   AuthenticationResponseJSON;   // Standard WebAuthn (device passkey)
-  liquidAuthSessionId?: string;                        // Liquid Auth (Algorand wallet QR)
+  liquidAuthSessionId?: string;                        // Liquid Auth (legacy QR)
+  peraSessionId?:       string;                        // Pera Connect (WalletConnect)
 }
 
 /**
@@ -592,11 +594,12 @@ export async function revokeMandate(
   // Validate exactly one auth method
   const isWebAuthn   = !!input.webauthnAssertion;
   const isLiquidAuth = !!input.liquidAuthSessionId;
-  if (!isWebAuthn && !isLiquidAuth) {
-    throw new Error("Provide webauthnAssertion or liquidAuthSessionId for mandate revocation");
+  const isPeraAuth   = !!input.peraSessionId;
+  if (!isWebAuthn && !isLiquidAuth && !isPeraAuth) {
+    throw new Error("Provide webauthnAssertion, liquidAuthSessionId, or peraSessionId for mandate revocation");
   }
-  if (isWebAuthn && isLiquidAuth) {
-    throw new Error("Provide only one auth method: webauthnAssertion or liquidAuthSessionId");
+  if ([isWebAuthn, isLiquidAuth, isPeraAuth].filter(Boolean).length > 1) {
+    throw new Error("Provide only one auth method");
   }
 
   const redis = getRedis();
@@ -657,14 +660,12 @@ export async function revokeMandate(
     await updateAgentRecord({ ...agent, webauthnCounter: verification.authenticationInfo.newCounter });
 
   } else {
-    // ── Liquid Auth path (Algorand wallet QR) ─────────────────
-    const { address } = await consumeVerifiedSession(
-      input.liquidAuthSessionId!,
-      agentId,
-      "mandate-revoke",
-    );
+    // ── Liquid Auth / Pera Connect path ───────────────────────
+    const { address } = isPeraAuth
+      ? await consumeVerifiedPeraSession(input.peraSessionId!, agentId, "mandate-revoke")
+      : await consumeVerifiedSession(input.liquidAuthSessionId!, agentId, "mandate-revoke");
     if (address !== agent.ownerWalletId) {
-      throw new Error("Liquid Auth session address does not match registered owner");
+      throw new Error("Session address does not match registered owner");
     }
   }
 

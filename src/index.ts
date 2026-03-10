@@ -10,11 +10,12 @@ setMaxListeners(0);
 import { initSentry } from "./lib/sentry.js";
 initSentry(); // Must be first — before any other imports touch the network
 
+import algosdk from "algosdk";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { config } from "./config.js";
-import { getNodeStatus } from "./network/nodely.js";
+import { getAlgodClient, getNodeStatus } from "./network/nodely.js";
 import { rateLimiter } from "./middleware/rateLimiter.js";
 import { x402Paywall } from "./middleware/x402.js";
 import { constructAtomicGroup, constructBatchedAtomicGroup } from "./services/transaction.js";
@@ -34,7 +35,7 @@ import { checkExecutionLimits } from "./protection/executionLimiter.js";
 import { isCircuitOpen, recordSuccess, recordFailure } from "./protection/circuitBreaker.js";
 import { logRejection } from "./protection/rejectionLogger.js";
 import {
-  getAgent, listAgents, updateAgentStatus,
+  getAgent, listAgents, updateAgentStatus, updateAgentRecord,
   setHalt, clearHalt, isHalted, getActiveRotation, getRotationBatch,
   assertCustodyInvariant,
 } from "./services/agentRegistry.js";
@@ -56,12 +57,14 @@ import {
 }                                        from "./services/mandateService.js";
 import {
   issueAlgorandChallenge, submitAlgorandSignature, getLiquidAuthStatus,
+  issueAgentPeraChallenge, verifyAgentPeraSignature, consumeVerifiedPeraSession,
 }                                        from "./auth/humanAuth.js";
 import {
   issueAdminLiquidChallenge, submitAdminLiquidSignature, getAdminLiquidStatus,
   consumeAdminLiquidSession,
   issueAdminWebAuthnRegChallenge, verifyAndRegisterAdminWebAuthn,
   issueAdminWebAuthnLoginChallenge, verifyAdminWebAuthnLoginAssertion,
+  issueAdminPeraChallenge, verifyAdminPeraSignature, consumeAdminPeraSession,
 }                                        from "./auth/adminAuth.js";
 import { evaluateMandate }               from "./services/mandateEngine.js";
 import a2aRouter                         from "./routes/a2a.js";
@@ -701,6 +704,54 @@ app.get("/api/portal/telemetry", requirePortalAuth, async (_req, res) => {
   } catch (err) {
     console.error("[portal/telemetry]", err);
     res.json({ metrics: [], recentEvents: [] });
+  }
+});
+
+app.get("/api/portal/treasury-status", requirePortalAuth, async (_req, res) => {
+  try {
+    const mnemonic = process.env.ALGO_TREASURY_MNEMONIC;
+    const gasEnabled = process.env.GAS_STATION_ENABLED !== "false";
+    const intervalS  = parseInt(process.env.GAS_STATION_INTERVAL_S   ?? "30",  10);
+    const triggerMicro = parseInt(process.env.GAS_STATION_TRIGGER_MICRO ?? "500000", 10);
+    const topupMicro   = parseInt(process.env.GAS_STATION_TOPUP_MICRO  ?? "700000",  10);
+
+    let treasuryAddress: string | null = null;
+    let algoBalanceMicro: number | null = null;
+    let usdcBalanceMicro: number | null = null;
+
+    if (mnemonic) {
+      const account = algosdk.mnemonicToSecretKey(mnemonic);
+      treasuryAddress = account.addr.toString();
+
+      const algod = getAlgodClient();
+      const info  = await algod.accountInformation(treasuryAddress).do();
+      algoBalanceMicro = Number(info.amount ?? 0);
+
+      const NETWORK = process.env.ALGORAND_NETWORK ?? "testnet";
+      const USDC_ASSET_ID = NETWORK === "mainnet" ? 31566704 : 10458941;
+      const assets = (info.assets ?? []) as unknown as Array<{ assetId?: bigint; amount: bigint | number }>;
+      const usdcAsset = assets.find((a) => Number(a.assetId) === USDC_ASSET_ID);
+      usdcBalanceMicro = usdcAsset ? Number(usdcAsset.amount) : 0;
+    }
+
+    res.json({
+      gasStation: {
+        enabled:      gasEnabled && !!mnemonic,
+        configured:   !!mnemonic,
+        intervalS,
+        triggerMicro,
+        topupMicro,
+      },
+      treasury: {
+        address:          treasuryAddress,
+        algoBalanceMicro,
+        usdcBalanceMicro,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[portal/treasury-status]", msg);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -1687,7 +1738,7 @@ app.post("/api/agents/:agentId/mandate/create", requirePortalAuth, async (req, r
   const {
     ownerWalletId, maxPerTx, maxPer10Min, maxPerDay,
     allowedRecipients, recurring,
-    webauthnAssertion, liquidAuthSessionId,
+    webauthnAssertion, liquidAuthSessionId, peraSessionId,
   } = req.body;
 
   // Coerce expiresAt to a finite integer — guards against NaN/Infinity slipping
@@ -1698,9 +1749,9 @@ app.post("/api/agents/:agentId/mandate/create", requirePortalAuth, async (req, r
       ? (Number.isFinite(Number(rawExpiry)) ? Number(rawExpiry) : undefined)
       : undefined;
 
-  if (!ownerWalletId || (!webauthnAssertion && !liquidAuthSessionId)) {
+  if (!ownerWalletId || (!webauthnAssertion && !liquidAuthSessionId && !peraSessionId)) {
     res.status(400).json({
-      error: "Missing required fields: ownerWalletId and one of (webauthnAssertion | liquidAuthSessionId)",
+      error: "Missing required fields: ownerWalletId and one of (webauthnAssertion | liquidAuthSessionId | peraSessionId)",
     });
     return;
   }
@@ -1716,6 +1767,7 @@ app.post("/api/agents/:agentId/mandate/create", requirePortalAuth, async (req, r
       expiresAt,
       webauthnAssertion,
       liquidAuthSessionId,
+      peraSessionId,
     });
     res.status(201).json(mandate);
   } catch (err) {
@@ -1732,11 +1784,11 @@ app.post("/api/agents/:agentId/mandate/create", requirePortalAuth, async (req, r
 app.post("/api/agents/:agentId/mandate/:mandateId/revoke", requirePortalAuth, async (req, res) => {
   const agentId   = String(req.params.agentId || "");
   const mandateId = String(req.params.mandateId || "");
-  const { ownerWalletId, webauthnAssertion, liquidAuthSessionId } = req.body;
+  const { ownerWalletId, webauthnAssertion, liquidAuthSessionId, peraSessionId } = req.body;
 
-  if (!ownerWalletId || (!webauthnAssertion && !liquidAuthSessionId)) {
+  if (!ownerWalletId || (!webauthnAssertion && !liquidAuthSessionId && !peraSessionId)) {
     res.status(400).json({
-      error: "Missing required fields: ownerWalletId and one of (webauthnAssertion | liquidAuthSessionId)",
+      error: "Missing required fields: ownerWalletId and one of (webauthnAssertion | liquidAuthSessionId | peraSessionId)",
     });
     return;
   }
@@ -1746,6 +1798,7 @@ app.post("/api/agents/:agentId/mandate/:mandateId/revoke", requirePortalAuth, as
       ownerWalletId,
       webauthnAssertion,
       liquidAuthSessionId,
+      peraSessionId,
     });
     res.json(result);
   } catch (err) {
@@ -1858,6 +1911,89 @@ app.post("/api/agents/:agentId/auth/liquid-register", requirePortalAuth, async (
       msg.includes("mismatch") || msg.includes("denied") ? 403 :
       msg.includes("Liquid Auth") ? 401 :
       400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+// ── Pera Connect Auth (WalletConnect — Pera, Defly, Kibisis) ─────
+//
+// POST /api/agents/:agentId/auth/pera-challenge   Issue random 32-byte challenge
+// POST /api/agents/:agentId/auth/pera-verify      Verify wallet signature → verifiedSessionId
+// POST /api/agents/:agentId/auth/pera-register    Register ownerWalletId from verified pera session
+
+app.post("/api/agents/:agentId/auth/pera-challenge", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  const intent  = String(req.body?.intent ?? "register");
+  const validIntents = ["register", "mandate-create", "mandate-revoke"];
+  if (!validIntents.includes(intent)) {
+    res.status(400).json({ error: `Invalid intent. Must be one of: ${validIntents.join(", ")}` });
+    return;
+  }
+  try {
+    const result = await issueAgentPeraChallenge(agentId, intent as "register" | "mandate-create" | "mandate-revoke");
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post("/api/agents/:agentId/auth/pera-verify", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  const { challengeId, intent, address, signatureB64 } = req.body as {
+    challengeId?: string; intent?: string; address?: string; signatureB64?: string;
+  };
+  if (!challengeId || !intent || !address || !signatureB64) {
+    res.status(400).json({ error: "Missing required fields: challengeId, intent, address, signatureB64" });
+    return;
+  }
+  const validIntents = ["register", "mandate-create", "mandate-revoke"];
+  if (!validIntents.includes(intent)) {
+    res.status(400).json({ error: `Invalid intent` });
+    return;
+  }
+  try {
+    const result = await verifyAgentPeraSignature(
+      challengeId, agentId, intent as "register" | "mandate-create" | "mandate-revoke",
+      address, signatureB64,
+    );
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status =
+      msg.includes("not found") || msg.includes("expired") ? 404 :
+      msg.includes("Invalid signature") ? 401 : 400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.post("/api/agents/:agentId/auth/pera-register", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  const { peraSessionId } = req.body as { peraSessionId?: string };
+  if (!peraSessionId) {
+    res.status(400).json({ error: "Missing required field: peraSessionId" });
+    return;
+  }
+  try {
+    const { address } = await consumeVerifiedPeraSession(peraSessionId, agentId, "register");
+    // Reuse registerAlgorandAddress logic inline
+    const agent = await getAgent(agentId);
+    if (!agent) { res.status(404).json({ error: `Agent not found: ${agentId}` }); return; }
+    if (agent.ownerWalletId && agent.ownerWalletId !== address) {
+      res.status(403).json({ error: "ownerWalletId already registered — lateral ownership transfer denied" });
+      return;
+    }
+    if (!algosdk.isValidAddress(address)) {
+      res.status(400).json({ error: `Invalid Algorand address from session: ${address}` });
+      return;
+    }
+    await updateAgentRecord({ ...agent, ownerWalletId: address });
+    res.json({ agentId, ownerWalletId: address, status: "registered" });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status =
+      msg.includes("not found") || msg.includes("expired") ? 404 :
+      msg.includes("mismatch") || msg.includes("denied") ? 403 :
+      msg.includes("Invalid signature") ? 401 : 400;
     res.status(status).json({ error: msg });
   }
 });
@@ -2011,6 +2147,54 @@ app.post("/api/admin/auth/liquid-consume", async (req, res) => {
   if (!sessionId) { res.status(400).json({ error: "Missing sessionId" }); return; }
   try {
     const result = await consumeAdminLiquidSession(sessionId);
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = msg.includes("not found") || msg.includes("expired") ? 404 :
+      msg.includes("not yet verified") ? 400 : 500;
+    res.status(status).json({ error: msg });
+  }
+});
+
+// ── Admin Portal Auth — Pera Connect ─────────────────────────────
+//
+// POST /api/admin/auth/pera-challenge   Issue random 32-byte challenge
+// POST /api/admin/auth/pera-verify      Verify wallet signature → verifiedSessionId
+// POST /api/admin/auth/pera-consume     Consume verified session → address (used by portal login)
+
+app.post("/api/admin/auth/pera-challenge", async (_req, res) => {
+  try {
+    res.json(await issueAdminPeraChallenge());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post("/api/admin/auth/pera-verify", async (req, res) => {
+  const { challengeId, address, signatureB64 } = req.body as {
+    challengeId?: string; address?: string; signatureB64?: string;
+  };
+  if (!challengeId || !address || !signatureB64) {
+    res.status(400).json({ error: "Missing required fields: challengeId, address, signatureB64" });
+    return;
+  }
+  try {
+    const result = await verifyAdminPeraSignature(challengeId, address, signatureB64);
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status =
+      msg.includes("not found") || msg.includes("expired") ? 404 :
+      msg.includes("Invalid signature") ? 401 : 400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.post("/api/admin/auth/pera-consume", async (req, res) => {
+  const challengeId = String(req.body?.challengeId ?? "");
+  if (!challengeId) { res.status(400).json({ error: "Missing challengeId" }); return; }
+  try {
+    const result = await consumeAdminPeraSession(challengeId);
     res.json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

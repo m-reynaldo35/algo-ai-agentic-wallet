@@ -55,31 +55,38 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({})) as {
     agentId?: string;
     liquidAuthSessionId?: string;
+    peraSessionId?: string;
     webauthnAssertion?: unknown;
   };
 
-  const { agentId, liquidAuthSessionId, webauthnAssertion } = body;
+  const { agentId, liquidAuthSessionId, peraSessionId, webauthnAssertion } = body;
 
   if (!agentId || typeof agentId !== "string") {
     return NextResponse.json({ error: "agentId required" }, { status: 400 });
   }
-  if (!liquidAuthSessionId && !webauthnAssertion) {
+  if (!liquidAuthSessionId && !peraSessionId && !webauthnAssertion) {
     return NextResponse.json(
-      { error: "liquidAuthSessionId or webauthnAssertion required" },
+      { error: "peraSessionId, liquidAuthSessionId, or webauthnAssertion required" },
       { status: 400 },
     );
   }
 
   let result: { ownerWalletId?: string; error?: string; status: number };
 
-  if (liquidAuthSessionId) {
-    // Liquid Auth path: liquid-register accepts sessionId or liquidAuthSessionId
+  if (peraSessionId) {
+    // Pera Connect path
+    result = await callBackend(
+      `${API_URL}/api/agents/${agentId}/auth/pera-register`,
+      { peraSessionId },
+    );
+  } else if (liquidAuthSessionId) {
+    // Liquid Auth (legacy) path
     result = await callBackend(
       `${API_URL}/api/agents/${agentId}/auth/liquid-register`,
       { liquidAuthSessionId },
     );
   } else {
-    // WebAuthn authentication path: verify assertion server-side
+    // WebAuthn authentication path
     result = await callBackend(
       `${API_URL}/api/agents/${agentId}/auth/webauthn-login`,
       { assertion: webauthnAssertion },

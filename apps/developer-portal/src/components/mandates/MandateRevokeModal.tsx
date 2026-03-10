@@ -233,7 +233,7 @@ export default function MandateRevokeModal({ agentId, mandate, onRevoked, onClos
           intent="mandate-revoke"
           onVerified={(sid) => {
             setShowQR(false);
-            revokeWithSession({ liquidAuthSessionId: sid });
+            revokeWithSession({ peraSessionId: sid });
           }}
           onClose={() => setShowQR(false)}
         />

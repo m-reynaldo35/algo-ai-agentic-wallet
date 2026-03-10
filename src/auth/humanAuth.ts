@@ -294,3 +294,116 @@ export async function consumeVerifiedSession(
 
   return { address: session.address };
 }
+
+// ── Pera Connect Auth ─────────────────────────────────────────────────────
+
+const PERA_SESSION_PREFIX = "x402:pera-session:";
+const PERA_SESSION_TTL_S  = 300; // 5 minutes
+
+interface PeraAuthSession {
+  challengeId:  string;
+  agentId:      string;
+  intent:       LiquidAuthIntent;
+  challengeHex: string;
+  status:       "pending" | "verified";
+  address?:     string;
+  expiresAt:    number; // ms epoch
+}
+
+export async function issueAgentPeraChallenge(
+  agentId: string,
+  intent:  LiquidAuthIntent,
+): Promise<{ challengeId: string; challengeB64: string; expiresAt: number }> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const challengeId  = randomUUID();
+  const challengeBuf = randomBytes(32);
+  const expiresAt    = Date.now() + PERA_SESSION_TTL_S * 1_000;
+
+  const session: PeraAuthSession = {
+    challengeId,
+    agentId,
+    intent,
+    challengeHex: challengeBuf.toString("hex"),
+    status: "pending",
+    expiresAt,
+  };
+
+  await redis.set(
+    `${PERA_SESSION_PREFIX}${challengeId}`,
+    JSON.stringify(session),
+    { ex: PERA_SESSION_TTL_S },
+  );
+
+  return { challengeId, challengeB64: challengeBuf.toString("base64"), expiresAt };
+}
+
+export async function verifyAgentPeraSignature(
+  challengeId:      string,
+  expectedAgentId:  string,
+  expectedIntent:   LiquidAuthIntent,
+  address:          string,
+  signatureB64:     string,
+): Promise<{ verifiedSessionId: string }> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const raw = await redis.get(`${PERA_SESSION_PREFIX}${challengeId}`) as unknown;
+  if (!raw) throw new Error("Challenge not found — expired or invalid");
+
+  const session: PeraAuthSession = typeof raw === "string"
+    ? JSON.parse(raw) as PeraAuthSession
+    : raw as PeraAuthSession;
+
+  if (Date.now() > session.expiresAt) throw new Error("Challenge expired");
+  if (session.agentId !== expectedAgentId) throw new Error("agentId mismatch");
+  if (session.intent !== expectedIntent) throw new Error("intent mismatch");
+  if (session.status === "verified") return { verifiedSessionId: challengeId };
+  if (!algosdk.isValidAddress(address)) throw new Error(`Invalid Algorand address: ${address}`);
+
+  const challengeBytes = Buffer.from(session.challengeHex, "hex");
+  const signatureBytes = Buffer.from(signatureB64, "base64");
+
+  let valid: boolean;
+  try {
+    valid = algosdk.verifyBytes(challengeBytes, signatureBytes, address);
+  } catch (err) {
+    throw new Error(`Signature error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!valid) throw new Error("Invalid signature — address did not sign this challenge");
+
+  const postVerifyTtl = Math.min(60, Math.max(Math.ceil((session.expiresAt - Date.now()) / 1_000), 1));
+  await redis.set(
+    `${PERA_SESSION_PREFIX}${challengeId}`,
+    JSON.stringify({ ...session, status: "verified", address }),
+    { ex: postVerifyTtl },
+  );
+
+  console.log(`[LiquidAuth] Pera Connect verified: agent=${expectedAgentId} intent=${expectedIntent} address=${address}`);
+  return { verifiedSessionId: challengeId };
+}
+
+export async function consumeVerifiedPeraSession(
+  challengeId:      string,
+  expectedAgentId:  string,
+  expectedIntent:   LiquidAuthIntent,
+): Promise<{ address: string }> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const raw = await redis.getdel(`${PERA_SESSION_PREFIX}${challengeId}`) as unknown;
+  if (!raw) throw new Error("Pera session not found — expired or already used");
+
+  const session: PeraAuthSession = typeof raw === "string"
+    ? JSON.parse(raw) as PeraAuthSession
+    : raw as PeraAuthSession;
+
+  if (session.status !== "verified") throw new Error("Pera session pending — wallet has not signed yet");
+  if (Date.now() > session.expiresAt) throw new Error("Pera session expired");
+  if (session.agentId !== expectedAgentId) throw new Error("agentId mismatch");
+  if (session.intent !== expectedIntent) throw new Error("intent mismatch");
+  if (!session.address) throw new Error("Session missing verified address");
+
+  return { address: session.address };
+}
