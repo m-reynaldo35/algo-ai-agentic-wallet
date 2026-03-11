@@ -277,6 +277,15 @@ export async function assertCrossRegionTreasuryHash(): Promise<void> {
   const HASH_KEY   = "x402:config:treasury-hash";
   const actualHash = createHash("sha256").update(config.x402.payToAddress).digest("hex");
 
+  // TREASURY_HASH_RESET=true — operator is intentionally rotating the treasury address.
+  // Delete the stored hash so this boot writes the new one as the reference.
+  if (process.env.TREASURY_HASH_RESET === "true") {
+    await redis.del(HASH_KEY);
+    await redis.set(HASH_KEY, actualHash, { nx: true });
+    console.warn(`[Boot] Treasury hash reset — new address anchored (${actualHash.slice(0, 16)}…)`);
+    return;
+  }
+
   // SET NX — only set if key does not exist (first instance wins)
   const result = await redis.set(HASH_KEY, actualHash, { nx: true });
 
@@ -293,7 +302,7 @@ export async function assertCrossRegionTreasuryHash(): Promise<void> {
       `This instance has X402_PAY_TO_ADDRESS hash ${actualHash.slice(0, 16)}… ` +
       `but Redis records hash ${storedHash.slice(0, 16)}…. ` +
       `Ensure X402_PAY_TO_ADDRESS is identical across all deployment regions. ` +
-      `To reset: delete the Redis key "${HASH_KEY}" and restart all instances.`,
+      `To reset: set TREASURY_HASH_RESET=true, redeploy, then remove the var.`,
     );
   }
 }
