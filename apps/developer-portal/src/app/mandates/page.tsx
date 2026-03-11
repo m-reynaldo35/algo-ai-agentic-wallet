@@ -68,10 +68,10 @@ export default function MandatesPage() {
   async function handleRegisterVerified(sessionId: string) {
     if (!agentId) return;
     try {
-      const res = await fetch(`/api/agents/${agentId}/auth/liquid-register`, {
+      const res = await fetch(`/api/agents/${agentId}/auth/pera-register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ liquidAuthSessionId: sessionId }),
+        body: JSON.stringify({ peraSessionId: sessionId }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();

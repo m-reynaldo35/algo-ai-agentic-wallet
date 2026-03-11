@@ -28,21 +28,26 @@ Claude discovers tool → pays → gets data → answers user
 
 ---
 
-## Current State (after Sprint 13 + CLI)
+## Current State (after Sprint L)
 
 - Railway backend live: `https://api.ai-agentic-wallet.com`
 - Vercel frontend live: `https://ai-agentic-wallet.com`
-- Redis internal TCP active — avg enqueue ~1,250ms
+- Redis internal TCP active — p95 enqueue 1.53s, avg ~1.25s
 - Auth-addr cache (5-min TTL) eliminates algod round-trips
 - Nodely failover active (primary → fallback + recovery probe)
 - SDK `@algo-wallet/x402-client@0.2.0` — built, not yet published to npm
 - MCP server `@algo-wallet/x402-mcp@0.1.0` — built, not yet published
 - Python SDK `algo-x402@0.1.0` — built, not yet published
 - CLI `@algo-wallet/x402-cli@0.1.0` — built, not yet published
-- Gas station code complete — **awaiting treasury wallet + env var to activate**
+- Gas station active — treasury-sponsored agent registration (no ALGO needed), oracle-scaled top-ups
+- CoinGecko price oracle integrated — dynamically scales gas buffer + top-up amounts by ALGO/USD price
+- Anti-Sybil: 50 sponsored registrations/day global cap + treasury outflow guard on all registrations
+- Pera Connect (WalletConnect) replacing Liquid Auth — admin login, customer login, mandate ops
+- `ADMIN_WALLET_ADDRESSES=5ABLML...Y32Y` set on Railway + Vercel
+- Agent creation: treasury sponsors fund+optin+rekey atomically — user deposits USDC only
+- Landing page (`api.ai-agentic-wallet.com`) updated — removed cross-chain content, correct API docs
 - Customer dashboard: mandates inline, revoked counts, wallet QR sidebar, agent status card
 - Admin portal: all pages built (dashboard, treasury, agents, security, logs, settings)
-- Treasury page: live ALGO/USDC balances + gas station status via `/api/portal/treasury-status`
 - `tsc --noEmit` passes clean on backend + portal
 
 ---
@@ -67,6 +72,7 @@ Claude discovers tool → pays → gets data → answers user
 - [x] Wipe test Redis data: `REDIS_URL="..." npm run reset-test-data`
 - [x] Redeploy `algo-ai-wallet` on Railway after Redis wipe (healthcheck passing, service healthy)
 - [x] Delete the failed duplicate service `algo-ai-agentic-wallet` from Railway
+- [x] New treasury wallet generated (algosdk 25-word mnemonic), treasury hash reset via `TREASURY_HASH_RESET=true`
 
 ### 1.2 Admin Wallet Whitelist
 
@@ -89,7 +95,7 @@ Claude discovers tool → pays → gets data → answers user
 ## Sprint 6 — System Audit *(ops tasks remain)*
 
 ### 6.1 Security Audit
-- [ ] All secrets rotated (Sprint 1.1)
+- [x] All secrets rotated (Sprint 1.1)
 - [x] No mnemonics in source
 - [x] `.env` not committed
 - [x] CORS locked to production domains
@@ -290,15 +296,16 @@ No MongoDB. No signal server. No TURN. WalletConnect relay is hosted by WalletCo
 - [ ] Test mandate create: connect Pera → sign → mandate active
 - [ ] Test mandate revoke: connect Pera → sign → mandate revoked
 
-### L.5 — Cleanup & Verification
+### L.5 — Cleanup & Verification *(next session — needs real device)*
 
-- [ ] Remove old `/api/admin/auth/liquid-sign` and `/api/agents/:agentId/auth/liquid-sign` routes (keep liquid-challenge/status/consume for backwards compat during rollout)
-- [ ] `tsc --noEmit` clean on backend + portal ✓ (already passing)
-- [ ] Admin login: 3 consecutive Pera wallet → sign → `/dashboard` successes
+- [x] Remove old `/api/admin/auth/liquid-sign` and `/api/agents/:agentId/auth/liquid-sign` routes
+- [x] `tsc --noEmit` clean on backend + portal
+- [ ] Admin login: connect Pera (`5ABLML...Y32Y`) → sign → `/dashboard`
 - [ ] Admin login: wrong wallet → 403 confirmed
-- [ ] Customer login: 3 consecutive successes
+- [ ] Agent create: treasury sponsors fund+optin+rekey → skip ALGO step → USDC deposit screen
+- [ ] Customer login: agent wallet Pera scan → `/app/dashboard`
 - [ ] Mandate create + revoke: end-to-end with real Pera scan
-- [ ] WebAuthn path still works (regression check)
+- [ ] WebAuthn path regression check
 
 ---
 

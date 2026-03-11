@@ -6,10 +6,9 @@
  * so they must be unauthenticated on both portal and backend sides.
  *
  * Supported routes (all public on backend):
- *   POST /api/admin/auth/liquid-challenge
- *   POST /api/admin/auth/liquid-sign
- *   GET  /api/admin/auth/liquid-status/:sessionId
- *   POST /api/admin/auth/liquid-consume
+ *   POST /api/admin/auth/pera-challenge
+ *   POST /api/admin/auth/pera-verify
+ *   POST /api/admin/auth/pera-consume
  *   POST /api/admin/auth/webauthn-register-challenge
  *   POST /api/admin/auth/webauthn-register
  *   POST /api/admin/auth/webauthn-login-challenge

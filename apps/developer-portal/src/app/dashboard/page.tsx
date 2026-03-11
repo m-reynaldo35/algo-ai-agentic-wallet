@@ -174,12 +174,12 @@ export default function DashboardPage() {
               {
                 label:  "Algod Node",
                 ok:     health?.node !== undefined,
-                sub:    health?.node.usingFallback ? "Using fallback" : (health?.node.provider ?? "—"),
+                sub:    health?.node?.usingFallback ? "Using fallback" : (health?.node?.provider ?? "—"),
               },
               {
                 label: "Indexer",
-                ok:    health?.node.indexerOk ?? false,
-                sub:   health?.node.indexerOk ? "Reachable" : "Unreachable",
+                ok:    health?.node?.indexerOk ?? false,
+                sub:   health?.node?.indexerOk ? "Reachable" : "Unreachable",
               },
               {
                 label: "Redis",

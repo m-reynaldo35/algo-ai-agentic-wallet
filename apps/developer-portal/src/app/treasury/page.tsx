@@ -35,25 +35,47 @@ interface SecurityMetrics {
   eventCounts: Record<string, number>;
 }
 
-function formatUsdc(micro?: number): string {
-  if (micro === undefined) return "—";
+interface TreasuryStatus {
+  gasStation: {
+    enabled:     boolean;
+    configured:  boolean;
+    intervalS:   number;
+    triggerMicro: number;
+    topupMicro:  number;
+  };
+  treasury: {
+    address:          string | null;
+    algoBalanceMicro: number | null;
+    usdcBalanceMicro: number | null;
+  };
+}
+
+function formatUsdc(micro?: number | null): string {
+  if (micro === undefined || micro === null) return "—";
   return `$${(micro / 1_000_000).toFixed(2)}`;
+}
+
+function formatAlgo(micro?: number | null): string {
+  if (micro === undefined || micro === null) return "—";
+  return `${(micro / 1_000_000).toFixed(3)} ALGO`;
 }
 
 // ── Main page ──────────────────────────────────────────────────────
 
 export default function TreasuryPage() {
-  const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
-  const [volume,    setVolume]    = useState<VolumePoint[]>([]);
-  const [security,  setSecurity]  = useState<SecurityMetrics | null>(null);
-  const [loading,   setLoading]   = useState(true);
+  const [telemetry,      setTelemetry]      = useState<TelemetryData | null>(null);
+  const [volume,         setVolume]         = useState<VolumePoint[]>([]);
+  const [security,       setSecurity]       = useState<SecurityMetrics | null>(null);
+  const [treasuryStatus, setTreasuryStatus] = useState<TreasuryStatus | null>(null);
+  const [loading,        setLoading]        = useState(true);
 
   const fetchData = useCallback(async () => {
     try {
-      const [tRes, vRes, sRes] = await Promise.all([
+      const [tRes, vRes, sRes, tsRes] = await Promise.all([
         fetch("/api/live/telemetry"),
         fetch("/api/live/settlement-volume"),
         fetch("/api/live/security-metrics"),
+        fetch("/api/live/treasury-status"),
       ]);
       if (tRes.ok) setTelemetry(await tRes.json() as TelemetryData);
       if (vRes.ok) {
@@ -61,6 +83,7 @@ export default function TreasuryPage() {
         setVolume(Array.isArray(d) ? d : (d.data ?? d.points ?? []));
       }
       if (sRes.ok) setSecurity(await sRes.json() as SecurityMetrics);
+      if (tsRes.ok) setTreasuryStatus(await tsRes.json() as TreasuryStatus);
     } catch { /* silent */ }
     finally { setLoading(false); }
   }, []);
@@ -108,6 +131,54 @@ export default function TreasuryPage() {
           </p>
         </div>
       )}
+
+      {/* Treasury wallet + gas station */}
+      <div>
+        <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-3">Treasury Wallet</h2>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            {
+              label: "ALGO Balance",
+              value: loading ? "…" : formatAlgo(treasuryStatus?.treasury.algoBalanceMicro),
+              color: (() => {
+                const b = treasuryStatus?.treasury.algoBalanceMicro;
+                if (b === null || b === undefined) return "text-zinc-400";
+                return b < 2_000_000 ? "text-red-400" : b < 5_000_000 ? "text-amber-400" : "text-emerald-400";
+              })(),
+            },
+            {
+              label: "USDC Balance",
+              value: loading ? "…" : formatUsdc(treasuryStatus?.treasury.usdcBalanceMicro),
+              color: "text-emerald-400",
+            },
+            {
+              label: "Gas Station",
+              value: loading ? "…" : !treasuryStatus?.gasStation.configured ? "Not configured" : treasuryStatus.gasStation.enabled ? "Active" : "Disabled",
+              color: !treasuryStatus?.gasStation.configured ? "text-amber-400" : treasuryStatus?.gasStation.enabled ? "text-emerald-400" : "text-zinc-400",
+            },
+            {
+              label: "Top-up Amount",
+              value: loading ? "…" : treasuryStatus?.gasStation.configured ? `${((treasuryStatus.gasStation.topupMicro) / 1_000_000).toFixed(2)} ALGO` : "—",
+              color: "text-zinc-400",
+            },
+          ].map(({ label, value, color }) => (
+            <div key={label} className="bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3">
+              <p className="text-xs text-zinc-500 mb-1">{label}</p>
+              <p className={`text-lg font-bold tabular-nums font-mono ${color}`}>{value}</p>
+            </div>
+          ))}
+        </div>
+        {treasuryStatus?.treasury.address && (
+          <p className="mt-2 text-xs text-zinc-600 font-mono">
+            Treasury: {treasuryStatus.treasury.address}
+          </p>
+        )}
+        {!treasuryStatus?.gasStation.configured && !loading && (
+          <p className="mt-2 text-xs text-amber-400">
+            Gas station inactive — set <code className="font-mono bg-zinc-800 px-1 rounded">ALGO_TREASURY_MNEMONIC</code> on Railway to activate.
+          </p>
+        )}
+      </div>
 
       {/* Volume summary cards */}
       <div>

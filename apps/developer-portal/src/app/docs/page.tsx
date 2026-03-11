@@ -48,6 +48,7 @@ export default function DocsPage() {
               ["Rate Limits", "#limits"],
               ["Types", "#types"],
               ["Error Handling", "#errors"],
+              ["CLI Reference", "#cli"],
             ].map(([label, href]) => (
               <li key={href}>
                 <a href={href} className="hover:text-white transition-colors">{label}</a>
@@ -391,6 +392,56 @@ try {
     }
   }
 }`}
+            />
+          </Section>
+
+          <Section title="CLI Reference" id="cli">
+            <p className="text-zinc-400 mb-4 text-sm leading-relaxed">
+              The <code className="text-emerald-400 bg-zinc-800 px-1.5 py-0.5 rounded text-sm">@algo-wallet/x402-cli</code> lets
+              you inspect agents, mandates, and transaction history directly from your terminal — no dashboard required.
+            </p>
+            <CodeBlock language="bash" code="npm install -g @algo-wallet/x402-cli" />
+            <p className="text-zinc-500 text-xs mt-3 mb-5">
+              Or run without installing: <code className="font-mono text-zinc-400">npx @algo-wallet/x402-cli &lt;command&gt;</code>
+            </p>
+            <div className="overflow-x-auto mb-5">
+              <table className="w-full text-sm border border-zinc-800 rounded-lg overflow-hidden">
+                <thead className="bg-zinc-900 text-zinc-400">
+                  <tr>
+                    <th className="text-left px-4 py-3">Command</th>
+                    <th className="text-left px-4 py-3">Description</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800">
+                  {[
+                    ["x402 health", "Backend health — node, Redis, halt state"],
+                    ["x402 balance --agent <id>", "Live ALGO + USDC balance for an agent"],
+                    ["x402 agents list", "List all registered agents with status"],
+                    ["x402 mandate list --agent <id>", "List active mandates for an agent"],
+                    ["x402 mandate list --agent <id> --all", "Include revoked mandates"],
+                    ["x402 history --agent <id>", "Transaction history (last 20)"],
+                    ["x402 history --agent <id> --limit 50", "Transaction history (custom limit)"],
+                  ].map(([cmd, desc]) => (
+                    <tr key={cmd} className="bg-zinc-950">
+                      <td className="px-4 py-3 font-mono text-emerald-400 text-xs whitespace-nowrap">{cmd}</td>
+                      <td className="px-4 py-3 text-zinc-400 text-xs">{desc}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <CodeBlock
+              language="bash"
+              code={`# Required env vars
+export X402_PORTAL_KEY="your-portal-api-key"   # from /dashboard → API Keys
+export X402_API_URL="https://api.ai-agentic-wallet.com"  # default
+export X402_NETWORK="testnet"                   # or "mainnet"
+
+# Examples
+x402 health
+x402 balance --agent my-agent-001
+x402 mandate list --agent my-agent-001 --all
+x402 history --agent my-agent-001 --limit 50`}
             />
           </Section>
 

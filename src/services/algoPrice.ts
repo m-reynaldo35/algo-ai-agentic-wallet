@@ -95,3 +95,71 @@ export function hasCachedPrice(): boolean {
 export function getCacheAgeMs(): number | null {
   return cache ? Date.now() - cache.fetchedAt : null;
 }
+
+// ── Oracle-scaled gas amounts ──────────────────────────────────────────────
+//
+// Protocol-fixed floor (immutable, cannot be reduced):
+//   100,000 µALGO  — account MBR
+//   100,000 µALGO  — USDC ASA MBR
+//     3,000 µALGO  — 3 tx fees (fee-pooled onto treasury txn)
+//   ─────────────
+//   203,000 µALGO  — hard floor
+//
+// Buffer tier (oracle-scaled — only the discretionary portion changes):
+//   ALGO < $1.00   →  50,000 µALGO buffer  (total 253,000)
+//   ALGO $1–$3     →  20,000 µALGO buffer  (total 223,000)
+//   ALGO $3–$10    →   5,000 µALGO buffer  (total 208,000)
+//   ALGO ≥ $10     →   3,000 µALGO buffer  (total 206,000 — bare minimum)
+//
+// At any price the agent receives enough ALGO to: hold MBR + USDC ASA MBR +
+// a small fee buffer before the gas station's first top-up cycle (~30s).
+
+export const REGISTRATION_FLOOR_MICRO = 203_000n;
+
+function bufferForPrice(priceUsd: number): bigint {
+  if (priceUsd < 1)   return 50_000n;
+  if (priceUsd < 3)   return 20_000n;
+  if (priceUsd < 10)  return  5_000n;
+  return 3_000n;
+}
+
+/**
+ * Total µALGO to send to a new agent wallet during treasury-sponsored
+ * registration. = protocol floor + oracle-scaled buffer.
+ */
+export function registrationFundMicro(priceUsd: number): bigint {
+  return REGISTRATION_FLOOR_MICRO + bufferForPrice(priceUsd);
+}
+
+/**
+ * Oracle-scaled gas station top-up amount.
+ * Fewer µALGO sent per top-up when ALGO is expensive — gas station cycles
+ * more frequently but total USD spend per cycle stays roughly constant.
+ *
+ *   ALGO < $1.00   →  700,000 µALGO  (~700 future payment fees)
+ *   ALGO $1–$3     →  500,000 µALGO  (~500)
+ *   ALGO $3–$10    →  300,000 µALGO  (~300)
+ *   ALGO ≥ $10     →  200,000 µALGO  (~200)
+ */
+export function gasTopUpMicro(priceUsd: number): bigint {
+  if (priceUsd < 1)   return 700_000n;
+  if (priceUsd < 3)   return 500_000n;
+  if (priceUsd < 10)  return 300_000n;
+  return 200_000n;
+}
+
+/**
+ * Oracle-scaled gas station trigger threshold.
+ * Kept proportional to the top-up amount (~70%) so the top-up cycle frequency
+ * stays predictable relative to agent payment volume.
+ *
+ *   ALGO < $1.00   →  500,000 µALGO
+ *   ALGO $1–$3     →  350,000 µALGO
+ *   ALGO $3–$10    →  210,000 µALGO
+ *   ALGO ≥ $10     →  210,000 µALGO  (floor: must exceed MBR + small buffer)
+ */
+export function gasTriggerMicro(priceUsd: number): bigint {
+  if (priceUsd < 1)   return 500_000n;
+  if (priceUsd < 3)   return 350_000n;
+  return 210_000n;
+}

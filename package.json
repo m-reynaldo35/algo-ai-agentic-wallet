@@ -20,7 +20,11 @@
     "test:burst:x402": "tsx scripts/burst-stress-test.ts --x402",
     "test:sustained": "tsx scripts/sustained-load-test.ts",
     "test:velocity": "tsx scripts/velocity-limit-test.ts",
-    "test:failover": "tsx scripts/failover-test.ts"
+    "test:failover": "tsx scripts/failover-test.ts",
+    "gen-wallet": "tsx scripts/gen-wallet.ts",
+    "optin-usdc": "tsx scripts/optin-usdc.ts",
+    "reset-test-data": "tsx scripts/reset-test-data.ts",
+    "verify-launch": "tsx scripts/verify-launch.ts"
   },
   "dependencies": {
     "@algo-wallet/x402-client": "file:./packages/x402-client",

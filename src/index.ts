@@ -26,7 +26,7 @@ import { getRedis } from "./services/redis.js";
 import { getWebhookDeliveries } from "./services/webhook.js";
 import { registerSSEBroadcaster } from "./services/audit.js";
 import { requirePortalAuth } from "./middleware/portalAuth.js";
-import { registerExistingAgent, generateAgentKeypair } from "./services/agentRegistration.js";
+import { registerExistingAgent, generateAgentKeypair, registerNewAgentWithTreasury } from "./services/agentRegistration.js";
 import { getOnboardingQuote, prepareOnboardingGroup, submitOnboardingGroup } from "./services/treasuryFunder.js";
 import { startGasStation, stopGasStation } from "./services/gasStation.js";
 import { assertProductionAuthReady } from "./auth/liquidAuth.js";
@@ -56,11 +56,11 @@ import {
   issueWebAuthnLoginChallenge, verifyWebAuthnLoginAssertion,
 }                                        from "./services/mandateService.js";
 import {
-  issueAlgorandChallenge, submitAlgorandSignature, getLiquidAuthStatus,
+  issueAlgorandChallenge, getLiquidAuthStatus,
   issueAgentPeraChallenge, verifyAgentPeraSignature, consumeVerifiedPeraSession,
 }                                        from "./auth/humanAuth.js";
 import {
-  issueAdminLiquidChallenge, submitAdminLiquidSignature, getAdminLiquidStatus,
+  issueAdminLiquidChallenge, getAdminLiquidStatus,
   consumeAdminLiquidSession,
   issueAdminWebAuthnRegChallenge, verifyAndRegisterAdminWebAuthn,
   issueAdminWebAuthnLoginChallenge, verifyAdminWebAuthnLoginAssertion,
@@ -1147,6 +1147,24 @@ app.post("/api/agents/create", requirePortalAuth, async (req, res) => {
       } catch { /* Redis error — allow through */ }
     }
 
+    // Treasury-sponsored path: fund + USDC opt-in + rekey in one atomic group.
+    // The user never needs to send ALGO — they just deposit USDC after.
+    if (process.env.ALGO_TREASURY_MNEMONIC) {
+      const platform = typeof req.body.platform === "string" ? req.body.platform : undefined;
+      const result   = await registerNewAgentWithTreasury(agentId, platform);
+      res.status(201).json({
+        agentId:             result.agentId,
+        address:             result.address,
+        mnemonic:            result.mnemonic,
+        registrationTxnId:   result.registrationTxnId,
+        explorerUrl:         result.explorerUrl,
+        warning:             "Save this mnemonic — the server has already discarded it.",
+        sponsored:           true,
+      });
+      return;
+    }
+
+    // Fallback: keypair-only (no treasury configured).
     const result = generateAgentKeypair(agentId);
 
     res.status(201).json({
@@ -1817,10 +1835,6 @@ app.post("/api/agents/:agentId/mandate/:mandateId/revoke", requirePortalAuth, as
 // POST /api/agents/:agentId/auth/liquid-challenge
 //   Issue a QR challenge for operator Algorand wallet sign-in.
 //   Returns { sessionId, qrPayload, expiresAt }.
-//   Operator scans QR with Pera / Defly → wallet calls liquid-sign.
-//
-// POST /api/agents/:agentId/auth/liquid-sign  (NO portal auth — called by wallet app)
-//   Wallet submits Ed25519 signature. Marks session "verified".
 //
 // GET  /api/agents/:agentId/auth/liquid-status/:sessionId
 //   Poll from frontend every ~2 s until status === "verified".
@@ -1848,33 +1862,6 @@ app.post("/api/agents/:agentId/auth/liquid-challenge", requirePortalAuth, async 
   }
 });
 
-// No requirePortalAuth — this endpoint is called by the wallet app, not the browser
-app.post("/api/agents/:agentId/auth/liquid-sign", async (req, res) => {
-  const { sessionId, address, signatureBase64 } = req.body as {
-    sessionId?:       string;
-    address?:         string;
-    signatureBase64?: string;
-  };
-
-  if (!sessionId || !address || !signatureBase64) {
-    res.status(400).json({
-      error: "Missing required fields: sessionId, address, signatureBase64",
-    });
-    return;
-  }
-
-  try {
-    const result = await submitAlgorandSignature(sessionId, address, signatureBase64);
-    res.json(result);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const status =
-      msg.includes("not found") || msg.includes("expired") ? 404 :
-      msg.includes("Invalid signature") || msg.includes("verification") ? 401 :
-      400;
-    res.status(status).json({ error: msg });
-  }
-});
 
 app.get("/api/agents/:agentId/auth/liquid-status/:sessionId", requirePortalAuth, async (req, res) => {
   const sessionId = String(req.params.sessionId || "");
@@ -2094,7 +2081,6 @@ app.post("/api/agents/:agentId/auth/webauthn-login", requirePortalAuth, async (r
 // verifying the session or assertion.
 //
 // POST /api/admin/auth/liquid-challenge     Issue QR challenge
-// POST /api/admin/auth/liquid-sign         Wallet callback (no portal auth)
 // GET  /api/admin/auth/liquid-status/:id   Poll for "verified"
 // POST /api/admin/auth/liquid-consume      Consume session → address
 // POST /api/admin/auth/webauthn-register-challenge
@@ -2112,25 +2098,6 @@ app.post("/api/admin/auth/liquid-challenge", async (req, res) => {
   }
 });
 
-app.post("/api/admin/auth/liquid-sign", async (req, res) => {
-  const { sessionId, address, signatureBase64 } = req.body as {
-    sessionId?: string; address?: string; signatureBase64?: string;
-  };
-  if (!sessionId || !address || !signatureBase64) {
-    res.status(400).json({ error: "Missing required fields: sessionId, address, signatureBase64" });
-    return;
-  }
-  try {
-    await submitAdminLiquidSignature(sessionId, address, signatureBase64);
-    res.json({ ok: true });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const status =
-      msg.includes("not found") || msg.includes("expired") ? 404 :
-      msg.includes("Invalid signature") ? 401 : 400;
-    res.status(status).json({ error: msg });
-  }
-});
 
 app.get("/api/admin/auth/liquid-status/:sessionId", async (req, res) => {
   try {

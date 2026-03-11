@@ -125,8 +125,8 @@ export default function Sidebar() {
             </div>
           )}
           <div className="flex items-center gap-2 px-3 text-xs text-zinc-500">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            algorand-mainnet
+            <span className={`w-2 h-2 rounded-full animate-pulse ${process.env.NEXT_PUBLIC_ALGORAND_NETWORK === "mainnet" ? "bg-emerald-400" : "bg-amber-400"}`} />
+            {process.env.NEXT_PUBLIC_ALGORAND_NETWORK === "mainnet" ? "algorand-mainnet" : "algorand-testnet"}
           </div>
           <button
             onClick={handleLogout}

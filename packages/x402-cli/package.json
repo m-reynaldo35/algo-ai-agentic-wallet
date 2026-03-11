@@ -1,0 +1,32 @@
+{
+  "name": "@algo-wallet/x402-cli",
+  "version": "0.1.0",
+  "description": "CLI for the x402-Algorand autonomous payment rail",
+  "type": "module",
+  "main": "dist/cli.js",
+  "bin": {
+    "x402": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  },
+  "keywords": [
+    "algorand",
+    "x402",
+    "usdc",
+    "micropayments",
+    "ai-agents",
+    "cli"
+  ],
+  "license": "MIT"
+}

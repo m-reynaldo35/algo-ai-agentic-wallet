@@ -1,6 +1,14 @@
+import "dotenv/config";
 import algosdk from "algosdk";
 
-const MNEMONIC = "wrap atom luxury citizen strong venture action chaos galaxy talent nasty market forward inch remind expect view fan cradle mansion about shove leisure ability until";
+// Usage:
+//   ALGO_MNEMONIC="25 words..." tsx scripts/optin-usdc.ts
+//   ALGO_TREASURY_MNEMONIC="25 words..." tsx scripts/optin-usdc.ts
+const MNEMONIC = process.env.ALGO_MNEMONIC || process.env.ALGO_TREASURY_MNEMONIC || "";
+if (!MNEMONIC) {
+  console.error("Set ALGO_MNEMONIC (or ALGO_TREASURY_MNEMONIC) env var to the wallet you want to opt in.");
+  process.exit(1);
+}
 const USDC_ASSET_ID = 31566704;
 
 const account = algosdk.mnemonicToSecretKey(MNEMONIC);

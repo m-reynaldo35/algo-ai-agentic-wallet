@@ -25,6 +25,7 @@ import algosdk from "algosdk";
 import { getAlgodClient, getSuggestedParams } from "../network/nodely.js";
 import { scanAllAgents, isHalted } from "./agentRegistry.js";
 import { checkAndRecordOutflow, rollbackOutflow } from "../protection/treasuryOutflowGuard.js";
+import { getAlgoPriceUsdc, gasTopUpMicro, gasTriggerMicro } from "./algoPrice.js";
 import { getRedis } from "./redis.js";
 
 const ENABLED          = process.env.GAS_STATION_ENABLED !== "false";
@@ -59,6 +60,20 @@ async function checkAndTopUp(): Promise<void> {
   if (!treasury) {
     console.warn("[GasStation] ALGO_TREASURY_MNEMONIC not set — skipping cycle");
     return;
+  }
+
+  // Oracle-scaled thresholds — fall back to env var / constructor defaults when
+  // price is unavailable (stale cache is fine; only throws on cold start + oracle down).
+  let topUpMicro   = TOPUP_MICRO;
+  let triggerMicro = TRIGGER_MICRO;
+  try {
+    const priceUsd = await getAlgoPriceUsdc();
+    topUpMicro     = gasTopUpMicro(priceUsd);
+    triggerMicro   = gasTriggerMicro(priceUsd);
+  } catch {
+    // Oracle unreachable and no cached price — use env var defaults.
+    // Gas top-ups must not be blocked by oracle downtime.
+    console.warn("[GasStation] Oracle unavailable — using default thresholds from env");
   }
 
   // MED-2: Verify treasury has enough balance before starting the top-up loop.
@@ -98,12 +113,10 @@ async function checkAndTopUp(): Promise<void> {
 
       const info    = await algod.accountInformation(agent.address).do();
       const balance = BigInt(info.amount ?? 0n);
-      if (balance >= TRIGGER_MICRO) continue;
+      if (balance >= triggerMicro) continue;
 
       // CRIT-1: Route every top-up through the treasury outflow guard.
-      // This records ALGO spend against the daily cap and halts signing if
-      // breached — gas station spend was previously invisible to the cap.
-      const outflow = await checkAndRecordOutflow(TOPUP_MICRO, 0n);
+      const outflow = await checkAndRecordOutflow(topUpMicro, 0n);
       if (!outflow.allowed) {
         console.error(
           `[GasStation] Treasury outflow cap reached — stopping cycle. ` +
@@ -116,7 +129,7 @@ async function checkAndTopUp(): Promise<void> {
       const topUpTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
         sender:          treasury.addr.toString(),
         receiver:        agent.address,
-        amount:          TOPUP_MICRO,
+        amount:          topUpMicro,
         suggestedParams: params,
         note:            new Uint8Array(Buffer.from(`x402:gas:topup:${agent.agentId}`)),
       });
@@ -125,7 +138,7 @@ async function checkAndTopUp(): Promise<void> {
         const { txid } = await algod.sendRawTransaction(topUpTxn.signTxn(treasury.sk)).do();
         console.log(
           `[GasStation] Topped up ${agent.agentId} — balance was ${balance} µALGO, ` +
-          `sent ${TOPUP_MICRO} µALGO (txid: ${txid})`,
+          `sent ${topUpMicro} µALGO (txid: ${txid})`,
         );
         // HIGH-2: Record cooldown so this agent is skipped for the next 10 min.
         if (redis) {

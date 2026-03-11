@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>x402 Agentic Wallet — AI-to-AI Settlement on Algorand</title>
-  <meta name="description" content="Open-source x402 payment protocol for autonomous AI agents. Atomic USDC settlement on Algorand with cross-chain bridging to Ethereum, Solana, and Base." />
+  <title>algo-wallet — AI Agent Payments on Algorand</title>
+  <meta name="description" content="x402 payment protocol for autonomous AI agents. Mandate-gated USDC settlement on Algorand. Human-controlled spending limits, 3.8s finality, $0.01 per payment." />
 
   <!-- OpenGraph -->
-  <meta property="og:title" content="x402 Agentic Wallet — AI-to-AI Settlement" />
-  <meta property="og:description" content="The open settlement layer for autonomous AI agents. x402 payment protocol on Algorand." />
+  <meta property="og:title" content="algo-wallet — AI Agent Payments on Algorand" />
+  <meta property="og:description" content="Let your AI agents pay for API access autonomously. Human-set mandates enforce spending limits. x402 protocol on Algorand." />
   <meta property="og:type" content="website" />
 
   <!-- Fonts -->
@@ -41,371 +41,173 @@
       min-height: 100vh;
     }
 
-    code, pre, .mono {
-      font-family: 'JetBrains Mono', monospace;
-    }
+    code, pre, .mono { font-family: 'JetBrains Mono', monospace; }
 
     a { color: var(--emerald); text-decoration: none; }
     a:hover { text-decoration: underline; }
 
-    /* ── Layout ─────────────────────────── */
-
     .container { max-width: 900px; margin: 0 auto; padding: 0 24px; }
 
-    /* ── Nav ─────────────────────────────── */
-
+    /* ── Nav ── */
     nav {
-      position: sticky;
-      top: 0;
-      z-index: 100;
+      position: sticky; top: 0; z-index: 100;
       background: rgba(0,0,0,0.85);
       backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--border);
     }
-
     .nav-inner {
-      max-width: 900px;
-      margin: 0 auto;
-      padding: 0 24px;
-      height: 56px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
+      max-width: 900px; margin: 0 auto; padding: 0 24px;
+      height: 56px; display: flex; align-items: center; justify-content: space-between;
     }
-
-    .nav-logo {
-      font-family: 'JetBrains Mono', monospace;
-      font-weight: 500;
-      font-size: 1.1rem;
-      color: var(--emerald);
-    }
-
-    .nav-links {
-      display: flex;
-      gap: 24px;
-      list-style: none;
-    }
-
-    .nav-links a {
-      color: var(--muted);
-      font-size: 0.875rem;
-      font-weight: 500;
-      transition: color .15s;
-    }
-
+    .nav-logo { font-family: 'JetBrains Mono', monospace; font-weight: 500; font-size: 1.1rem; color: var(--emerald); }
+    .nav-links { display: flex; gap: 24px; list-style: none; }
+    .nav-links a { color: var(--muted); font-size: 0.875rem; font-weight: 500; transition: color .15s; }
     .nav-links a:hover { color: var(--text); text-decoration: none; }
 
     .btn-primary {
-      background: var(--emerald-dark);
-      color: #fff;
-      border: none;
-      border-radius: 6px;
-      padding: 8px 16px;
-      font-size: 0.875rem;
-      font-weight: 500;
-      cursor: pointer;
-      transition: background .15s;
-      display: inline-block;
+      background: var(--emerald-dark); color: #fff; border: none; border-radius: 6px;
+      padding: 8px 16px; font-size: 0.875rem; font-weight: 500; cursor: pointer;
+      transition: background .15s; display: inline-block;
     }
     .btn-primary:hover { background: var(--emerald); text-decoration: none; }
 
     .btn-ghost {
-      background: transparent;
-      color: var(--muted);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 8px 16px;
-      font-size: 0.875rem;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all .15s;
-      display: inline-block;
+      background: transparent; color: var(--muted); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 16px; font-size: 0.875rem; font-weight: 500;
+      cursor: pointer; transition: all .15s; display: inline-block;
     }
     .btn-ghost:hover { color: var(--text); border-color: var(--dim); text-decoration: none; }
 
-    /* ── Hero ─────────────────────────────── */
-
-    .hero {
-      padding: 80px 0 64px;
-      text-align: center;
-    }
-
+    /* ── Hero ── */
+    .hero { padding: 80px 0 64px; text-align: center; }
     .hero-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      background: rgba(52, 211, 153, 0.08);
-      border: 1px solid rgba(52, 211, 153, 0.2);
-      border-radius: 999px;
-      padding: 4px 12px;
-      font-size: 0.75rem;
-      color: var(--emerald);
-      margin-bottom: 24px;
-      font-family: 'JetBrains Mono', monospace;
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(52, 211, 153, 0.08); border: 1px solid rgba(52, 211, 153, 0.2);
+      border-radius: 999px; padding: 4px 12px; font-size: 0.75rem; color: var(--emerald);
+      margin-bottom: 24px; font-family: 'JetBrains Mono', monospace;
     }
-
     .hero h1 {
-      font-size: clamp(2rem, 5vw, 3.25rem);
-      font-weight: 700;
-      letter-spacing: -0.03em;
-      line-height: 1.15;
-      margin-bottom: 20px;
+      font-size: clamp(2rem, 5vw, 3.25rem); font-weight: 700;
+      letter-spacing: -0.03em; line-height: 1.15; margin-bottom: 20px;
     }
-
     .hero h1 .accent { color: var(--emerald); }
+    .hero p { font-size: 1.125rem; color: var(--muted); max-width: 560px; margin: 0 auto 32px; }
+    .hero-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
 
-    .hero p {
-      font-size: 1.125rem;
-      color: var(--muted);
-      max-width: 560px;
-      margin: 0 auto 32px;
-    }
-
-    .hero-actions {
-      display: flex;
-      gap: 12px;
-      justify-content: center;
-      flex-wrap: wrap;
-    }
-
-    /* ── Pipeline diagram ─────────────────── */
-
+    /* ── Pipeline ── */
     .pipeline {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-      flex-wrap: wrap;
-      margin: 48px 0;
-      padding: 24px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.75rem;
+      display: flex; align-items: center; justify-content: center; gap: 4px;
+      flex-wrap: wrap; margin: 48px 0; padding: 24px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
     }
-
     .pipe-step {
-      background: var(--border);
-      border-radius: 6px;
-      padding: 6px 12px;
-      color: var(--text);
-      white-space: nowrap;
+      background: var(--border); border-radius: 6px; padding: 6px 12px;
+      color: var(--text); white-space: nowrap;
     }
-
     .pipe-step.green { background: rgba(52,211,153,.12); color: var(--emerald); border: 1px solid rgba(52,211,153,.2); }
     .pipe-step.blue  { background: rgba(96,165,250,.10); color: var(--blue); border: 1px solid rgba(96,165,250,.15); }
     .pipe-step.violet{ background: rgba(167,139,250,.10); color: var(--violet); border: 1px solid rgba(167,139,250,.15); }
-
     .pipe-arrow { color: var(--dim); font-size: 1rem; }
 
-    /* ── Stats bar ────────────────────────── */
-
+    /* ── Stats ── */
     .stats {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 1px;
-      background: var(--border);
-      border-radius: 12px;
-      overflow: hidden;
-      margin-bottom: 80px;
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 1px; background: var(--border); border-radius: 12px;
+      overflow: hidden; margin-bottom: 80px;
     }
-
-    .stat {
-      background: var(--surface);
-      padding: 24px;
-      text-align: center;
-    }
-
+    .stat { background: var(--surface); padding: 24px; text-align: center; }
     .stat-value {
-      font-size: 1.75rem;
-      font-weight: 700;
-      font-family: 'JetBrains Mono', monospace;
-      color: var(--emerald);
-      line-height: 1;
-      margin-bottom: 4px;
+      font-size: 1.75rem; font-weight: 700; font-family: 'JetBrains Mono', monospace;
+      color: var(--emerald); line-height: 1; margin-bottom: 4px;
     }
-
     .stat-label { font-size: 0.75rem; color: var(--muted); }
 
-    /* ── Sections ─────────────────────────── */
-
+    /* ── Sections ── */
     section { margin-bottom: 80px; }
-
     .section-label {
-      font-size: 0.75rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: .1em;
-      color: var(--emerald);
-      margin-bottom: 8px;
+      font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .1em; color: var(--emerald); margin-bottom: 8px;
     }
-
-    h2 {
-      font-size: 1.75rem;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      margin-bottom: 12px;
-    }
-
+    h2 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 12px; }
     .lead { font-size: 1rem; color: var(--muted); margin-bottom: 32px; }
 
-    /* ── Feature grid ─────────────────────── */
-
-    .features {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 16px;
-    }
-
+    /* ── Features ── */
+    .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
     .feature {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 20px;
-      transition: border-color .15s;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 20px; transition: border-color .15s;
     }
-
     .feature:hover { border-color: var(--dim); }
-
     .feature-icon {
-      width: 36px;
-      height: 36px;
-      background: rgba(52,211,153,.1);
-      border: 1px solid rgba(52,211,153,.15);
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 12px;
-      color: var(--emerald);
-      font-size: 1rem;
+      width: 36px; height: 36px; background: rgba(52,211,153,.1);
+      border: 1px solid rgba(52,211,153,.15); border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 12px; color: var(--emerald); font-size: 1rem;
     }
-
     .feature h3 { font-size: 0.9375rem; font-weight: 600; margin-bottom: 6px; }
     .feature p { font-size: 0.8125rem; color: var(--muted); line-height: 1.5; }
 
-    /* ── Code block ───────────────────────── */
-
+    /* ── Code ── */
     .code-wrap {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      overflow: hidden;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; overflow: hidden;
     }
-
     .code-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border);
-      font-size: 0.75rem;
-      color: var(--muted);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+      font-size: 0.75rem; color: var(--muted);
     }
-
     .code-header .lang {
-      background: var(--border);
-      border-radius: 4px;
-      padding: 2px 8px;
-      color: var(--emerald);
-      font-family: 'JetBrains Mono', monospace;
+      background: var(--border); border-radius: 4px; padding: 2px 8px;
+      color: var(--emerald); font-family: 'JetBrains Mono', monospace;
     }
-
     pre {
-      padding: 20px;
-      overflow-x: auto;
-      font-size: 0.8125rem;
-      line-height: 1.7;
-      color: #e2e8f0;
+      padding: 20px; overflow-x: auto; font-size: 0.8125rem;
+      line-height: 1.7; color: #e2e8f0;
     }
-
     .c-comment { color: #4b5563; }
-    .c-keyword { color: var(--violet); }
-    .c-string  { color: var(--emerald); }
-    .c-type    { color: var(--blue); }
-    .c-num     { color: #f59e0b; }
+    .c-keyword  { color: var(--violet); }
+    .c-string   { color: var(--emerald); }
+    .c-type     { color: var(--blue); }
+    .c-num      { color: #f59e0b; }
 
-    /* ── API Reference ────────────────────── */
-
+    /* ── Endpoints ── */
     .endpoints { display: flex; flex-direction: column; gap: 12px; }
-
     .endpoint {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 16px 20px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px 20px;
     }
-
     .endpoint-header { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
-
     .method {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.75rem;
-      font-weight: 600;
-      padding: 2px 8px;
-      border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 600;
+      padding: 2px 8px; border-radius: 4px;
     }
     .method.get  { background: rgba(52,211,153,.15); color: var(--emerald); }
     .method.post { background: rgba(96,165,250,.15); color: var(--blue); }
-
-    .endpoint-path {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.875rem;
-      color: var(--text);
-    }
-
+    .method.patch{ background: rgba(167,139,250,.15); color: var(--violet); }
+    .endpoint-path { font-family: 'JetBrains Mono', monospace; font-size: 0.875rem; color: var(--text); }
     .endpoint p { font-size: 0.8125rem; color: var(--muted); }
-
     .badge-auth {
-      margin-left: auto;
-      font-size: 0.65rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: .05em;
-      padding: 2px 8px;
-      border-radius: 4px;
-      background: rgba(167,139,250,.12);
-      color: var(--violet);
-      border: 1px solid rgba(167,139,250,.2);
+      margin-left: auto; font-size: 0.65rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .05em; padding: 2px 8px;
+      border-radius: 4px; background: rgba(167,139,250,.12);
+      color: var(--violet); border: 1px solid rgba(167,139,250,.2);
+    }
+    .badge-portal {
+      margin-left: auto; font-size: 0.65rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .05em; padding: 2px 8px;
+      border-radius: 4px; background: rgba(96,165,250,.12);
+      color: var(--blue); border: 1px solid rgba(96,165,250,.2);
     }
 
-    /* ── Chain badges ─────────────────────── */
-
-    .chains { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 20px; }
-
-    .chain-badge {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 6px 12px;
-      font-size: 0.8125rem;
-    }
-
-    .chain-dot { width: 8px; height: 8px; border-radius: 50%; }
-
-    /* ── Footer ───────────────────────────── */
-
-    footer {
-      border-top: 1px solid var(--border);
-      padding: 32px 0;
-      margin-top: 80px;
-    }
-
+    /* ── Footer ── */
+    footer { border-top: 1px solid var(--border); padding: 32px 0; margin-top: 80px; }
     .footer-inner {
-      max-width: 900px;
-      margin: 0 auto;
-      padding: 0 24px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 16px;
+      max-width: 900px; margin: 0 auto; padding: 0 24px;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 16px;
     }
-
     .footer-links { display: flex; gap: 20px; }
     .footer-links a { font-size: 0.8125rem; color: var(--muted); }
     .footer-links a:hover { color: var(--text); text-decoration: none; }
@@ -419,193 +221,195 @@
 </head>
 <body>
 
-<!-- ── Navigation ─────────────────────────────────────────── -->
+<!-- ── Navigation ── -->
 <nav>
   <div class="nav-inner">
-    <span class="nav-logo">x402 // algo-wallet</span>
+    <span class="nav-logo">algo-wallet</span>
     <ul class="nav-links">
+      <li><a href="#how-it-works">How it works</a></li>
       <li><a href="#quickstart">Quickstart</a></li>
       <li><a href="#api">API</a></li>
-      <li><a href="#chains">Chains</a></li>
       <li><a href="#security">Security</a></li>
     </ul>
     <div style="display:flex;gap:8px">
-      <a href="https://github.com/m-reynaldo35/algo-wallet" class="btn-ghost" target="_blank">GitHub</a>
-      <a href="/moltbook-agent.json" class="btn-primary">Agent Manifest</a>
+      <a href="https://ai-agentic-wallet.com" class="btn-ghost" target="_blank">Dashboard</a>
+      <a href="https://ai-agentic-wallet.com/docs" class="btn-primary">Docs →</a>
     </div>
   </div>
 </nav>
 
-<!-- ── Hero ──────────────────────────────────────────────── -->
+<!-- ── Hero ── -->
 <div class="container">
   <div class="hero">
     <div class="hero-badge">
       <span>●</span>
-      x402-v1 · algorand-mainnet · sub-3s finality
+      x402-v1 · algorand-mainnet · 3.8s finality
     </div>
 
     <h1>
-      The Settlement Layer<br/>
-      for <span class="accent">Autonomous AI Agents</span>
+      Autonomous AI Wallets<br/>
+      with <span class="accent">Human-Controlled Limits</span>
     </h1>
 
     <p>
-      x402 lets AI agents pay for API access atomically on Algorand.
-      Three lines of code. Zero custody. Cross-chain USDC bridging to
-      Ethereum, Solana, and Base.
+      AI agents pay for API access autonomously using USDC on Algorand.
+      Human owners set spending mandates — per-transaction caps, daily limits,
+      expiry dates, and allowed recipients. No ALGO needed to get started.
     </p>
 
     <div class="hero-actions">
-      <a href="#quickstart" class="btn-primary">Get Started →</a>
-      <a href="/openclaw-registry.json" class="btn-ghost">OpenClaw Registry</a>
-      <a href="/skill.md" class="btn-ghost">Agent Skill Manifest</a>
+      <a href="https://ai-agentic-wallet.com/app/create" class="btn-primary">Create an Agent →</a>
+      <a href="#quickstart" class="btn-ghost">SDK Quickstart</a>
+      <a href="https://ai-agentic-wallet.com/docs" class="btn-ghost">Documentation</a>
     </div>
   </div>
 
   <!-- Pipeline -->
   <div class="pipeline">
-    <span class="pipe-step green">AI Agent</span>
+    <span class="pipe-step green">Human sets mandate</span>
     <span class="pipe-arrow">→</span>
-    <span class="pipe-step">POST /api/agent-action</span>
+    <span class="pipe-step">AI Agent wallet</span>
     <span class="pipe-arrow">→</span>
-    <span class="pipe-step blue">HTTP 402 (pay+json)</span>
+    <span class="pipe-step blue">HTTP 402 challenge</span>
     <span class="pipe-arrow">→</span>
-    <span class="pipe-step">Ed25519 Proof</span>
+    <span class="pipe-step">Ed25519 proof</span>
     <span class="pipe-arrow">→</span>
-    <span class="pipe-step green">Sandbox Export</span>
+    <span class="pipe-step">Mandate check</span>
     <span class="pipe-arrow">→</span>
-    <span class="pipe-step">Validate → Auth → Sign</span>
+    <span class="pipe-step">Rocca sign</span>
     <span class="pipe-arrow">→</span>
-    <span class="pipe-step violet">Algorand Settlement</span>
-    <span class="pipe-arrow">→</span>
-    <span class="pipe-step blue">Wormhole Bridge</span>
+    <span class="pipe-step violet">Algorand USDC settlement</span>
   </div>
 
   <!-- Stats -->
   <div class="stats">
     <div class="stat">
-      <div class="stat-value">&lt;3s</div>
+      <div class="stat-value">3.8s</div>
       <div class="stat-label">Algorand finality</div>
     </div>
     <div class="stat">
-      <div class="stat-value">$0.10</div>
-      <div class="stat-label">per settlement</div>
+      <div class="stat-value">$0.01</div>
+      <div class="stat-label">per payment</div>
     </div>
     <div class="stat">
-      <div class="stat-value">7</div>
-      <div class="stat-label">destination chains</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value">16</div>
-      <div class="stat-label">max batch intents</div>
+      <div class="stat-value">1.53s</div>
+      <div class="stat-label">p95 enqueue</div>
     </div>
     <div class="stat">
       <div class="stat-value">0</div>
-      <div class="stat-label">partial executions</div>
+      <div class="stat-label">ALGO needed to start</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">∞</div>
+      <div class="stat-label">agents per key</div>
     </div>
   </div>
 
-  <!-- ── Quickstart ──────────────────────────────────────── -->
+  <!-- ── How it works ── -->
+  <section id="how-it-works">
+    <div class="section-label">How it works</div>
+    <h2>Mandate-gated autonomous payments</h2>
+    <p class="lead">
+      An agent wallet is an Algorand account rekeyed to Rocca — an institutional signing service.
+      The human owner grants spending authority via a <strong>mandate</strong>: a signed permission
+      with configurable caps. The agent spends within those caps autonomously; Rocca refuses anything outside them.
+    </p>
+
+    <div class="features">
+      <div class="feature">
+        <div class="feature-icon">📋</div>
+        <h3>Mandates</h3>
+        <p>Human-signed permissions: per-transaction cap, per-10-minute cap, daily cap, expiry date, and optional allowed-recipient whitelist. Revocable at any time.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">⚡</div>
+        <h3>x402 Protocol</h3>
+        <p>HTTP 402 challenge-response built into the SDK. The agent hits a paywall, builds the Ed25519 proof, and retries — all in one call. No human in the loop.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">⛽</div>
+        <h3>Gas Station</h3>
+        <p>No ALGO required to create an agent. The treasury sponsors registration and automatically tops up ALGO reserves. Just deposit USDC and start paying.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🔑</div>
+        <h3>Pera Connect Auth</h3>
+        <p>Owners authenticate with their Algorand wallet via WalletConnect (Pera, Defly, Kibisis). Device passkeys (WebAuthn) supported as a fallback.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🛡</div>
+        <h3>Treasury Guards</h3>
+        <p>Global daily ALGO and USDC outflow caps. Velocity-based drain detection. On-chain reconciliation vs authorised totals. Auto-halt on anomaly.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">📡</div>
+        <h3>Price Oracle</h3>
+        <p>CoinGecko ALGO/USD feed (60s cache) dynamically scales gas buffer and top-up amounts — spend stays bounded in USD terms as ALGO price fluctuates.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Quickstart ── -->
   <section id="quickstart">
     <div class="section-label">Quickstart</div>
-    <h2>Three lines from zero to settlement</h2>
-    <p class="lead">Install the SDK, configure your key, call executeTrade. The 402 handshake is absorbed automatically.</p>
+    <h2>Agent pays for an API in 3 lines</h2>
+    <p class="lead">Install the SDK, point it at your agent's key, call <code class="mono" style="color:var(--emerald)">executePayment</code>. The 402 handshake is absorbed automatically.</p>
 
     <div class="code-wrap" style="margin-bottom:16px">
       <div class="code-header">
         <span>Install</span>
         <span class="lang">bash</span>
       </div>
-      <pre>npm install @m-reynaldo35/x402-client algosdk</pre>
+      <pre>npm install @algo-wallet/x402-client algosdk</pre>
+    </div>
+
+    <div class="code-wrap" style="margin-bottom:16px">
+      <div class="code-header">
+        <span>Pay for an API endpoint</span>
+        <span class="lang">typescript</span>
+      </div>
+      <pre><span class="c-keyword">import</span> { <span class="c-type">X402Client</span> } <span class="c-keyword">from</span> <span class="c-string">"@algo-wallet/x402-client"</span>;
+<span class="c-keyword">import</span> algosdk <span class="c-keyword">from</span> <span class="c-string">"algosdk"</span>;
+
+<span class="c-keyword">const</span> account = algosdk.mnemonicToSecretKey(process.env.AGENT_MNEMONIC!);
+
+<span class="c-keyword">const</span> client = <span class="c-keyword">new</span> <span class="c-type">X402Client</span>({
+  apiUrl:  <span class="c-string">"https://api.ai-agentic-wallet.com"</span>,
+  agentId: <span class="c-string">"my-trading-bot"</span>,
+  account,
+});
+
+<span class="c-comment">// Fetches a 402-gated endpoint — handles the payment proof automatically</span>
+<span class="c-keyword">const</span> result = <span class="c-keyword">await</span> client.executePayment({
+  url:    <span class="c-string">"https://some-api.com/data"</span>,
+  amount: <span class="c-num">10_000</span>,  <span class="c-comment">// µUSDC — $0.01</span>
+});
+
+console.log(result.data); <span class="c-comment">// API response, payment confirmed on-chain</span></pre>
     </div>
 
     <div class="code-wrap">
       <div class="code-header">
-        <span>Settle USDC → Ethereum in 3 lines</span>
+        <span>Register a new agent wallet (one-time setup)</span>
         <span class="lang">typescript</span>
       </div>
-      <pre><span class="c-keyword">import</span> { <span class="c-type">AlgoAgentClient</span>, <span class="c-type">DestinationChain</span> } <span class="c-keyword">from</span> <span class="c-string">"@m-reynaldo35/x402-client"</span>;
-
-<span class="c-keyword">const</span> client = <span class="c-keyword">new</span> <span class="c-type">AlgoAgentClient</span>({
-  baseUrl: <span class="c-string">"https://ai-agentic-wallet.com"</span>,
-  privateKey: yourAlgorandSecretKey,        <span class="c-comment">// 64-byte Uint8Array</span>
-  onProgress: (e) =&gt; console.log(e.stage, e.message),  <span class="c-comment">// optional</span>
+      <pre><span class="c-comment">// POST /api/agents/create — treasury sponsors registration</span>
+<span class="c-comment">// No ALGO needed. Wallet is funded, USDC opted-in, and rekeyed atomically.</span>
+<span class="c-keyword">const</span> res = <span class="c-keyword">await</span> fetch(<span class="c-string">"https://api.ai-agentic-wallet.com/api/agents/create"</span>, {
+  method:  <span class="c-string">"POST"</span>,
+  headers: { <span class="c-string">"Content-Type"</span>: <span class="c-string">"application/json"</span>, <span class="c-string">"X-Portal-Key"</span>: PORTAL_KEY },
+  body:    JSON.stringify({ agentId: <span class="c-string">"my-trading-bot"</span> }),
 });
-
-<span class="c-keyword">const</span> result = <span class="c-keyword">await</span> client.executeTrade({
-  senderAddress: <span class="c-string">"YOUR_ALGO_ADDRESS"</span>,
-  destinationChain: DestinationChain.ETHEREUM,
-  destinationRecipient: <span class="c-string">"0xYOUR_ETH_ADDRESS"</span>,
-});
-
-console.log(result);
-<span class="c-comment">// { success: true, settlement: { txnId: "...", confirmedRound: 47291042 } }</span></pre>
-    </div>
-
-    <div style="margin-top:16px">
-      <div class="code-wrap">
-        <div class="code-header">
-          <span>Batch: settle to 3 chains atomically</span>
-          <span class="lang">typescript</span>
-        </div>
-        <pre><span class="c-keyword">const</span> batch = <span class="c-keyword">await</span> client.executeBatch({
-  senderAddress: <span class="c-string">"YOUR_ALGO_ADDRESS"</span>,
-  intents: [
-    { destinationChain: <span class="c-string">"ethereum"</span>, destinationRecipient: ETH_ADDR },
-    { destinationChain: <span class="c-string">"solana"</span>,   destinationRecipient: SOL_ADDR },
-    { destinationChain: <span class="c-string">"base"</span>,     destinationRecipient: BASE_ADDR },
-  ],
-});
-<span class="c-comment">// All 3 succeed or all 3 revert — zero partial execution risk</span></pre>
-      </div>
+<span class="c-keyword">const</span> { address, mnemonic, registrationTxnId } = <span class="c-keyword">await</span> res.json();
+<span class="c-comment">// Save mnemonic — shown once. Deposit USDC to `address` and start paying.</span></pre>
     </div>
   </section>
 
-  <!-- ── Features ──────────────────────────────────────── -->
-  <section>
-    <div class="section-label">Protocol</div>
-    <h2>Built for autonomous agents</h2>
-    <p class="lead">Every feature is designed for machine-to-machine settlement. No human in the loop.</p>
-
-    <div class="features">
-      <div class="feature">
-        <div class="feature-icon">⚡</div>
-        <h3>x402 Handshake</h3>
-        <p>HTTP 402 challenge-response. The SDK absorbs the bounce, builds the Ed25519 proof, and retries — all in one call.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon">⚛</div>
-        <h3>Atomic Groups</h3>
-        <p>Up to 16 cross-chain intents bundled in a single Algorand atomic group. All settle or none do.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon">🌉</div>
-        <h3>Wormhole Bridge</h3>
-        <p>Native USDC bridging to Ethereum, Solana, Base, Arbitrum, Optimism, Polygon, and Avalanche via Folks Finance NTT.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon">🔮</div>
-        <h3>Gora Oracle</h3>
-        <p>Every settlement is bounded by Gora consensus price ±slippage. Stale oracle data (>15s) is rejected at the AVM level.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon">🛡</div>
-        <h3>Replay Protection</h3>
-        <p>Every X-PAYMENT nonce is stored in Upstash Redis with 60s TTL. Duplicate signatures are rejected before they reach the chain.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon">🔒</div>
-        <h3>Seedless Signing</h3>
-        <p>No private keys in the transaction builder. Signing happens in Rocca Wallet after FIDO2 authentication via Liquid Auth.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- ── API Reference ──────────────────────────────────── -->
+  <!-- ── API Reference ── -->
   <section id="api">
     <div class="section-label">API Reference</div>
     <h2>Endpoints</h2>
-    <p class="lead">All endpoints are served at <code class="mono" style="color:var(--emerald)">https://ai-agentic-wallet.com</code></p>
+    <p class="lead">Backend served at <code class="mono" style="color:var(--emerald)">https://api.ai-agentic-wallet.com</code></p>
 
     <div class="endpoints">
       <div class="endpoint">
@@ -613,33 +417,70 @@ console.log(result);
           <span class="method get">GET</span>
           <span class="endpoint-path">/health</span>
         </div>
-        <p>Server health check. Returns network status, Algorand node provider, and latest round.</p>
+        <p>System health — Redis, algod, indexer, signing service status and latest confirmed round.</p>
       </div>
 
       <div class="endpoint">
         <div class="endpoint-header">
           <span class="method post">POST</span>
-          <span class="endpoint-path">/api/agent-action</span>
-          <span class="badge-auth">X-PAYMENT required</span>
+          <span class="endpoint-path">/api/agents/create</span>
+          <span class="badge-portal">Portal Key</span>
         </div>
-        <p>Construct an unsigned atomic group for a single cross-chain trade. Returns a SandboxExport envelope. Pass <code class="mono">X-SLIPPAGE-BIPS</code> header to override default 50bps slippage.</p>
+        <p>Create a new agent wallet. Treasury sponsors: funds the wallet, opts into USDC, and rekeys to Rocca in one atomic group. Returns mnemonic (shown once) + address.</p>
       </div>
 
       <div class="endpoint">
         <div class="endpoint-header">
           <span class="method post">POST</span>
-          <span class="endpoint-path">/api/batch-action</span>
-          <span class="badge-auth">X-PAYMENT required</span>
+          <span class="endpoint-path">/api/agents/register-existing</span>
+          <span class="badge-portal">Portal Key</span>
         </div>
-        <p>Construct a batched atomic group for up to 16 simultaneous cross-chain trades. Returns SandboxExport + batchSize.</p>
+        <p>Register a wallet you already own. Supply agentId + mnemonic. Server handles USDC opt-in and rekey to Rocca.</p>
       </div>
 
       <div class="endpoint">
         <div class="endpoint-header">
           <span class="method post">POST</span>
-          <span class="endpoint-path">/api/execute</span>
+          <span class="endpoint-path">/api/pay</span>
+          <span class="badge-auth">X-PAYMENT</span>
         </div>
-        <p>Execute the full settlement pipeline on a SandboxExport: validate → Liquid Auth → Rocca sign → Algorand broadcast. Returns txnId and confirmedRound on success.</p>
+        <p>Execute a mandate-gated USDC payment. Validates Ed25519 proof, checks mandate caps, signs via Rocca, broadcasts to Algorand. Returns txnId + confirmedRound.</p>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header">
+          <span class="method post">POST</span>
+          <span class="endpoint-path">/api/agents/:agentId/mandate/create</span>
+          <span class="badge-portal">Portal Key</span>
+        </div>
+        <p>Create a spending mandate. Auth via Pera Connect (WalletConnect) or WebAuthn passkey. Fields: maxPerTx, maxPer10Min, maxPerDay, expiresAt, allowedRecipients, recurring.</p>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header">
+          <span class="method post">POST</span>
+          <span class="endpoint-path">/api/agents/:agentId/mandate/:mandateId/revoke</span>
+          <span class="badge-portal">Portal Key</span>
+        </div>
+        <p>Revoke a mandate. Requires owner authentication (Pera Connect or WebAuthn). Immediate — agent can no longer use the mandate after this call.</p>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header">
+          <span class="method get">GET</span>
+          <span class="endpoint-path">/api/agents/:agentId/mandate</span>
+          <span class="badge-portal">Portal Key</span>
+        </div>
+        <p>List all mandates for an agent. Returns active and revoked mandates with cap values in µUSDC and remaining velocity windows.</p>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header">
+          <span class="method get">GET</span>
+          <span class="endpoint-path">/api/agents/:agentId/history</span>
+          <span class="badge-portal">Portal Key</span>
+        </div>
+        <p>Paginated payment history for an agent. Includes txnId, amount, recipient, mandate used, and Algorand explorer link.</p>
       </div>
     </div>
 
@@ -649,114 +490,81 @@ console.log(result);
           <span>X-PAYMENT header structure</span>
           <span class="lang">json</span>
         </div>
-        <pre><span class="c-comment">// Base64-encoded JSON payload:</span>
+        <pre><span class="c-comment">// Base64-encoded JSON — built automatically by @algo-wallet/x402-client</span>
 {
-  <span class="c-string">"groupId"</span>:      <span class="c-string">"base64 SHA-512/256 atomic group hash"</span>,
-  <span class="c-string">"transactions"</span>: [<span class="c-string">"base64 signed txn blob"</span>, <span class="c-string">"..."</span>],
-  <span class="c-string">"senderAddr"</span>:   <span class="c-string">"ALGO58CHARADDRESS..."</span>,
-  <span class="c-string">"signature"</span>:    <span class="c-string">"base64 Ed25519 sig over groupId bytes"</span>,
-  <span class="c-string">"timestamp"</span>:    <span class="c-num">1708339200</span>,   <span class="c-comment">// Unix epoch, &lt;60s old</span>
-  <span class="c-string">"nonce"</span>:         <span class="c-string">"uuid-v4"</span>         <span class="c-comment">// Single-use</span>
+  <span class="c-string">"agentId"</span>:    <span class="c-string">"my-trading-bot"</span>,
+  <span class="c-string">"amount"</span>:     <span class="c-num">10000</span>,             <span class="c-comment">// µUSDC ($0.01)</span>
+  <span class="c-string">"recipient"</span>:  <span class="c-string">"ALGO58CHARADDRESS..."</span>,
+  <span class="c-string">"timestamp"</span>:  <span class="c-num">1708339200</span>,       <span class="c-comment">// Unix epoch, &lt;60s old</span>
+  <span class="c-string">"nonce"</span>:       <span class="c-string">"uuid-v4"</span>,         <span class="c-comment">// Single-use replay guard</span>
+  <span class="c-string">"signature"</span>:  <span class="c-string">"base64 Ed25519 sig"</span>  <span class="c-comment">// Over canonical payload bytes</span>
 }</pre>
       </div>
     </div>
   </section>
 
-  <!-- ── Chains ────────────────────────────────────────── -->
-  <section id="chains">
-    <div class="section-label">Bridging</div>
-    <h2>Cross-chain USDC destinations</h2>
-    <p class="lead">USDC settles on Algorand first, then bridges via Wormhole NTT. Choose destination per-trade or mix in a batch.</p>
-
-    <div class="chains">
-      <div class="chain-badge">
-        <div class="chain-dot" style="background:#34d399"></div>
-        <span>Algorand</span>
-        <span style="color:var(--muted);font-size:.75rem;margin-left:4px">origin</span>
-      </div>
-      <div class="chain-badge">
-        <div class="chain-dot" style="background:#627eea"></div>
-        <span>Ethereum</span>
-      </div>
-      <div class="chain-badge">
-        <div class="chain-dot" style="background:#9945ff"></div>
-        <span>Solana</span>
-      </div>
-      <div class="chain-badge">
-        <div class="chain-dot" style="background:#0052ff"></div>
-        <span>Base</span>
-      </div>
-      <div class="chain-badge">
-        <div class="chain-dot" style="background:#28a0f0"></div>
-        <span>Arbitrum</span>
-      </div>
-      <div class="chain-badge">
-        <div class="chain-dot" style="background:#ff0420"></div>
-        <span>Optimism</span>
-      </div>
-      <div class="chain-badge">
-        <div class="chain-dot" style="background:#8247e5"></div>
-        <span>Polygon</span>
-      </div>
-      <div class="chain-badge">
-        <div class="chain-dot" style="background:#e84142"></div>
-        <span>Avalanche</span>
-      </div>
-    </div>
-  </section>
-
-  <!-- ── Security ──────────────────────────────────────── -->
+  <!-- ── Security ── -->
   <section id="security">
     <div class="section-label">Security</div>
     <h2>Zero-trust by design</h2>
-    <p class="lead">Multiple independent layers of enforcement. Any single layer failing blocks the entire settlement.</p>
+    <p class="lead">Six independent enforcement layers. Any single layer failing blocks the settlement.</p>
 
     <div class="features">
       <div class="feature">
         <div class="feature-icon">🔐</div>
         <h3>Ed25519 Verification</h3>
-        <p>Every request must prove ownership of the paying address via <code class="mono">algosdk.verifyBytes()</code>. No signature, no access.</p>
+        <p>Every request proves ownership of the agent address via <code class="mono">algosdk.verifyBytes()</code>. Signature over (timestamp + nonce + amount + recipient).</p>
       </div>
       <div class="feature">
-        <div class="feature-icon">🧱</div>
-        <h3>TEAL LogicSig</h3>
-        <p>AVM-level stateless smart signature enforces: fee ≤ 1000 µALGO, type = axfer, amount ≤ 50M µUSDC.</p>
+        <div class="feature-icon">📋</div>
+        <h3>Mandate Enforcement</h3>
+        <p>Per-tx, per-10min, and daily USDC caps enforced server-side before signing. Expired or revoked mandates are rejected immediately.</p>
       </div>
       <div class="feature">
         <div class="feature-icon">⏱</div>
-        <h3>60s Time Window</h3>
-        <p>X-PAYMENT timestamp is validated server-side. Offers expire after 5 minutes. Nonces are single-use.</p>
+        <h3>Replay Protection</h3>
+        <p>Timestamp must be within 60s (with 30s back-skew tolerance). Nonces are single-use, stored in Redis with TTL. Both enforced atomically.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🏦</div>
+        <h3>Treasury Guards</h3>
+        <p>Global daily ALGO and USDC outflow caps. On-chain reconciliation detects key compromise. Velocity drain detection auto-halts the system.</p>
       </div>
       <div class="feature">
         <div class="feature-icon">🏃</div>
         <h3>Rate Limiting</h3>
-        <p>Upstash Redis sliding window: 100 req/10s per platform key, 30 req/10s per IP. In-memory fallback when Redis is degraded.</p>
+        <p>Sliding window rate limits on all public endpoints. Per-IP and per-portal-key caps. In-memory fallback when Redis is degraded.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🔒</div>
+        <h3>Rocca Signing</h3>
+        <p>Agent private keys are rekeyed to Rocca — an institutional signing service. No private key ever touches the application server.</p>
       </div>
     </div>
   </section>
 
-  <!-- ── Agent Registry ──────────────────────────────── -->
+  <!-- ── Discovery ── -->
   <section>
     <div class="section-label">Discovery</div>
-    <h2>Find this agent</h2>
-    <p class="lead">Machine-readable manifests for agent registries and AI protocol marketplaces.</p>
+    <h2>Machine-readable manifests</h2>
+    <p class="lead">For agent registries and AI protocol marketplaces.</p>
 
     <div class="features">
       <div class="feature">
+        <h3>Agent Manifest</h3>
+        <p>Full capability manifest: pricing, endpoints, auth scheme, and identity claims.</p>
+        <br/>
+        <a href="/agent.json">agent.json →</a>
+      </div>
+      <div class="feature">
         <h3>OpenClaw Registry</h3>
-        <p>Structured JSON protocol manifest for OpenClaw-compatible agent marketplaces.</p>
+        <p>Structured JSON for OpenClaw-compatible agent marketplaces.</p>
         <br/>
         <a href="/openclaw-registry.json">openclaw-registry.json →</a>
       </div>
       <div class="feature">
-        <h3>Moltbook Agent</h3>
-        <p>Full agent capability manifest: pricing, endpoints, auth scheme, and identity claims.</p>
-        <br/>
-        <a href="/moltbook-agent.json">moltbook-agent.json →</a>
-      </div>
-      <div class="feature">
         <h3>Skill Manifest</h3>
-        <p>LLM-readable markdown describing how an AI agent should interact with this protocol.</p>
+        <p>LLM-readable markdown describing how an AI should interact with this protocol.</p>
         <br/>
         <a href="/skill.md">skill.md →</a>
       </div>
@@ -765,16 +573,16 @@ console.log(result);
 
 </div>
 
-<!-- ── Footer ─────────────────────────────────────────────── -->
+<!-- ── Footer ── -->
 <footer>
   <div class="footer-inner">
-    <span class="mono" style="color:var(--muted);font-size:.8125rem">x402-v1 · algorand-mainnet · open source</span>
+    <span class="mono" style="color:var(--muted);font-size:.8125rem">algo-wallet · x402-v1 · algorand-mainnet</span>
     <div class="footer-links">
       <a href="/health">Health</a>
-      <a href="/openclaw-registry.json">OpenClaw</a>
-      <a href="/moltbook-agent.json">Moltbook</a>
+      <a href="https://ai-agentic-wallet.com/docs">Docs</a>
+      <a href="/agent.json">Manifest</a>
       <a href="/skill.md">Skill</a>
-      <a href="https://github.com/m-reynaldo35/algo-wallet" target="_blank">GitHub</a>
+      <a href="https://ai-agentic-wallet.com">Dashboard</a>
     </div>
   </div>
 </footer>

@@ -68,40 +68,6 @@ export async function POST(req: NextRequest) {
     return issueAdminSession();
   }
 
-  // ── Path 1b: Liquid Auth (legacy) — exchange verified sessionId for admin JWT
-
-  if (typeof body.liquidAuthSessionId === "string") {
-    const sessionId = body.liquidAuthSessionId;
-
-    // Consume the verified session on the backend
-    let address: string;
-    try {
-      const r = await fetch(`${API_URL}/api/admin/auth/liquid-consume`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ sessionId }),
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({})) as { error?: string };
-        return NextResponse.json({ error: err.error ?? `Upstream ${r.status}` }, { status: r.status });
-      }
-      const data = await r.json() as { address: string };
-      address = data.address;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return NextResponse.json({ error: `Upstream unreachable: ${msg}` }, { status: 502 });
-    }
-
-    if (!isAdminAddress(address)) {
-      return NextResponse.json(
-        { error: "Access denied — this Algorand address is not on the admin whitelist." },
-        { status: 403 },
-      );
-    }
-
-    return issueAdminSession();
-  }
-
   // ── Path 2: WebAuthn — verify assertion, issue JWT ────────────────────────
 
   if (body.webauthnAssertion && typeof body.webauthnAssertion === "object") {
@@ -152,7 +118,7 @@ export async function POST(req: NextRequest) {
   }
 
   return NextResponse.json(
-    { error: "Provide liquidAuthSessionId, webauthnAssertion, or password" },
+    { error: "Provide peraSessionId, webauthnAssertion, or password" },
     { status: 400 },
   );
 }
