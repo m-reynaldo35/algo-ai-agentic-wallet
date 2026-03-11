@@ -21,8 +21,8 @@ interface SecurityMetrics {
 interface SecurityEvent {
   type:      string;
   agentId?:  string;
-  reason?:   string;
-  detail?:   string;
+  reason?:   unknown;
+  detail?:   unknown;
   severity?: string;
   timestamp: number | string;
 }
@@ -234,7 +234,9 @@ export default function SecurityPage() {
                   <p className="text-zinc-200 text-xs font-mono font-semibold">{ev.type}</p>
                   {ev.agentId && <p className="text-zinc-500 text-xs mt-0.5">Agent: {ev.agentId}</p>}
                   {(ev.reason || ev.detail) && (
-                    <p className="text-zinc-400 text-xs mt-0.5">{ev.reason ?? ev.detail}</p>
+                    <p className="text-zinc-400 text-xs mt-0.5">
+                      {typeof ev.reason === "object" ? JSON.stringify(ev.reason) : (ev.reason as string) ?? typeof ev.detail === "object" ? JSON.stringify(ev.detail) : (ev.detail as string)}
+                    </p>
                   )}
                 </div>
                 <span className="text-zinc-600 text-xs whitespace-nowrap shrink-0">{formatTime(ev.timestamp)}</span>
