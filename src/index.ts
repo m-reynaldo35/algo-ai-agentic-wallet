@@ -1446,7 +1446,7 @@ app.get("/api/system/halt-status", requirePortalAuth, async (_req, res) => {
   const batch    = batchId ? await getRotationBatch(batchId) : null;
   res.json({
     halted:          !!haltRecord,
-    haltReason:      haltRecord ?? null,
+    haltReason:      haltRecord?.reason ?? null,
     activeRotation:  batch ? {
       batchId:        batch.batchId,
       cohort:         batch.cohort,
