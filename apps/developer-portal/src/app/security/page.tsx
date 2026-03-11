@@ -29,6 +29,12 @@ interface SecurityEvent {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
+function stringify(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v == null) return "";
+  return JSON.stringify(v);
+}
+
 function severityBadge(type: string) {
   const t = type.toUpperCase();
   if (t.includes("COMPROMISE") || t.includes("MASS_DRAIN") || t.includes("DRIFT"))
@@ -235,7 +241,7 @@ export default function SecurityPage() {
                   {ev.agentId && <p className="text-zinc-500 text-xs mt-0.5">Agent: {ev.agentId}</p>}
                   {(ev.reason || ev.detail) && (
                     <p className="text-zinc-400 text-xs mt-0.5">
-                      {typeof ev.reason === "object" ? JSON.stringify(ev.reason) : (ev.reason as string) ?? typeof ev.detail === "object" ? JSON.stringify(ev.detail) : (ev.detail as string)}
+                      {stringify(ev.reason ?? ev.detail)}
                     </p>
                   )}
                 </div>
