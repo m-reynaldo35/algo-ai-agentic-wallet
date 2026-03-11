@@ -239,7 +239,7 @@ export default function SecurityPage() {
                 <div className="flex-1 min-w-0">
                   <p className="text-zinc-200 text-xs font-mono font-semibold">{ev.type}</p>
                   {ev.agentId && <p className="text-zinc-500 text-xs mt-0.5">Agent: {ev.agentId}</p>}
-                  {(ev.reason || ev.detail) && (
+                  {(ev.reason != null || ev.detail != null) && (
                     <p className="text-zinc-400 text-xs mt-0.5">
                       {stringify(ev.reason ?? ev.detail)}
                     </p>
