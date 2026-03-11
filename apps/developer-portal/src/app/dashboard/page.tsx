@@ -72,7 +72,7 @@ export default function DashboardPage() {
     try {
       const [haltRes, healthRes, telRes] = await Promise.all([
         fetch("/api/system/halt-status"),
-        fetch("/api/cron/health-check"),
+        fetch("/api/live/health"),
         fetch("/api/live/telemetry"),
       ]);
       if (haltRes.ok)   setHalt(await haltRes.json() as HaltStatus);
