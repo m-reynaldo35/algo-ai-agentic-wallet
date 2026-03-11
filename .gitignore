@@ -17,3 +17,4 @@ testnet-wallet.txt
 *-qr.png
 *-qr.jpg
 certs/
+.env*.local
