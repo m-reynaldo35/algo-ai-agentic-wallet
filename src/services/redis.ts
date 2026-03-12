@@ -23,6 +23,8 @@ export class RedisShim {
       maxRetriesPerRequest: 3,
       enableReadyCheck: false,
       lazyConnect: false,
+      connectTimeout: 2_000,   // 2s per attempt (default 10s) — fail fast on private-net flaps
+      commandTimeout: 6_000,   // 6s hard cap per command (3 retries × 2s)
     });
     this._ioredis.on("error", (err: Error) => {
       console.error("[Redis] Connection error:", err.message);
