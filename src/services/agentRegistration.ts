@@ -7,9 +7,6 @@ import {
   validateAgentId,
   type AgentRecord,
 } from "./agentRegistry.js";
-import { checkAndRecordOutflow, rollbackOutflow } from "../protection/treasuryOutflowGuard.js";
-import { getAlgoPriceUsdc, registrationFundMicro } from "./algoPrice.js";
-import { getRedis } from "./redis.js";
 import { config } from "../config.js";
 
 const USDC_ASA_ID = BigInt(config.x402.usdcAssetId);
@@ -56,11 +53,7 @@ function getSignerAccount(): algosdk.Account {
 /**
  * Generate a fresh Algorand keypair for a new agent.
  *
- * This is a pure in-process operation — no network calls, no blockchain
- * transactions, no treasury cost. The caller (wizard UI) stores the mnemonic
- * in browser state, shows it to the user once, and later calls
- * registerExistingAgent() once the user has funded the wallet.
- *
+ * Pure in-process — no network calls, no blockchain transactions.
  * The server never persists the mnemonic.
  */
 export function generateAgentKeypair(agentId: string): GeneratedKeypair {
@@ -68,161 +61,9 @@ export function generateAgentKeypair(agentId: string): GeneratedKeypair {
   const account = algosdk.generateAccount();
   return {
     agentId,
-    address:            account.addr.toString(),
-    mnemonic:           algosdk.secretKeyToMnemonic(account.sk),
+    address:             account.addr.toString(),
+    mnemonic:            algosdk.secretKeyToMnemonic(account.sk),
     minimumFundingMicro: MINIMUM_FUNDING_MICRO,
-  };
-}
-
-/**
- * Treasury-sponsored registration: generates a keypair and atomically funds
- * the wallet, opts it into USDC, and rekeys it to Rocca — all in one group.
- *
- * Uses fee pooling: treasury pays all three transaction fees in Txn 0 so the
- * agent wallet pays zero fees and needs zero pre-existing balance.
- *
- * Treasury cost per registration: ~253,000 µALGO (0.253 ALGO).
- *   200,000 µALGO — MBR after opt-in (base 0.1 + USDC 0.1)
- *    50,000 µALGO — gas buffer (~50 future payment fees)
- *     3,000 µALGO — three transaction fees (fee pooled on Txn 0)
- *
- * Requires ALGO_TREASURY_MNEMONIC to be set. Throws if not configured.
- */
-export async function registerNewAgentWithTreasury(
-  agentId: string,
-  platform?: string,
-): Promise<{ mnemonic: string } & RegistrationResult> {
-  validateAgentId(agentId);
-
-  const existing = await getAgent(agentId);
-  if (existing) throw new Error(`Agent already registered: ${agentId}`);
-
-  const mnemonic_ = process.env.ALGO_TREASURY_MNEMONIC;
-  if (!mnemonic_) throw new Error("ALGO_TREASURY_MNEMONIC not set — cannot sponsor registration");
-
-  const treasuryAccount = algosdk.mnemonicToSecretKey(mnemonic_);
-  const signerAccount   = getSignerAccount();
-  const signerAddress   = signerAccount.addr.toString();
-  const agentAccount    = algosdk.generateAccount();
-  const agentAddress    = agentAccount.addr.toString();
-  const agentMnemonic   = algosdk.secretKeyToMnemonic(agentAccount.sk);
-  const cohort          = assignCohort(agentId);
-
-  // ── Anti-Sybil: global daily registration cap ────────────────────────────
-  const dailyCap = parseInt(process.env.SPONSORED_DAILY_CAP ?? "50", 10);
-  const redis    = getRedis();
-  if (redis) {
-    const today  = new Date().toISOString().slice(0, 10);
-    const capKey = `x402:create:daily:${today}`;
-    const count  = await redis.incr(capKey) as number;
-    if (count === 1) await redis.expire(capKey, 86_400);
-    if (count > dailyCap) {
-      throw new Error(`Daily sponsored registration cap reached (${dailyCap}/day). Try again tomorrow.`);
-    }
-  }
-
-  // ── Oracle-scaled fund amount ─────────────────────────────────────────────
-  // Fetch price first so it's available for both the outflow guard and the txn.
-  // Throws if CoinGecko has never been reachable (cold start + oracle down) —
-  // we refuse to sponsor without a real price to avoid runaway USD spend.
-  const priceUsd   = await getAlgoPriceUsdc();
-  const FUND_MICRO = registrationFundMicro(priceUsd);
-  console.log(
-    `[AgentRegistration] Treasury-sponsored registration: ${agentId} — ` +
-    `ALGO/USD $${priceUsd.toFixed(4)}, sending ${FUND_MICRO} µALGO`,
-  );
-  console.log(`[AgentRegistration]   Address: ${agentAddress}  Cohort: ${cohort}`);
-
-  // ── Anti-Sybil: treasury outflow guard ───────────────────────────────────
-  // Actual send amount (FUND_MICRO) + fees (3,000) counted against daily cap.
-  const outflow = await checkAndRecordOutflow(FUND_MICRO + 3_000n, 0n);
-  if (!outflow.allowed) {
-    throw new Error(
-      `Treasury daily ALGO cap reached — sponsored registration paused. ` +
-      `Today: ${outflow.todayAlgo} µALGO / cap: ${outflow.capAlgo} µALGO`,
-    );
-  }
-
-  const algod  = getAlgodClient();
-  const base   = await getSuggestedParams();
-
-  const MIN_FEE = 1_000n;
-  const zeroFee    = { ...base, fee: 0n, flatFee: true } as typeof base;
-  const pooledFee  = { ...base, fee: 3n * MIN_FEE, flatFee: true } as typeof base;
-
-  // Txn 0: Treasury → Agent (fund + pay all fees)
-  const fundTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-    sender:          treasuryAccount.addr.toString(),
-    receiver:        agentAddress,
-    amount:          FUND_MICRO,
-    suggestedParams: pooledFee,
-    note:            new Uint8Array(Buffer.from(`x402:agent:fund:${agentId}`)),
-  });
-
-  // Txn 1: Agent USDC opt-in (fee pooled = 0)
-  const optInTxn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
-    sender:          agentAddress,
-    receiver:        agentAddress,
-    amount:          0n,
-    assetIndex:      USDC_ASA_ID,
-    suggestedParams: zeroFee,
-    note:            new Uint8Array(Buffer.from(`x402:agent:optin:${agentId}`)),
-  });
-
-  // Txn 2: Agent rekey to Rocca signer (fee pooled = 0)
-  const rekeyTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-    sender:          agentAddress,
-    receiver:        agentAddress,
-    amount:          0n,
-    suggestedParams: zeroFee,
-    rekeyTo:         signerAccount.addr,
-    note:            new Uint8Array(Buffer.from(`x402:agent:rekey:${agentId}`)),
-  });
-
-  algosdk.assignGroupID([fundTxn, optInTxn, rekeyTxn]);
-
-  const signed = [
-    fundTxn.signTxn(treasuryAccount.sk),
-    optInTxn.signTxn(agentAccount.sk),
-    rekeyTxn.signTxn(agentAccount.sk),
-  ];
-
-  let txid: string;
-  try {
-    ({ txid } = await algod.sendRawTransaction(signed).do());
-    console.log(`[AgentRegistration] Submitted sponsored group: ${txid}`);
-    await algosdk.waitForConfirmation(algod, txid, 4);
-    console.log(`[AgentRegistration] Confirmed: ${txid}`);
-  } catch (sendErr) {
-    // Roll back the outflow reservation so the daily cap isn't consumed
-    // by a failed transaction.
-    await rollbackOutflow(outflow.reservationKey);
-    throw sendErr;
-  }
-
-  const record: AgentRecord = {
-    agentId,
-    address:           agentAddress,
-    cohort,
-    authAddr:          signerAddress,
-    custody:           "rocca",
-    platform,
-    createdAt:         new Date().toISOString(),
-    registrationTxnId: txid,
-    status:            "registered",
-  };
-
-  await storeAgent(record);
-  console.log(`[AgentRegistration] Stored in registry: ${agentId}`);
-
-  return {
-    agentId,
-    address:           agentAddress,
-    mnemonic:          agentMnemonic,
-    cohort,
-    authAddr:          signerAddress,
-    registrationTxnId: txid,
-    explorerUrl:       `https://allo.info/tx/${txid}`,
   };
 }
 

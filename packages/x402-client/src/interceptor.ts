@@ -164,6 +164,31 @@ async function buildPaymentProof(
   };
 }
 
+// ── Gas Status Helpers ─────────────────────────────────────────
+
+export type AgentGasStatus = "ok" | "low" | "critical";
+
+export interface AgentGasInfo {
+  /** "ok" | "low" | "critical" — from X-Agent-Gas-Status header */
+  status: AgentGasStatus;
+  /** Estimated remaining transactions — from X-Agent-Gas-Remaining header */
+  remaining: number;
+}
+
+/**
+ * Parse gas advisory headers from a successful payment response.
+ * Returns null if the server did not include gas headers (e.g. on error paths).
+ */
+export function parseGasInfo(response: Response): AgentGasInfo | null {
+  const status    = response.headers.get("X-Agent-Gas-Status") as AgentGasStatus | null;
+  const remaining = response.headers.get("X-Agent-Gas-Remaining");
+  if (!status) return null;
+  return {
+    status,
+    remaining: remaining !== null ? parseInt(remaining, 10) : 0,
+  };
+}
+
 // ── Helpers ────────────────────────────────────────────────────
 
 function resolveAlgodUrl(chain: string): string {

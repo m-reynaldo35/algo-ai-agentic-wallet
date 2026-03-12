@@ -249,47 +249,125 @@ GET https://api.ai-agentic-wallet.com/health        → live status
 
 ## 8. Agent Registration
 
-Before an agent can make x402 payments, it must be registered with the system so its address is tracked and cohort-assigned.
+Before an agent can make x402 payments, it must be registered. Registration is
+ALGO-triggered — you create an agent address, send ALGO to it, and the server
+activates it automatically.
 
-**One registration endpoint:**
-
-```
-POST /api/agents/register-existing
-```
-
-You supply a funded wallet mnemonic. The wallet is rekeyed on-chain to the Rocca signer (auth-addr). You retain the private key to sign x402 payment proofs. Mandates (AP2) can be layered on top of any registered agent for recurring/autonomous payments without repeated x402 handshakes.
-
-**Registration:**
+### Step 1 — Create agent (generates address, no blockchain cost)
 
 ```typescript
-const response = await fetch("https://api.ai-agentic-wallet.com/v1/api/agents/register-existing", {
+const response = await fetch("https://api.ai-agentic-wallet.com/v1/api/agents/create", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
     "X-Portal-Key": PORTAL_API_KEY,
   },
   body: JSON.stringify({
-    agentId:  "my-agent-001",          // unique ID, alphanumeric + hyphens
-    mnemonic: "word1 word2 ... word25", // 25-word Algorand mnemonic of funded wallet
-    platform: "openai",                // optional: "openai" | "anthropic" | "custom"
+    agentId:  "my-agent-001",  // unique ID, 3–64 chars, alphanumeric + _-
+    platform: "anthropic",     // optional
   }),
 });
 
-const { agentId, address, authAddr, registrationTxnId } = await response.json();
-// address    → the agent's Algorand address (your wallet)
-// authAddr   → Rocca signer address (rekeyed auth-addr)
-// The original mnemonic signs x402 payment proofs going forward.
+const { agentId, address, mnemonic, minimumFundingAlgo } = await response.json();
+// address            → the agent's permanent Algorand address
+// mnemonic           → 25-word secret phrase — save this, server discards it
+// minimumFundingAlgo → 0.5 ALGO required to trigger activation
 ```
 
-**Requirements before registering:**
-- The wallet must hold ≥ 0.1 ALGO (Algorand minimum balance)
-- The wallet must be opted into USDC ASA 31566704
-- The wallet must hold ≥ 0.01 USDC (10,000 micro-USDC) for the first toll
+**Save the mnemonic.** It is shown once and immediately discarded by the server.
+You will use it to sign x402 payment proofs.
 
-**Signing key split after rekeying:**
+### Step 2 — Send ALGO to activate
+
+Send **at least 0.5 ALGO** to the `address` returned above.
+
+```bash
+# Example using goal (Algorand CLI)
+goal clerk send -a 500000 -t <agent-address> -f <your-wallet>
+```
+
+Once the deposit confirms on-chain (~3.8 seconds), the server:
+1. Detects the deposit (checks every 10 seconds)
+2. Opts the agent wallet into USDC (ASA 31566704)
+3. Rekeys the wallet to the Rocca signer (auth-addr)
+4. Marks the agent `registered` in the registry
+
+### Step 3 — Poll for activation
+
+```typescript
+// Poll until agent status === "registered" or "active"
+async function waitForActivation(agentId: string): Promise<void> {
+  for (let i = 0; i < 60; i++) {
+    const res = await fetch(`https://api.ai-agentic-wallet.com/v1/api/agents/${agentId}`, {
+      headers: { "X-Portal-Key": PORTAL_API_KEY },
+    });
+    if (res.ok) {
+      const agent = await res.json();
+      console.log("Agent activated:", agent.agentId, agent.status);
+      return;
+    }
+    await new Promise(r => setTimeout(r, 5_000)); // retry every 5s
+  }
+  throw new Error("Activation timeout — check ALGO deposit");
+}
+```
+
+### Step 4 — Deposit USDC
+
+Once activated, deposit USDC (ASA 31566704 mainnet / 10458941 testnet) to the agent address:
+
+```typescript
+// The agent's USDC balance is its spending power.
+// Minimum for first payment: 10 000 micro-USDC ($0.01)
+```
+
+### Alternative: Register an existing funded wallet
+
+If you already have an Algorand wallet with sufficient ALGO and USDC:
+
+```typescript
+const response = await fetch("https://api.ai-agentic-wallet.com/v1/api/agents/register-existing", {
+  method: "POST",
+  headers: { "Content-Type": "application/json", "X-Portal-Key": PORTAL_API_KEY },
+  body: JSON.stringify({
+    agentId:  "my-agent-001",
+    mnemonic: "word1 word2 ... word25",
+  }),
+});
+const { agentId, address, authAddr, registrationTxnId } = await response.json();
+```
+
+### Signing key split after rekeying
+
 - On-chain transactions FROM the agent's address → Rocca signs (as auth-addr)
 - Off-chain x402 payment proofs (`algosdk.signBytes`) → original mnemonic signs
 - These do not conflict — `algosdk.verifyBytes` checks against the agent's address, not the auth-addr
+
+### Gas warning headers
+
+After each successful payment, the server includes advisory headers:
+
+```
+X-Agent-Gas-Status:    ok | low | critical
+X-Agent-Gas-Remaining: 847   (estimated transactions remaining)
+```
+
+Thresholds:
+- `low`      — < 200 000 µALGO above minimum balance (~200 transactions remaining)
+- `critical` — < 50 000 µALGO above minimum balance (~50 transactions remaining)
+
+When `critical`, the agent should pause payments and alert the operator to top up ALGO.
+You can read these headers with the x402-client SDK:
+
+```typescript
+import { requestWithPayment, parseGasInfo } from "@algo-wallet/x402-client";
+
+const response = await requestWithPayment(url, init, privateKey, senderAddress);
+const gas = parseGasInfo(response);
+if (gas?.status === "critical") {
+  console.warn(`Gas critical — only ${gas.remaining} transactions remaining`);
+}
+```
 
 **AP2 mandates (optional, for recurring/autonomous payments):**
 ```
@@ -303,7 +381,9 @@ Rocca evaluates mandate + signs all transactions — no x402 proof required per-
 
 | Task | Method | Path |
 |---|---|---|
-| Register agent (with your own wallet) | POST | `/api/agents/register-existing` |
+| Create agent (ALGO-triggered activation) | POST | `/api/agents/create` |
+| Register existing funded wallet | POST | `/api/agents/register-existing` |
+| Get agent status | GET | `/api/agents/:agentId` |
 | Execute payment | POST | `/api/agent-action` then `/api/execute` |
 | Health check | GET | `/health` |
 | Capability manifest | GET | `/agent.json` |

@@ -69,6 +69,7 @@ import {
   runOnChainReconciliation,
   ONCHAIN_MONITOR_ENABLED,
 } from "../src/protection/onChainMonitor.js";
+import { scanAllAgents } from "../src/services/agentRegistry.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -688,6 +689,58 @@ async function runCycle(
   }
 }
 
+// ── Agent Gas Monitor ─────────────────────────────────────────────────────
+// Scans all active agents and fires a Telegram alert if any agent's ALGO
+// balance is at the critical threshold (< 50 000 µALGO above MBR).
+// Runs every 6 guardian cycles (~60s at default 10s interval).
+
+const AGENT_GAS_MBR_MICRO      = 200_000n; // 0.2 ALGO (base + USDC optin)
+const AGENT_GAS_CRITICAL_MICRO =  50_000n; // ~50 transactions remaining
+const agentGasAlertSent        = new Map<string, number>(); // agentId → last alert timestamp
+const AGENT_GAS_ALERT_COOLDOWN_MS = 30 * 60_000; // 30 min per-agent cooldown
+
+async function checkAgentGas(algod: algosdk.Algodv2): Promise<void> {
+  let agents: Awaited<ReturnType<typeof scanAllAgents>>;
+  try {
+    agents = await scanAllAgents();
+  } catch {
+    log.warn("checkAgentGas: failed to load agent registry — skipping");
+    return;
+  }
+
+  const active = agents.filter((a) => a.status === "active" || a.status === "registered");
+  if (active.length === 0) return;
+
+  const critical: Array<{ agentId: string; address: string; remaining: bigint }> = [];
+
+  for (const agent of active) {
+    try {
+      const info    = await algod.accountInformation(agent.address).do();
+      const balance = BigInt(info.amount ?? 0n);
+      const above   = balance > AGENT_GAS_MBR_MICRO ? balance - AGENT_GAS_MBR_MICRO : 0n;
+      if (above < AGENT_GAS_CRITICAL_MICRO) {
+        const lastSent = agentGasAlertSent.get(agent.agentId) ?? 0;
+        if (Date.now() - lastSent > AGENT_GAS_ALERT_COOLDOWN_MS) {
+          critical.push({ agentId: agent.agentId, address: agent.address, remaining: above / 1_000n });
+          agentGasAlertSent.set(agent.agentId, Date.now());
+        }
+      }
+    } catch {
+      // Skip individual agent errors — don't abort the whole scan
+    }
+  }
+
+  for (const c of critical) {
+    log.warn({ agentId: c.agentId, remaining: c.remaining.toString() }, "Agent gas critical");
+    await notify("⛽ x402 Agent Gas Critical", {
+      "Agent ID":    c.agentId,
+      "Address":     c.address,
+      "Remaining":   `~${c.remaining} transactions`,
+      "Action":      "Send ALGO to agent wallet to avoid payment failures",
+    });
+  }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -779,6 +832,14 @@ async function main(): Promise<void> {
       const msg = err instanceof Error ? err.message : String(err);
       log.error({ err: msg }, "Cycle error — retrying next interval");
       Sentry.captureException(err, { tags: { component: "wallet-guardian" } });
+    }
+
+    // ── Agent gas monitoring ──────────────────────────────────────────────
+    // Run every 6 cycles (~60s). Alert on any critical agent ALGO balance.
+    if (cycleCount % 6 === 0) {
+      checkAgentGas(algod).catch((err) =>
+        log.warn({ err: err instanceof Error ? err.message : String(err) }, "Agent gas check error"),
+      );
     }
 
     // ── Module 9: on-chain reconciliation ────────────────────────────────

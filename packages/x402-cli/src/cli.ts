@@ -212,6 +212,58 @@ mandates
     }
   });
 
+// ── gas ───────────────────────────────────────────────────────────────────────
+
+program
+  .command("gas")
+  .description("Show ALGO gas status for an agent")
+  .requiredOption("-a, --agent <agentId>", "Agent ID")
+  .action(async (opts: { agent: string }) => {
+    const agent = await apiFetch(`/api/agents/${opts.agent}`) as {
+      agentId: string;
+      address?: string;
+      status?: string;
+    };
+    const address = agent.address;
+    if (!address) {
+      console.error("No on-chain address found for this agent.");
+      process.exit(1);
+    }
+
+    const NETWORK = process.env.X402_NETWORK || "testnet";
+    const indexer = NETWORK === "mainnet"
+      ? "https://mainnet-idx.algonode.cloud"
+      : "https://testnet-idx.algonode.cloud";
+
+    const idxRes = await fetch(`${indexer}/v2/accounts/${address}`);
+    if (!idxRes.ok) {
+      console.error(`Failed to fetch balance: HTTP ${idxRes.status}`);
+      process.exit(1);
+    }
+
+    const acc = await idxRes.json() as { account: { amount: number } };
+    const algoBalance = acc.account.amount;
+    const MBR = 200_000;
+    const above = Math.max(0, algoBalance - MBR);
+    const remaining = Math.floor(above / 1_000);
+    const status = above < 50_000 ? "critical" : above < 200_000 ? "low" : "ok";
+    const statusIcon = status === "ok" ? "✅" : status === "low" ? "⚠️ " : "🔴";
+    const targetMicro = MBR + 700_000;
+    const topUpNeeded = Math.max(0, targetMicro - algoBalance);
+
+    console.log(`\nAgent:     ${agent.agentId}`);
+    console.log(`ALGO:      ${microAlgo(algoBalance)}`);
+    console.log(`Gas:       ${statusIcon} ${status.toUpperCase()} (~${remaining.toLocaleString()} transactions remaining)`);
+
+    if (status === "critical") {
+      console.log(`\n  Action required: send ALGO to ${address} to avoid payment failures.`);
+      console.log(`  Recommended top-up: ${microAlgo(topUpNeeded)}`);
+    } else if (status === "low") {
+      console.log(`\n  Consider sending more ALGO soon.`);
+    }
+    console.log();
+  });
+
 // ── history ───────────────────────────────────────────────────────────────────
 
 program

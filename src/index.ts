@@ -26,9 +26,9 @@ import { getRedis } from "./services/redis.js";
 import { getWebhookDeliveries } from "./services/webhook.js";
 import { registerSSEBroadcaster } from "./services/audit.js";
 import { requirePortalAuth } from "./middleware/portalAuth.js";
-import { registerExistingAgent, generateAgentKeypair, registerNewAgentWithTreasury } from "./services/agentRegistration.js";
+import { registerExistingAgent } from "./services/agentRegistration.js";
 import { getOnboardingQuote, prepareOnboardingGroup, submitOnboardingGroup } from "./services/treasuryFunder.js";
-import { startGasStation, stopGasStation } from "./services/gasStation.js";
+import { startActivationPoller, stopActivationPoller } from "./services/activationPoller.js";
 import { assertProductionAuthReady } from "./auth/liquidAuth.js";
 import { runBootGuards, assertCrossRegionTreasuryHash } from "./protection/envGuard.js";
 import { checkExecutionLimits } from "./protection/executionLimiter.js";
@@ -38,6 +38,8 @@ import {
   getAgent, listAgents, updateAgentStatus, updateAgentRecord,
   setHalt, clearHalt, isHalted, getActiveRotation, getRotationBatch,
   assertCustodyInvariant,
+  storePendingAgent, getPendingAgent, validateAgentId,
+  type PendingAgentRecord,
 } from "./services/agentRegistry.js";
 import {
   issueRekeyChallenge, verifyRekeyChallenge, executeRekey,
@@ -495,6 +497,29 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
       }
     }
 
+    // ── Gas warning headers — advisory, best-effort ───────────────
+    // Fetch agent ALGO balance with a 1.5s timeout so we never block the
+    // response for a slow algod call.  Headers are omitted if the call
+    // times out or the address is unknown.
+    if (publicAddress && publicAddress !== agentId) {
+      try {
+        const algod = getAlgodClient();
+        const info  = await Promise.race<{ amount?: bigint | number } | null>([
+          algod.accountInformation(publicAddress).do() as Promise<{ amount?: bigint | number }>,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1_500)),
+        ]);
+        if (info) {
+          const MBR_MICRO = 200_000n; // 0.1 base + 0.1 USDC optin
+          const balance   = BigInt(info.amount ?? 0n);
+          const above     = balance > MBR_MICRO ? balance - MBR_MICRO : 0n;
+          const remaining = above / 1_000n; // each txn costs ~1 000 µALGO in fees
+          const status    = above < 50_000n ? "critical" : above < 200_000n ? "low" : "ok";
+          res.setHeader("X-Agent-Gas-Status",    status);
+          res.setHeader("X-Agent-Gas-Remaining", remaining.toString());
+        }
+      } catch { /* non-blocking — header omitted on algod error */ }
+    }
+
     res.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -710,10 +735,12 @@ app.get("/api/portal/telemetry", requirePortalAuth, async (_req, res) => {
 app.get("/api/portal/treasury-status", requirePortalAuth, async (_req, res) => {
   try {
     const mnemonic = process.env.ALGO_TREASURY_MNEMONIC;
-    const gasEnabled = process.env.GAS_STATION_ENABLED !== "false";
-    const intervalS  = parseInt(process.env.GAS_STATION_INTERVAL_S   ?? "30",  10);
-    const triggerMicro = parseInt(process.env.GAS_STATION_TRIGGER_MICRO ?? "500000", 10);
-    const topupMicro   = parseInt(process.env.GAS_STATION_TOPUP_MICRO  ?? "700000",  10);
+    // Gas station removed — replaced by ALGO-triggered activation poller.
+    // Keep the gasStation response shape for admin portal backward compat.
+    const gasEnabled   = false;
+    const intervalS    = 0;
+    const triggerMicro = 0;
+    const topupMicro   = 0;
 
     let treasuryAddress: string | null = null;
     let algoBalanceMicro: number | null = null;
@@ -1106,16 +1133,39 @@ app.get("/api/portal/stream", requirePortalAuth, (req, res) => {
 //   GET  /api/agents/:agentId          — fetch a single agent record
 //   PATCH /api/agents/:agentId/suspend — suspend an agent
 
-// Keypair generation — pure in-process, no blockchain, no treasury cost.
-// Returns a fresh Algorand address + mnemonic. The user funds the address,
-// then calls /api/agents/register-existing to opt-in and rekey.
-// Per-IP cap: max 10 per hour (keypair generation is cheap but should be bounded).
+// Agent creation — ALGO-triggered activation model.
+// Generates a keypair and stores a pending record in Redis (24h TTL).
+// The activation poller watches for an ALGO deposit ≥ 0.5 ALGO to the
+// returned address and completes on-chain registration automatically.
+// Per-IP cap: max 10 per hour.
 app.post("/api/agents/create", requirePortalAuth, async (req, res) => {
   try {
     const { agentId } = req.body;
 
     if (!agentId || typeof agentId !== "string") {
       res.status(400).json({ error: "Missing required field: agentId" });
+      return;
+    }
+
+    // ── Validate format ────────────────────────────────────────────
+    try { validateAgentId(agentId); } catch (e) {
+      res.status(400).json({ error: e instanceof Error ? e.message : "Invalid agentId" });
+      return;
+    }
+
+    // ── Duplicate check ────────────────────────────────────────────
+    const existing = await getAgent(agentId);
+    if (existing) {
+      res.status(409).json({ error: `Agent already registered: ${agentId}` });
+      return;
+    }
+    const existingPending = await getPendingAgent(agentId);
+    if (existingPending) {
+      res.status(409).json({
+        error:   `Agent ${agentId} is already pending activation.`,
+        address: existingPending.address,
+        nextStep: `Send at least 0.5 ALGO to ${existingPending.address} to activate.`,
+      });
       return;
     }
 
@@ -1147,42 +1197,34 @@ app.post("/api/agents/create", requirePortalAuth, async (req, res) => {
       } catch { /* Redis error — allow through */ }
     }
 
-    // Treasury-sponsored path: fund + USDC opt-in + rekey in one atomic group.
-    // The user never needs to send ALGO — they just deposit USDC after.
-    if (process.env.ALGO_TREASURY_MNEMONIC) {
-      const platform = typeof req.body.platform === "string" ? req.body.platform : undefined;
-      const result   = await registerNewAgentWithTreasury(agentId, platform);
-      res.status(201).json({
-        agentId:             result.agentId,
-        address:             result.address,
-        mnemonic:            result.mnemonic,
-        registrationTxnId:   result.registrationTxnId,
-        explorerUrl:         result.explorerUrl,
-        warning:             "Save this mnemonic — the server has already discarded it.",
-        sponsored:           true,
-      });
-      return;
-    }
+    // ── Generate keypair and store pending record ──────────────────
+    const agentAccount   = algosdk.generateAccount();
+    const agentAddress   = agentAccount.addr.toString();
+    const mnemonic       = algosdk.secretKeyToMnemonic(agentAccount.sk);
+    const secretKeyB64   = Buffer.from(agentAccount.sk).toString("base64");
+    const platform       = typeof req.body.platform === "string" ? req.body.platform : undefined;
 
-    // Fallback: keypair-only (no treasury configured).
-    const result = generateAgentKeypair(agentId);
+    const pending: PendingAgentRecord = {
+      agentId,
+      address:      agentAddress,
+      secretKeyB64,
+      platform,
+      createdAt:    new Date().toISOString(),
+    };
+    await storePendingAgent(pending);
 
     res.status(201).json({
-      agentId:             result.agentId,
-      address:             result.address,
-      mnemonic:            result.mnemonic,
-      minimumFundingAlgo:  Number(result.minimumFundingMicro) / 1_000_000,
-      warning:             "Save this mnemonic — the server has already discarded it.",
-      nextStep:            `Fund ${result.address} with at least ${Number(result.minimumFundingMicro) / 1_000_000} ALGO, then call POST /api/agents/register-existing.`,
+      agentId,
+      address:           agentAddress,
+      mnemonic,
+      minimumFundingAlgo: 0.5,
+      warning:  "Save this mnemonic — it will be deleted from our systems after your agent activates.",
+      nextStep: `Send at least 0.5 ALGO to ${agentAddress}. Your agent will activate automatically within ~10 seconds of the deposit confirming.`,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    if (message.includes("Invalid agentId")) {
-      res.status(400).json({ error: message });
-      return;
-    }
     console.error("[agents/create]", message);
-    res.status(500).json({ error: "Keypair generation failed", detail: message });
+    res.status(500).json({ error: "Agent creation failed", detail: message });
   }
 });
 
@@ -2526,9 +2568,9 @@ startDriftPulse();
 // AP2 Module 5 — Recurring scheduler: 30s tick for due recurring mandates.
 startRecurringScheduler();
 
-// Gas station — monitors agent ALGO balances, tops up from treasury when below threshold.
-// Configure via GAS_STATION_INTERVAL_S, GAS_STATION_TRIGGER_MICRO, GAS_STATION_TOPUP_MICRO.
-startGasStation();
+// Activation poller — watches pending agent addresses for ALGO deposits.
+// When ≥ 0.5 ALGO is detected, performs USDC opt-in + Rocca rekey automatically.
+startActivationPoller();
 
 // Settlement worker — dequeues signed transactions and broadcasts to Algorand.
 // Runs embedded in the API process. For higher throughput, run additional
@@ -2537,5 +2579,5 @@ const workerAbort = new AbortController();
 runWorker(workerAbort.signal).catch((err: unknown) =>
   console.error("[Boot] Settlement worker crashed:", err instanceof Error ? err.message : err),
 );
-process.on("SIGTERM", () => { workerAbort.abort(); stopGasStation(); });
-process.on("SIGINT",  () => { workerAbort.abort(); stopGasStation(); });
+process.on("SIGTERM", () => { workerAbort.abort(); stopActivationPoller(); });
+process.on("SIGINT",  () => { workerAbort.abort(); stopActivationPoller(); });

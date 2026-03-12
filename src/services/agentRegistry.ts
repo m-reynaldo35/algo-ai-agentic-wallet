@@ -499,3 +499,70 @@ export async function assertCustodyInvariant(
 
 // Re-export crypto for consumers that need UUID generation
 export { crypto };
+
+// ── Pending Agent (pre-activation) ────────────────────────────────
+//
+// When a user calls POST /api/agents/create, the server generates a keypair
+// and stores a pending record here (24h TTL).  The activation poller watches
+// for an ALGO deposit ≥ 500 000 µALGO and then performs the on-chain
+// USDC opt-in + rekey automatically, using the stored secret key.
+// The record (and the secret key) is deleted immediately after activation.
+
+const PENDING_PREFIX = "x402:pending:";
+const PENDING_TTL_S  = 86_400; // 24 hours
+
+export interface PendingAgentRecord {
+  agentId:      string;
+  address:      string;
+  /** Base64-encoded 64-byte Algorand secret key — deleted after activation */
+  secretKeyB64: string;
+  platform?:    string;
+  createdAt:    string;
+}
+
+export async function storePendingAgent(record: PendingAgentRecord): Promise<void> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available — cannot store pending agent");
+  await redis.set(
+    `${PENDING_PREFIX}${record.agentId}`,
+    JSON.stringify(record),
+    { ex: PENDING_TTL_S },
+  );
+}
+
+export async function getPendingAgent(agentId: string): Promise<PendingAgentRecord | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  return redis.get<PendingAgentRecord>(`${PENDING_PREFIX}${agentId}`);
+}
+
+export async function deletePendingAgent(agentId: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.del(`${PENDING_PREFIX}${agentId}`);
+}
+
+export async function scanAllPendingAgents(): Promise<PendingAgentRecord[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+
+  const records: PendingAgentRecord[] = [];
+  let cursor = 0;
+
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, {
+      match: `${PENDING_PREFIX}*`,
+      count: 100,
+    });
+    cursor = parseInt(nextCursor, 10);
+
+    if (keys.length > 0) {
+      const raws = await Promise.all(keys.map((k) => redis.get<PendingAgentRecord>(k)));
+      for (const r of raws) {
+        if (r !== null) records.push(r);
+      }
+    }
+  } while (cursor !== 0);
+
+  return records;
+}

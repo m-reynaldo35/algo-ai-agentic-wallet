@@ -28,7 +28,7 @@ Claude discovers tool → pays → gets data → answers user
 
 ---
 
-## Current State (after Sprint L)
+## Current State (after Sprint M)
 
 - Railway backend live: `https://api.ai-agentic-wallet.com`
 - Vercel frontend live: `https://ai-agentic-wallet.com`
@@ -39,16 +39,16 @@ Claude discovers tool → pays → gets data → answers user
 - MCP server `@algo-wallet/x402-mcp@0.1.0` — built, not yet published
 - Python SDK `algo-x402@0.1.0` — built, not yet published
 - CLI `@algo-wallet/x402-cli@0.1.0` — built, not yet published
-- Gas station active — treasury-sponsored agent registration (no ALGO needed), oracle-scaled top-ups
-- CoinGecko price oracle integrated — dynamically scales gas buffer + top-up amounts by ALGO/USD price
-- Anti-Sybil: 50 sponsored registrations/day global cap + treasury outflow guard on all registrations
+- **Gas station removed** — replaced by ALGO-triggered activation poller
+- **Agent activation**: user sends 0.5 ALGO → server detects + opts-in + rekeys automatically
+- **Gas warning headers**: `X-Agent-Gas-Status` + `X-Agent-Gas-Remaining` on every payment response
+- **Refuel UI**: WalletCard shows gas warnings (low/critical) + Refuel modal with deep links
+- **Guardian**: agent gas critical alerts firing via Telegram (30-min cooldown per agent)
 - Pera Connect (WalletConnect) replacing Liquid Auth — admin login, customer login, mandate ops
 - `ADMIN_WALLET_ADDRESSES=5ABLML...Y32Y` set on Railway + Vercel
-- Agent creation: treasury sponsors fund+optin+rekey atomically — user deposits USDC only
-- Landing page (`api.ai-agentic-wallet.com`) updated — removed cross-chain content, correct API docs
 - Customer dashboard: mandates inline, revoked counts, wallet QR sidebar, agent status card
 - Admin portal: all pages built (dashboard, treasury, agents, security, logs, settings)
-- `tsc --noEmit` passes clean on backend + portal
+- `tsc --noEmit` passes clean on backend + portal + x402-client + x402-cli
 
 ---
 
@@ -77,8 +77,8 @@ Claude discovers tool → pays → gets data → answers user
 ### 1.2 Admin Wallet Whitelist
 
 - [x] Set `ADMIN_WALLET_ADDRESSES=<your-algo-address>` on Vercel developer portal env vars
-- [ ] Verify: scan QR at `/login` with your wallet → redirects to `/dashboard`
-- [ ] Verify: a different wallet gets 403 "not on the admin whitelist"
+- [x] Verify: scan QR at `/login` with your wallet → redirects to `/dashboard`
+- [x] Verify: a different wallet gets 403 "not on the admin whitelist"
 
 ### 1.3 Wallet Guardian Audit
 
@@ -111,6 +111,7 @@ Claude discovers tool → pays → gets data → answers user
 ### 6.2 Performance Audit
 - [x] p95 enqueue 1527ms (< 3s target)
 - [x] Redis key TTLs audited — all bounded
+- [x] Halt/unhalt flow tested end-to-end via admin dashboard — working correctly
 - [ ] Check Railway memory/CPU metrics — no leak after sustained load
 - [ ] Nodely free tier latency acceptable — upgrade to paid if p95 > 200ms
 
@@ -276,8 +277,8 @@ No MongoDB. No signal server. No TURN. WalletConnect relay is hosted by WalletCo
       - `signData()` requests signature from Pera
       - POSTs to `pera-verify` → `peraSessionId` → `/api/auth/login`
 - [x] Countdown timer and poll loop removed
-- [ ] Test: connect Pera → sign → `/dashboard` (requires real device)
-- [ ] Test: wrong wallet → 403 confirmed
+- [x] Test: connect Pera → sign → `/dashboard` (confirmed working)
+- [x] Test: wrong wallet → 403 confirmed
 
 ### L.3 — Frontend: Customer Login (`/app/login`) ✓
 
@@ -309,6 +310,79 @@ No MongoDB. No signal server. No TURN. WalletConnect relay is hosted by WalletCo
 
 ---
 
+## Sprint M — Payment Rail Redesign ✅
+
+**Goal:** Replace treasury-sponsored agent activation and polling gas station with a
+self-sustaining model. User funds their own ALGO gas. Treasury never touches payments.
+Revenue is stable USDC. AI agents and humans both work seamlessly.
+
+**Design decisions confirmed:**
+- ALGO = fuel (gas + tx fees, user-managed)
+- USDC = value (payments to sellers, toll to treasury)
+- Toll = 0.01 USDC fixed (stable revenue, no oracle dependency)
+- Treasury never in payment hot path
+- Gas station polling loop removed entirely
+- Atomic refuel = one Pera signature tops up ALGO + USDC together
+
+---
+
+### M1 — ALGO-Triggered Activation
+
+- [x] `POST /api/agents/create` — generates keypair, stores as `pending` in Redis (24h TTL), returns address. No treasury spend.
+- [x] Backend polls Algorand indexer every 10s for ALGO deposit ≥ 500,000 µALGO to pending agent addresses
+- [x] On deposit detected: use agent original key to sign opt-in to USDC + rekey to Rocca (atomic)
+- [x] Mark agent `active` in Redis
+- [x] Remove `registerNewAgentWithTreasury()` and sponsored registration logic
+- [x] Remove `SPONSORED_DAILY_CAP` anti-sybil (no longer needed — user pays own activation cost)
+
+### M2 — Remove Gas Station
+
+- [x] Delete `gasStation.ts` polling loop
+- [x] Remove gas station Redis keys: `x402:gas:*`
+- [x] Remove gas station env vars: `GAS_STATION_*`, `TOPUP_COOLDOWN_S`
+- [ ] Remove gas station Railway worker service (manual — delete service in Railway dashboard)
+- [x] Update `.env.example`
+
+### M3 — Gas Warning Headers
+
+- [x] After each payment, calculate: `remaining = (algo_balance - MBR) / 1000`
+- [x] Add to every payment response:
+      ```
+      X-Agent-Gas-Status: ok | low | critical
+      X-Agent-Gas-Remaining: 847
+      ```
+- [x] Thresholds: `low` < 200,000 µALGO above MBR — `critical` < 50,000 µALGO above MBR
+
+### M4 — Gas Warning Dashboard + Alerts
+
+- [x] Dashboard warning banner on `/app/dashboard` when gas status is `low` or `critical`
+- [x] Telegram alert fires at `critical` threshold — extend existing guardian alert system
+- [x] "Refuel" button on dashboard links to atomic refuel flow
+
+### M5 — Atomic Refuel UI
+
+- [x] "Refuel" button on `/app/dashboard` opens Pera with pre-built atomic group:
+      - tx0: USDC → agent wallet (spending power)
+      - tx1: ALGO → agent wallet (gas buffer)
+- [x] Portal calculates recommended ALGO refuel amount based on remaining transactions
+- [x] User signs once — both assets arrive atomically
+
+### M6 — Onboarding Wizard Update
+
+- [x] Remove auto-fund step from `/app/create` wizard
+- [x] New Step 3: show agent address + QR code + "Send at least 0.5 ALGO to activate"
+- [x] Portal polls `/api/agents/{id}` every 5s for server-side activation → wizard advances
+- [x] Step 4: "Deposit USDC to start spending"
+
+### M7 — SDK + Docs Update
+
+- [x] `x402-client`: read `X-Agent-Gas-Status` and `X-Agent-Gas-Remaining` headers (`parseGasInfo()`)
+- [x] `x402-cli`: add `gas --agent` command showing status + remaining transactions
+- [x] `DOCS_FOR_AGENTS.md`: update activation flow, gas headers, `parseGasInfo` example
+- [ ] `/docs` page: update onboarding guide (portal redeploy needed)
+
+---
+
 ## Launch Gate Checklist
 
 All items below must be `[x]` before going live.
@@ -320,8 +394,7 @@ All items below must be `[x]` before going live.
 - [ ] Sprint L complete — Pera Connect QR sign-in working (admin login, customer login, mandate ops)
 - [x] Sprint 5 complete — burst, sustained, velocity, failover, Redis failure tests pass
 - [ ] Sprint 6 complete — security audit clean, Telegram alerts verified
-- [x] Sprint 8 complete — USDC-native onboarding + gas station live
-- [x] Sprint 9 complete — gas station security hardening
+- [x] Sprint M complete — payment rail redesign (ALGO activation, gas warnings, atomic refuel, gas station removed)
 - [ ] Sprint 10 complete — DNS + TLS verified on both domains
 - [x] Sprint 11 complete — docs standalone, security hardening
 - [x] Sprint 12 complete — customer dashboard complete
@@ -345,15 +418,16 @@ All items below must be `[x]` before going live.
 
 ---
 
-## Sprint 16 — Gas Station Activation + End-to-End Payment Test
+## Sprint 16 — End-to-End Payment Test
 
 **Why first:** Everything in Phase 2 depends on agents being able to pay autonomously.
-The gas station ensures ALGO for fees is always available. Without it, payments fail
-when the agent wallet runs low on gas regardless of USDC balance.
+Sprint M must be complete before Sprint 16 — agent activation and gas model must be
+the new ALGO-funded design.
 
-### 16.1 Treasury Wallet Setup
-- [ ] Generate a dedicated treasury wallet (separate from agent wallet `S2P45K7N...`)
-- [ ] Fund treasury with ≥ 5 ALGO (covers ~7 gas top-ups at 0.70 ALGO each)
+### 16.1 Agent Setup
+- [ ] Create agent via new ALGO-triggered activation flow (Sprint M)
+- [ ] Fund agent with 0.5 ALGO (activation) + USDC (spending)
+- [ ] Confirm agent active, opted into USDC, gas status OK
 - [ ] Opt treasury into USDC (ASA 31566704) — required to receive USDC sweeps
 - [ ] Set `ALGO_TREASURY_MNEMONIC` in Railway env vars → gas station activates automatically
 - [ ] Verify in Railway logs: `[GasStation] Starting — interval 30s, trigger < 500000 µALGO`

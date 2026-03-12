@@ -6,28 +6,23 @@ import QRCode from "qrcode";
 
 const NETWORK         = process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? "testnet";
 const USDC_ASSET_ID   = NETWORK === "mainnet" ? 31566704 : 10458941;
-/** 0.205 ALGO — fallback only, used when treasury sponsorship is unavailable */
-const MIN_ALGO_MICRO  = 205_000;
+/** 0.5 ALGO in µALGO — minimum deposit to trigger server-side activation */
+const MIN_ALGO_MICRO  = 500_000;
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
-interface KeypairResponse {
-  agentId: string;
-  address: string;
-  mnemonic: string;
-  // Treasury-sponsored: already registered, no ALGO needed
-  registrationTxnId?: string;
-  explorerUrl?: string;
-  sponsored?: boolean;
-  // Fallback: user must fund with ALGO first
+interface CreateResponse {
+  agentId:           string;
+  address:           string;
+  mnemonic:          string;
   minimumFundingAlgo?: number;
+  warning?:          string;
 }
 
-interface ActivateResponse {
+interface AgentStatus {
   agentId: string;
   address: string;
-  registrationTxnId: string;
-  explorerUrl: string;
+  status:  string;
 }
 
 interface Balance { microAlgo: number; microUsdc: number; }
@@ -57,7 +52,7 @@ function Step1({ onNext }: { onNext: (agentId: string) => void }) {
       <div>
         <h2 className="text-lg font-semibold text-white mb-1">Name your agent</h2>
         <p className="text-sm text-zinc-400">
-          Choose a unique ID. You'll use this to log in to your dashboard.
+          Choose a unique ID. You&apos;ll use this to log in to your dashboard.
         </p>
       </div>
 
@@ -93,18 +88,18 @@ function Step1({ onNext }: { onNext: (agentId: string) => void }) {
 
 function Step2({
   agentId,
-  keypair,
+  mnemonic,
   onNext,
 }: {
   agentId: string;
-  keypair: KeypairResponse;
+  mnemonic: string;
   onNext: () => void;
 }) {
   const [copied, setCopied]       = useState(false);
   const [confirmed, setConfirmed] = useState(false);
 
   function copy() {
-    navigator.clipboard.writeText(keypair.mnemonic).then(() => {
+    navigator.clipboard.writeText(mnemonic).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -115,7 +110,7 @@ function Step2({
       <div>
         <h2 className="text-lg font-semibold text-white mb-1">Save your secret phrase</h2>
         <p className="text-sm text-zinc-400">
-          This is the only time you'll see it for{" "}
+          This is the only time you&apos;ll see it for{" "}
           <span className="font-mono text-zinc-200">{agentId}</span>.
           The server has already discarded it.
         </p>
@@ -132,7 +127,7 @@ function Step2({
 
       <div className="relative bg-zinc-800 border border-zinc-700 rounded-md p-4">
         <p className="font-mono text-sm text-zinc-200 leading-relaxed break-words select-all">
-          {keypair.mnemonic}
+          {mnemonic}
         </p>
         <button
           onClick={copy}
@@ -153,7 +148,7 @@ function Step2({
           className="mt-0.5 w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-emerald-500 focus:ring-emerald-500/30"
         />
         <span className="text-sm text-zinc-400 group-hover:text-zinc-300 transition-colors">
-          I've saved my secret phrase in a secure location.
+          I&apos;ve saved my secret phrase in a secure location.
         </span>
       </label>
 
@@ -168,82 +163,79 @@ function Step2({
   );
 }
 
-// ── Step 3 — Fund + activate ───────────────────────────────────────────────
+// ── Step 3 — Send ALGO to activate ────────────────────────────────────────
+// Polls the agent registry every 5s. When the server activates the agent
+// (ALGO deposit detected + optin + rekey confirmed), wizard advances.
 
 function Step3({
   agentId,
-  keypair,
+  address,
   onActivated,
 }: {
   agentId: string;
-  keypair: KeypairResponse;
-  onActivated: (result: ActivateResponse) => void;
+  address: string;
+  onActivated: (agent: AgentStatus) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [copied, setCopied]         = useState(false);
-  const [balance, setBalance]       = useState<Balance | null>(null);
-  const [activating, setActivating] = useState(false);
-  const [error, setError]           = useState("");
+  const [copied, setCopied]   = useState(false);
+  const [balance, setBalance] = useState<Balance | null>(null);
+  const [checking, setChecking] = useState(false);
 
-  const { address, mnemonic } = keypair;
-  const funded = (balance?.microAlgo ?? 0) >= MIN_ALGO_MICRO;
+  const algoUri   = `algorand://${address}?amount=${MIN_ALGO_MICRO}`;
+  const truncated = `${address.slice(0, 12)}…${address.slice(-10)}`;
+  const funded    = (balance?.microAlgo ?? 0) >= MIN_ALGO_MICRO;
 
   useEffect(() => {
     if (canvasRef.current) {
-      QRCode.toCanvas(canvasRef.current, `algorand://${address}?amount=${MIN_ALGO_MICRO}`, {
+      QRCode.toCanvas(canvasRef.current, algoUri, {
         width: 160, margin: 2,
         color: { dark: "#000000", light: "#ffffff" },
       });
     }
-  }, [address]);
+  }, [algoUri]);
 
+  // Poll balance for visual feedback
   const fetchBalance = useCallback(async () => {
     try {
       const res  = await fetch(`/api/customer/balance/${address}`);
       if (!res.ok) return;
-      const data = await res.json() as Balance;
-      setBalance(data);
-    } catch { /* silent — retry on next tick */ }
+      setBalance(await res.json() as Balance);
+    } catch { /* silent */ }
   }, [address]);
 
-  // Poll every 5s while unfunded
+  // Poll registry for activation (every 5s)
+  const checkActivated = useCallback(async () => {
+    if (checking) return;
+    setChecking(true);
+    try {
+      const res = await fetch(`/api/agents/${agentId}`);
+      if (res.ok) {
+        const agent = await res.json() as AgentStatus;
+        onActivated(agent);
+      }
+    } catch { /* silent */ }
+    setChecking(false);
+  }, [agentId, onActivated, checking]);
+
   useEffect(() => {
     fetchBalance();
-    const id = setInterval(() => { if (!funded) fetchBalance(); }, 5_000);
-    return () => clearInterval(id);
-  }, [fetchBalance, funded]);
+    checkActivated();
+    const balanceId = setInterval(fetchBalance, 5_000);
+    const activateId = setInterval(checkActivated, 5_000);
+    return () => { clearInterval(balanceId); clearInterval(activateId); };
+  }, [fetchBalance, checkActivated]);
 
-  async function activate() {
-    setError("");
-    setActivating(true);
-    try {
-      const res  = await fetch("/api/agents/register-existing", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ agentId, mnemonic }),
-      });
-      const data = await res.json() as ActivateResponse & { error?: string };
-      if (!res.ok) { setError(data.error ?? `Activation failed (${res.status})`); return; }
-      onActivated(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
-    } finally {
-      setActivating(false);
-    }
-  }
-
-  const truncated  = `${address.slice(0, 12)}…${address.slice(-10)}`;
-  const algoUri    = `algorand://${address}?amount=${MIN_ALGO_MICRO}`;
-  const microAlgo  = balance?.microAlgo ?? 0;
-  const progress   = Math.min(100, Math.round((microAlgo / MIN_ALGO_MICRO) * 100));
+  const microAlgo = balance?.microAlgo ?? 0;
+  const progress  = Math.min(100, Math.round((microAlgo / MIN_ALGO_MICRO) * 100));
 
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-lg font-semibold text-white mb-1">Fund your wallet</h2>
+        <h2 className="text-lg font-semibold text-white mb-1">Send ALGO to activate</h2>
         <p className="text-sm text-zinc-400">
-          Send exactly <span className="text-white font-medium">{MIN_ALGO_MICRO / 1_000_000} ALGO</span> to this address.
-          This covers the minimum balance, USDC opt-in, and registration fees — all paid from your own wallet.
+          Send at least{" "}
+          <span className="text-white font-medium">0.5 ALGO</span> to this address.
+          Your agent will activate automatically — no further action needed.
         </p>
       </div>
 
@@ -268,7 +260,7 @@ function Step3({
           </div>
           <div className="flex gap-2">
             <span className="text-xs text-zinc-500">Amount:</span>
-            <span className="text-xs text-white font-medium">{MIN_ALGO_MICRO / 1_000_000} ALGO</span>
+            <span className="text-xs text-white font-medium">0.5 ALGO minimum</span>
           </div>
         </div>
       </div>
@@ -278,7 +270,7 @@ function Step3({
         <a href={algoUri} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-xs rounded-md transition-colors">
           Open in Wallet App
         </a>
-        <a href="https://app.perawallet.app/" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-xs rounded-md transition-colors">
+        <a href="https://perawallet.app/" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-xs rounded-md transition-colors">
           Pera
         </a>
         <a href="https://defly.app/" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-xs rounded-md transition-colors">
@@ -293,7 +285,7 @@ function Step3({
           <span className={funded ? "text-emerald-400 font-medium" : "text-zinc-400"}>
             {balance === null
               ? "Checking…"
-              : `${(microAlgo / 1_000_000).toFixed(4)} / ${MIN_ALGO_MICRO / 1_000_000} ALGO`
+              : `${(microAlgo / 1_000_000).toFixed(4)} / 0.5 ALGO`
             }
           </span>
         </div>
@@ -303,52 +295,33 @@ function Step3({
             style={{ width: `${progress}%` }}
           />
         </div>
-        {!funded && (
-          <p className="text-xs text-zinc-600">Checking every 5 seconds…</p>
-        )}
-      </div>
-
-      {error && (
-        <p className="text-red-400 text-sm bg-red-900/20 border border-red-800/40 rounded-md px-3 py-2">
-          {error}
+        <p className="text-xs text-zinc-600">
+          {funded
+            ? "Deposit received — activating agent…"
+            : "Checking every 5 seconds…"
+          }
         </p>
-      )}
-
-      <button
-        onClick={activate}
-        disabled={!funded || activating}
-        className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium py-2.5 rounded-md transition-colors"
-      >
-        {activating
-          ? "Activating on Algorand…"
-          : funded
-          ? "Activate Agent"
-          : "Waiting for funds…"
-        }
-      </button>
+      </div>
     </div>
   );
 }
 
-// ── Step 3b — Deposit USDC (sponsored flow) ────────────────────────────────
+// ── Step 4 — Deposit USDC ─────────────────────────────────────────────────
 
-function Step3Sponsored({
+function Step4({
   agentId,
   address,
   registrationTxnId,
-  explorerUrl,
 }: {
   agentId: string;
   address: string;
-  registrationTxnId: string;
-  explorerUrl: string;
+  registrationTxnId?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (canvasRef.current) {
-      // Deep-link with USDC asset pre-selected
       const uri = `algorand://${address}?asset=${USDC_ASSET_ID}`;
       QRCode.toCanvas(canvasRef.current, uri, {
         width: 160, margin: 2,
@@ -360,11 +333,9 @@ function Step3Sponsored({
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-lg font-semibold text-white mb-1">Agent ready — deposit USDC</h2>
+        <h2 className="text-lg font-semibold text-white mb-1">Agent active — deposit USDC</h2>
         <p className="text-sm text-zinc-400">
-          Your agent is registered and opted into USDC.{" "}
-          <span className="text-white font-medium">No ALGO needed.</span>{" "}
-          Just send USDC to the address below to start making payments.
+          Your agent is registered and opted into USDC. Deposit USDC to start making payments.
         </p>
       </div>
 
@@ -373,10 +344,10 @@ function Step3Sponsored({
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
         </svg>
         <span className="text-emerald-400 text-xs">
-          USDC opt-in + wallet registration confirmed on-chain.{" "}
-          <a href={explorerUrl} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
-            View txn
-          </a>
+          USDC opt-in + wallet registration confirmed on-chain.
+          {registrationTxnId && (
+            <>{" "}<a href={`https://allo.info/tx/${registrationTxnId}`} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">View txn</a></>
+          )}
         </span>
       </div>
 
@@ -405,7 +376,7 @@ function Step3Sponsored({
             Asset ID: <span className="text-zinc-300 font-mono">{USDC_ASSET_ID}</span> (USDC)
           </p>
           <p className="text-xs text-zinc-600">
-            The gas station keeps your ALGO reserve topped up automatically.
+            Keep some ALGO in this wallet for transaction fees (~0.001 ALGO per payment).
           </p>
         </div>
       </div>
@@ -416,61 +387,13 @@ function Step3Sponsored({
       >
         Go to Dashboard →
       </Link>
-    </div>
-  );
-}
 
-// ── Step 4 — Success (manual ALGO flow fallback) ────────────────────────────
-
-function Step4({ agentId, result }: { agentId: string; result: ActivateResponse }) {
-  return (
-    <div className="space-y-5 text-center">
-      <div className="flex items-center justify-center w-14 h-14 mx-auto rounded-full bg-emerald-900/40 border border-emerald-800">
-        <svg className="w-7 h-7 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-        </svg>
-      </div>
-
-      <div>
-        <h2 className="text-lg font-semibold text-white mb-1">Agent ready</h2>
-        <p className="text-sm text-zinc-400">
-          <span className="text-zinc-200 font-mono">{agentId}</span> is opted into USDC and
-          registered. Send USDC to the address to start making payments.
-        </p>
-      </div>
-
-      <div className="bg-zinc-800/60 border border-zinc-700 rounded-md p-4 text-left space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-zinc-500">Agent ID</span>
-          <span className="font-mono text-zinc-200 text-xs">{result.agentId}</span>
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-zinc-500">Address</span>
-          <span className="font-mono text-zinc-200 text-xs">{result.address.slice(0, 10)}…{result.address.slice(-8)}</span>
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-zinc-500">Txn</span>
-          <a href={result.explorerUrl} target="_blank" rel="noopener noreferrer"
-            className="font-mono text-emerald-400 text-xs hover:underline">
-            {result.registrationTxnId.slice(0, 10)}…
-          </a>
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-2">
-        <Link
-          href={`/app/login?agentId=${encodeURIComponent(agentId)}`}
-          className="block w-full bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium py-2.5 rounded-md transition-colors text-center"
-        >
-          Go to Dashboard →
-        </Link>
-        <Link
-          href="/app/create"
-          className="block w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm py-2.5 rounded-md transition-colors text-center"
-        >
-          Create another agent
-        </Link>
-      </div>
+      <Link
+        href="/app/create"
+        className="block w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm py-2.5 rounded-md transition-colors text-center"
+      >
+        Create another agent
+      </Link>
     </div>
   );
 }
@@ -494,17 +417,14 @@ function StepDots({ current, total }: { current: number; total: number }) {
 // ── Page ───────────────────────────────────────────────────────────────────
 
 export default function CreateAgentPage() {
-  const [step, setStep]             = useState(1);
-  const [agentId, setAgentId]       = useState("");
-  const [keypair, setKeypair]       = useState<KeypairResponse | null>(null);
-  const [activated, setActivated]   = useState<ActivateResponse | null>(null);
-  const [genError, setGenError]     = useState("");
-  const [generating, setGenerating] = useState(false);
+  const [step, setStep]               = useState(1);
+  const [agentId, setAgentId]         = useState("");
+  const [createData, setCreateData]   = useState<CreateResponse | null>(null);
+  const [activated, setActivated]     = useState<AgentStatus | null>(null);
+  const [genError, setGenError]       = useState("");
+  const [generating, setGenerating]   = useState(false);
 
-  // Sponsored flow: total 3 steps (name → mnemonic → USDC deposit)
-  // Fallback flow:  total 4 steps (name → mnemonic → fund ALGO → success)
-  const isSponsored = keypair?.sponsored === true;
-  const totalSteps  = isSponsored ? 3 : 4;
+  const totalSteps = 4;
 
   async function handleStep1(id: string) {
     setAgentId(id);
@@ -516,9 +436,9 @@ export default function CreateAgentPage() {
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ agentId: id }),
       });
-      const data = await res.json() as KeypairResponse & { error?: string };
+      const data = await res.json() as CreateResponse & { error?: string };
       if (!res.ok) { setGenError(data.error ?? `Failed (${res.status})`); return; }
-      setKeypair(data);
+      setCreateData(data);
       setStep(2);
     } catch (err) {
       setGenError(err instanceof Error ? err.message : "Network error — please try again.");
@@ -543,7 +463,7 @@ export default function CreateAgentPage() {
               {generating
                 ? <div className="flex items-center justify-center gap-3 py-10">
                     <div className="w-6 h-6 border-2 border-zinc-700 border-t-emerald-400 rounded-full animate-spin" />
-                    <span className="text-sm text-zinc-400">Registering agent…</span>
+                    <span className="text-sm text-zinc-400">Creating agent…</span>
                   </div>
                 : <Step1 onNext={handleStep1} />
               }
@@ -555,34 +475,28 @@ export default function CreateAgentPage() {
             </>
           )}
 
-          {step === 2 && keypair && (
+          {step === 2 && createData && (
             <Step2
               agentId={agentId}
-              keypair={keypair}
+              mnemonic={createData.mnemonic}
               onNext={() => setStep(3)}
             />
           )}
 
-          {/* Step 3: sponsored → USDC deposit; fallback → ALGO funding */}
-          {step === 3 && keypair && isSponsored && keypair.registrationTxnId && (
-            <Step3Sponsored
-              agentId={agentId}
-              address={keypair.address}
-              registrationTxnId={keypair.registrationTxnId}
-              explorerUrl={keypair.explorerUrl ?? `https://allo.info/tx/${keypair.registrationTxnId}`}
-            />
-          )}
-
-          {step === 3 && keypair && !isSponsored && (
+          {step === 3 && createData && (
             <Step3
               agentId={agentId}
-              keypair={keypair}
-              onActivated={(r) => { setActivated(r); setStep(4); }}
+              address={createData.address}
+              onActivated={(agent) => { setActivated(agent); setStep(4); }}
             />
           )}
 
-          {step === 4 && activated && (
-            <Step4 agentId={agentId} result={activated} />
+          {step === 4 && createData && (
+            <Step4
+              agentId={agentId}
+              address={createData.address}
+              registrationTxnId={activated?.status === "registered" ? undefined : undefined}
+            />
           )}
         </div>
 
