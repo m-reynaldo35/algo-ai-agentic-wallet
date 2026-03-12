@@ -1,72 +1,89 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import AgentStatusCard from "@/components/customer/AgentStatusCard";
-import WalletCard from "@/components/customer/WalletCard";
-import WalletQRPanel from "@/components/customer/WalletQRPanel";
-import MandateUsageCard from "@/components/customer/MandateUsageCard";
-import RecentTransactions from "@/components/customer/RecentTransactions";
-
-interface Session {
-  agentId: string;
-  ownerAddress: string;
-}
+import CreateAgentWizard from "@/components/customer/CreateAgentWizard";
 
 interface AgentInfo {
   agentId: string;
-  address?: string;              // permanent on-chain Algorand address
-  authAddr?: string;             // Rocca signer / auth-addr
+  address?: string;
+  authAddr?: string;
   status?: string;
-  halted?: boolean;
   custody?: "rocca" | "user";
-  ownerWalletId?: string;        // set if Liquid Auth was used at registration
-  webauthnPublicKey?: string;    // set if a passkey is registered
-  registeredAt?: string;
+  ownerAddress?: string;
   createdAt?: string;
+  platform?: string;
 }
 
-export default function CustomerDashboard() {
+interface Session {
+  ownerAddress: string;
+  agentId?: string;  // legacy
+  agents: AgentInfo[];
+}
+
+// ── Status helpers ────────────────────────────────────────────────
+function statusColor(status?: string): string {
+  switch (status) {
+    case "active":
+    case "registered": return "text-emerald-400";
+    case "pending":    return "text-amber-400";
+    case "suspended":  return "text-amber-400";
+    case "orphaned":   return "text-purple-400";
+    default:           return "text-zinc-400";
+  }
+}
+
+function statusDot(status?: string): string {
+  switch (status) {
+    case "active":
+    case "registered": return "bg-emerald-400";
+    case "pending":    return "bg-amber-400 animate-pulse";
+    case "suspended":  return "bg-amber-400";
+    case "orphaned":   return "bg-purple-400";
+    default:           return "bg-zinc-500";
+  }
+}
+
+function statusLabel(status?: string): string {
+  switch (status) {
+    case "active":
+    case "registered": return status;
+    case "pending":    return "awaiting ALGO";
+    case "suspended":  return "suspended";
+    case "orphaned":   return "orphaned";
+    default:           return status ?? "unknown";
+  }
+}
+
+// ── Dashboard ────────────────────────────────────────────────────
+
+export default function AgentPortfolioDashboard() {
   const router = useRouter();
   const [session, setSession] = useState<Session | null>(null);
-  const [agent, setAgent] = useState<AgentInfo | null>(null);
-  const [agentError, setAgentError] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading]         = useState(true);
+  const [showCreate, setShowCreate]   = useState(false);
 
-  useEffect(() => {
-    // Load session first, then agent info in parallel with balance
+  const loadSession = useCallback(() => {
     fetch("/api/customer/session")
       .then(async (res) => {
-        if (!res.ok) {
-          // Session expired or missing — redirect to login
-          router.replace("/app/login");
-          return null;
-        }
+        if (!res.ok) { router.replace("/app/login"); return null; }
         return res.json() as Promise<Session>;
       })
       .then((sess) => {
         if (!sess) return;
+        // Legacy: single-agent session with agentId — redirect to agent detail
+        if (sess.agentId && (!sess.agents || sess.agents.length === 0)) {
+          router.replace(`/app/dashboard/${sess.agentId}`);
+          return;
+        }
         setSession(sess);
         setLoading(false);
-
-        // Load agent info
-        fetch(`/api/agents/${sess.agentId}`)
-          .then(async (res) => {
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            return res.json() as Promise<AgentInfo>;
-          })
-          .then((data) => setAgent(data))
-          .catch((err) =>
-            setAgentError(
-              err instanceof Error ? err.message : "Failed to load agent",
-            ),
-          );
       })
-      .catch(() => {
-        router.replace("/app/login");
-      });
+      .catch(() => router.replace("/app/login"));
   }, [router]);
+
+  useEffect(() => { loadSession(); }, [loadSession]);
 
   if (loading) {
     return (
@@ -78,60 +95,117 @@ export default function CustomerDashboard() {
 
   if (!session) return null;
 
-  // Use the agent's on-chain Algorand address for balance and QR.
-  // agent.address is the permanent account address; agent.authAddr is the
-  // Rocca signer. Fall back to ownerAddress but strip any "webauthn:" prefix
-  // (synthetic ID assigned when no Liquid Auth session existed at registration).
-  const rawOwner = session.ownerAddress ?? "";
-  const ownerAlgoAddress = rawOwner.startsWith("webauthn:") ? "" : rawOwner;
-  const walletAddress = agent?.address || agent?.authAddr || ownerAlgoAddress;
+  const ownerShort = session.ownerAddress
+    ? `${session.ownerAddress.slice(0, 6)}…${session.ownerAddress.slice(-4)}`
+    : "";
 
   return (
-    <div className="max-w-7xl mx-auto px-6 sm:px-8 py-10">
-      {/* Page header */}
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-sm text-zinc-400">Dashboard</h1>
-        <Link
-          href="/app/create"
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-400 border border-emerald-800 rounded-md transition-colors"
+    <div className="max-w-4xl mx-auto px-6 sm:px-8 py-10">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-xl font-semibold text-white">My Agents</h1>
+          <p className="text-xs text-zinc-500 mt-0.5 font-mono">{ownerShort}</p>
+        </div>
+        <button
+          onClick={() => setShowCreate(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-2 text-sm bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors font-medium"
         >
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
-          Create Agent
-        </Link>
+          New Agent
+        </button>
       </div>
 
-      <div className="flex gap-6 items-start">
-        {/* Left — main content */}
-        <div className="flex-1 min-w-0 space-y-5">
-          {/* Agent Status + Wallet (balance only, no QR) */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <AgentStatusCard
-              agentId={session.agentId}
-              agent={agent}
-              error={agentError}
-            />
-            {walletAddress && <WalletCard address={walletAddress} showQR={false} />}
-          </div>
-
-          {/* Mandates */}
-          <MandateUsageCard
-            agentId={session.agentId}
-            ownerAddress={session.ownerAddress}
-          />
-
-          {/* Recent Transactions */}
-          <RecentTransactions agentId={session.agentId} />
+      {/* Agent list */}
+      {session.agents.length === 0 ? (
+        <div className="text-center py-20 border border-dashed border-zinc-800 rounded-xl">
+          <p className="text-zinc-500 text-sm mb-4">No agents yet.</p>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded-lg transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            Create your first agent
+          </button>
         </div>
+      ) : (
+        <div className="space-y-3">
+          {session.agents.map((agent) => {
+            const isPending = agent.status === "pending";
+            const inner = (
+              <>
+                {/* Status dot */}
+                <div className={`w-2 h-2 rounded-full shrink-0 ${statusDot(agent.status)}`} />
 
-        {/* Right — QR top-up panel (only when a real Algorand address is known) */}
-        {walletAddress && (
-          <div className="w-72 shrink-0 hidden lg:block sticky top-6">
-            <WalletQRPanel address={walletAddress} />
-          </div>
-        )}
-      </div>
+                {/* Agent ID + platform */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className={`font-mono text-sm text-white truncate ${!isPending ? "group-hover:text-emerald-300 transition-colors" : ""}`}>
+                      {agent.agentId}
+                    </span>
+                    {agent.platform && (
+                      <span className="text-xs text-zinc-600 shrink-0">{agent.platform}</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 mt-0.5">
+                    <span className={`text-xs ${statusColor(agent.status)}`}>
+                      {statusLabel(agent.status)}
+                    </span>
+                    {agent.address && (
+                      <span className="text-xs text-zinc-600 font-mono">
+                        {agent.address.slice(0, 8)}…{agent.address.slice(-6)}
+                      </span>
+                    )}
+                    {agent.createdAt && (
+                      <span className="text-xs text-zinc-700">
+                        {new Date(agent.createdAt).toLocaleDateString()}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Arrow or pending hint */}
+                {isPending
+                  ? <span className="text-xs text-zinc-600 shrink-0">send 0.5 ALGO →</span>
+                  : <svg className="w-4 h-4 text-zinc-600 group-hover:text-zinc-400 shrink-0 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                }
+              </>
+            );
+
+            return isPending ? (
+              <div
+                key={agent.agentId}
+                className="flex items-center gap-4 bg-zinc-900 border border-amber-900/40 rounded-xl px-5 py-4"
+              >
+                {inner}
+              </div>
+            ) : (
+              <Link
+                key={agent.agentId}
+                href={`/app/dashboard/${agent.agentId}`}
+                className="flex items-center gap-4 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-xl px-5 py-4 transition-colors group"
+              >
+                {inner}
+              </Link>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Create modal */}
+      {showCreate && (
+        <CreateAgentWizard
+          ownerAddress={session.ownerAddress}
+          onClose={() => setShowCreate(false)}
+          onCreated={() => { setShowCreate(false); loadSession(); }}
+        />
+      )}
     </div>
   );
 }

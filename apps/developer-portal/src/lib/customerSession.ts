@@ -13,8 +13,9 @@ function getSecret(): Uint8Array {
 }
 
 export interface CustomerSessionPayload {
-  agentId: string;
   ownerAddress: string;
+  /** Legacy: single-agent sessions include agentId. Portfolio sessions omit it. */
+  agentId?: string;
 }
 
 export async function signCustomerSession(
@@ -32,15 +33,10 @@ export async function verifyCustomerSession(
 ): Promise<CustomerSessionPayload | null> {
   try {
     const { payload } = await jwtVerify(token, getSecret());
-    if (
-      typeof payload.agentId !== "string" ||
-      typeof payload.ownerAddress !== "string"
-    ) {
-      return null;
-    }
+    if (typeof payload.ownerAddress !== "string") return null;
     return {
-      agentId: payload.agentId,
       ownerAddress: payload.ownerAddress,
+      agentId: typeof payload.agentId === "string" ? payload.agentId : undefined,
     };
   } catch {
     return null;

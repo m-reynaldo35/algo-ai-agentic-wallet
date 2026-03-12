@@ -1,17 +1,21 @@
 /**
  * Customer Auth — Login
  *
- * Handles two auth paths:
+ * Three auth paths:
  *
- * Pera Connect:
- *   POST { agentId, peraSessionId }
- *   → backend POST /api/agents/{id}/auth/pera-register
- *   → { ownerWalletId } → sign JWT → set cookie
+ * 1. Owner-level (wallet-first, no agentId):
+ *    POST { ownerAddress }
+ *    → sign JWT with ownerAddress only → set cookie
  *
- * WebAuthn (authentication, not registration):
- *   POST { agentId, webauthnAssertion }
- *   → backend POST /api/agents/{id}/auth/webauthn-login
- *   → { ownerWalletId } → sign JWT → set cookie
+ * 2. Pera Connect (legacy per-agent):
+ *    POST { agentId, peraSessionId }
+ *    → backend POST /api/agents/{id}/auth/pera-register
+ *    → { ownerWalletId } → sign JWT → set cookie
+ *
+ * 3. WebAuthn (legacy per-agent):
+ *    POST { agentId, webauthnAssertion }
+ *    → backend POST /api/agents/{id}/auth/webauthn-login
+ *    → { ownerWalletId } → sign JWT → set cookie
  */
 
 import { type NextRequest, NextResponse } from "next/server";
@@ -51,17 +55,39 @@ async function callBackend(
   return { ...data, status: upstream.status };
 }
 
+function setCookie(res: NextResponse, token: string) {
+  res.cookies.set(CUSTOMER_SESSION_COOKIE, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 30 * 24 * 60 * 60,
+  });
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({})) as {
+    ownerAddress?: string;
     agentId?: string;
     peraSessionId?: string;
     webauthnAssertion?: unknown;
   };
 
+  // ── Path 1: Owner-level (wallet-first, no agentId) ───────────────
+  // ownerAddress is already verified by the backend /api/owner/auth/verify
+  // before this route is called. The portal trusts the address it received.
+  if (body.ownerAddress && !body.agentId && !body.peraSessionId && !body.webauthnAssertion) {
+    const token = await signCustomerSession({ ownerAddress: body.ownerAddress });
+    const res = NextResponse.json({ ok: true, ownerAddress: body.ownerAddress });
+    setCookie(res, token);
+    return res;
+  }
+
+  // ── Path 2 & 3: Legacy per-agent (needs agentId) ─────────────────
   const { agentId, peraSessionId, webauthnAssertion } = body;
 
   if (!agentId || typeof agentId !== "string") {
-    return NextResponse.json({ error: "agentId required" }, { status: 400 });
+    return NextResponse.json({ error: "agentId or ownerAddress required" }, { status: 400 });
   }
   if (!peraSessionId && !webauthnAssertion) {
     return NextResponse.json(
@@ -73,13 +99,11 @@ export async function POST(req: NextRequest) {
   let result: { ownerWalletId?: string; error?: string; status: number };
 
   if (peraSessionId) {
-    // Pera Connect path
     result = await callBackend(
       `${API_URL}/api/agents/${agentId}/auth/pera-register`,
       { peraSessionId },
     );
   } else {
-    // WebAuthn authentication path
     result = await callBackend(
       `${API_URL}/api/agents/${agentId}/auth/webauthn-login`,
       { assertion: webauthnAssertion },
@@ -94,14 +118,7 @@ export async function POST(req: NextRequest) {
   }
 
   const token = await signCustomerSession({ agentId, ownerAddress: result.ownerWalletId });
-
   const res = NextResponse.json({ ok: true, agentId, ownerAddress: result.ownerWalletId });
-  res.cookies.set(CUSTOMER_SESSION_COOKIE, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: 30 * 24 * 60 * 60,
-  });
+  setCookie(res, token);
   return res;
 }

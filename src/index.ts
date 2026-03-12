@@ -39,6 +39,8 @@ import {
   setHalt, clearHalt, isHalted, getActiveRotation, getRotationBatch,
   assertCustodyInvariant,
   storePendingAgent, getPendingAgent, validateAgentId,
+  listAgentsByOwner, listPendingAgentsByOwner, claimAgentOwnership, transferAgentOwnership,
+  storeClaimChallenge, consumeClaimChallenge,
   type PendingAgentRecord,
 } from "./services/agentRegistry.js";
 import {
@@ -1203,12 +1205,14 @@ app.post("/api/agents/create", requirePortalAuth, async (req, res) => {
     const mnemonic       = algosdk.secretKeyToMnemonic(agentAccount.sk);
     const secretKeyB64   = Buffer.from(agentAccount.sk).toString("base64");
     const platform       = typeof req.body.platform === "string" ? req.body.platform : undefined;
+    const ownerAddress   = typeof req.body.ownerAddress === "string" ? req.body.ownerAddress : undefined;
 
     const pending: PendingAgentRecord = {
       agentId,
       address:      agentAddress,
       secretKeyB64,
       platform,
+      ownerAddress,
       createdAt:    new Date().toISOString(),
     };
     await storePendingAgent(pending);
@@ -1388,8 +1392,84 @@ app.post("/api/agents/activate", requirePortalAuth, async (req, res) => {
   }
 });
 
+// ── Owner-level auth (wallet-first, no agent ID required) ─────────────────
+// Generates and verifies a signed challenge to prove ownership of an Algorand address.
+
+app.post("/api/owner/auth/challenge", requirePortalAuth, async (req, res) => {
+  try {
+    const { randomBytes, createHash } = await import("node:crypto");
+    const challengeBytes = randomBytes(32);
+    const challengeB64   = challengeBytes.toString("base64");
+    const challengeId    = createHash("sha256").update(challengeBytes).digest("hex").slice(0, 32);
+
+    const redis = getRedis();
+    if (!redis) {
+      res.status(503).json({ error: "Redis not available" });
+      return;
+    }
+    await redis.set(`x402:owner-challenge:${challengeId}`, challengeB64, { ex: 300 });
+    res.json({ challengeId, challengeB64 });
+  } catch (err) {
+    console.error("[owner/auth/challenge]", err);
+    res.status(500).json({ error: "Failed to generate challenge" });
+  }
+});
+
+app.post("/api/owner/auth/verify", requirePortalAuth, async (req, res) => {
+  try {
+    const { challengeId, address, signatureB64 } = req.body as {
+      challengeId?: string;
+      address?: string;
+      signatureB64?: string;
+    };
+
+    if (!challengeId || !address || !signatureB64) {
+      res.status(400).json({ error: "challengeId, address, and signatureB64 required" });
+      return;
+    }
+
+    const redis = getRedis();
+    if (!redis) {
+      res.status(503).json({ error: "Redis not available" });
+      return;
+    }
+
+    const stored = await redis.getdel<string>(`x402:owner-challenge:${challengeId}`);
+    if (!stored) {
+      res.status(401).json({ error: "Challenge expired or not found" });
+      return;
+    }
+
+    const challengeBytes = Buffer.from(typeof stored === "string" ? stored : JSON.stringify(stored), "base64");
+    const sigBytes       = Buffer.from(signatureB64, "base64");
+
+    const valid = algosdk.verifyBytes(challengeBytes, sigBytes, address);
+    if (!valid) {
+      res.status(401).json({ error: "Signature verification failed" });
+      return;
+    }
+
+    res.json({ ownerAddress: address });
+  } catch (err) {
+    console.error("[owner/auth/verify]", err);
+    res.status(500).json({ error: "Verification failed" });
+  }
+});
+
 app.get("/api/agents", requirePortalAuth, async (req, res) => {
   try {
+    if (req.query.owner && typeof req.query.owner === "string") {
+      const [active, pending] = await Promise.all([
+        listAgentsByOwner(req.query.owner),
+        listPendingAgentsByOwner(req.query.owner),
+      ]);
+      // Active agents take precedence — if an agent just activated, remove from pending list
+      const activeIds = new Set(active.map((a) => a.agentId));
+      const pendingFiltered = pending.filter((p) => !activeIds.has(p.agentId));
+      const agents = [...active, ...pendingFiltered];
+      res.json({ agents, count: agents.length });
+      return;
+    }
     const limit  = Math.min(parseInt(String(req.query.limit  ?? "50"), 10), 100);
     const offset = parseInt(String(req.query.offset ?? "0"),  10);
     const agents = await listAgents(limit, offset);
@@ -1452,6 +1532,84 @@ app.patch("/api/agents/:agentId/unsuspend", requirePortalAuth, async (req, res) 
     const message = err instanceof Error ? err.message : "Unknown error";
     if (message.includes("not found")) { res.status(404).json({ error: message }); return; }
     res.status(500).json({ error: "Failed to unsuspend agent" });
+  }
+});
+
+// Claim ownership of an orphan agent — proves ownership via signed challenge
+app.post("/api/agents/:agentId/claim", requirePortalAuth, async (req, res) => {
+  try {
+    const agentId = String(req.params.agentId || "");
+    const { ownerAddress, signatureB64, challengeB64 } = req.body as {
+      ownerAddress?: string;
+      signatureB64?: string;
+      challengeB64?: string;
+    };
+
+    if (!agentId || !ownerAddress || !signatureB64 || !challengeB64) {
+      res.status(400).json({ error: "agentId, ownerAddress, signatureB64, challengeB64 required" });
+      return;
+    }
+
+    const challengeBytes = Buffer.from(challengeB64, "base64");
+    const sigBytes       = Buffer.from(signatureB64, "base64");
+    const valid = algosdk.verifyBytes(challengeBytes, sigBytes, ownerAddress);
+    if (!valid) {
+      res.status(401).json({ error: "Signature verification failed" });
+      return;
+    }
+
+    await claimAgentOwnership(agentId, ownerAddress);
+    const updated = await getAgent(agentId);
+    res.json({ ok: true, agent: updated });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("already owned")) {
+      res.status(409).json({ error: msg });
+    } else if (msg.includes("not found")) {
+      res.status(404).json({ error: msg });
+    } else {
+      res.status(500).json({ error: "Claim failed", detail: msg });
+    }
+  }
+});
+
+// Transfer agent ownership — current owner signs to prove authority
+app.post("/api/agents/:agentId/transfer", requirePortalAuth, async (req, res) => {
+  try {
+    const agentId = String(req.params.agentId || "");
+    const { fromAddress, toAddress, signatureB64, challengeB64 } = req.body as {
+      fromAddress?: string;
+      toAddress?: string;
+      signatureB64?: string;
+      challengeB64?: string;
+    };
+
+    if (!agentId || !fromAddress || !toAddress || !signatureB64 || !challengeB64) {
+      res.status(400).json({ error: "agentId, fromAddress, toAddress, signatureB64, challengeB64 required" });
+      return;
+    }
+
+    // Verify fromAddress signed the challenge
+    const challengeBytes = Buffer.from(challengeB64, "base64");
+    const sigBytes       = Buffer.from(signatureB64, "base64");
+    const valid = algosdk.verifyBytes(challengeBytes, sigBytes, fromAddress);
+    if (!valid) {
+      res.status(401).json({ error: "Signature verification failed" });
+      return;
+    }
+
+    await transferAgentOwnership(agentId, fromAddress, toAddress);
+    const updated = await getAgent(agentId);
+    res.json({ ok: true, agent: updated });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("not found")) {
+      res.status(404).json({ error: msg });
+    } else if (msg.includes("Not authorised")) {
+      res.status(403).json({ error: msg });
+    } else {
+      res.status(500).json({ error: "Transfer failed", detail: msg });
+    }
   }
 });
 
@@ -2015,7 +2173,13 @@ app.post("/api/agents/:agentId/auth/pera-register", requirePortalAuth, async (re
       res.status(400).json({ error: `Invalid Algorand address from session: ${address}` });
       return;
     }
-    await updateAgentRecord({ ...agent, ownerWalletId: address });
+    // Bridge ownerWalletId → ownerAddress so the portfolio index picks this agent up.
+    // ownerAddress is only set once (the first wallet to register owns the agent).
+    await updateAgentRecord({
+      ...agent,
+      ownerWalletId: address,
+      ownerAddress: agent.ownerAddress ?? address,
+    });
     res.json({ agentId, ownerWalletId: address, status: "registered" });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

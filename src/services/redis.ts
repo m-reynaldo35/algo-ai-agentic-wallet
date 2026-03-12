@@ -194,6 +194,10 @@ export class RedisShim {
     return this._ioredis.smembers(key);
   }
 
+  async srem(key: string, ...members: string[]): Promise<number> {
+    return this._ioredis.srem(key, ...members);
+  }
+
   // ── Hashes ──────────────────────────────────────────────────────
 
   async hget(key: string, field: string): Promise<string | null> {

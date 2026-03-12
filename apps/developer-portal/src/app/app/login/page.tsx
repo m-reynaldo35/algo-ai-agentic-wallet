@@ -4,85 +4,12 @@ import { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { PeraWalletConnect as PeraWalletConnectType } from "@perawallet/connect";
 
-// ── WebAuthn helpers ──────────────────────────────────────────────
-
-function bufToBase64url(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let str = "";
-  for (const b of bytes) str += String.fromCharCode(b);
-  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
-}
-
-function base64urlToBuf(b64: string): ArrayBuffer {
-  const padded = b64.replace(/-/g, "+").replace(/_/g, "/")
-    .padEnd(Math.ceil(b64.length / 4) * 4, "=");
-  const str = atob(padded);
-  const buf = new ArrayBuffer(str.length);
-  const view = new Uint8Array(buf);
-  for (let i = 0; i < str.length; i++) view[i] = str.charCodeAt(i);
-  return buf;
-}
-
-function serializeRegistrationResponse(credential: PublicKeyCredential) {
-  const resp = credential.response as AuthenticatorAttestationResponse;
-  return {
-    id:   credential.id,
-    rawId: bufToBase64url(credential.rawId),
-    type: credential.type,
-    response: {
-      attestationObject: bufToBase64url(resp.attestationObject),
-      clientDataJSON:    bufToBase64url(resp.clientDataJSON),
-      transports:        resp.getTransports?.() ?? [],
-    },
-    authenticatorAttachment: credential.authenticatorAttachment,
-    clientExtensionResults:  credential.getClientExtensionResults(),
-  };
-}
-
-function serializeAssertion(assertion: PublicKeyCredential) {
-  const resp = assertion.response as AuthenticatorAssertionResponse;
-  return {
-    id:    assertion.id,
-    rawId: bufToBase64url(assertion.rawId),
-    type:  assertion.type,
-    response: {
-      authenticatorData: bufToBase64url(resp.authenticatorData),
-      clientDataJSON:    bufToBase64url(resp.clientDataJSON),
-      signature:         bufToBase64url(resp.signature),
-      userHandle:        resp.userHandle ? bufToBase64url(resp.userHandle) : null,
-    },
-  };
-}
-
-// ── Types ─────────────────────────────────────────────────────────
-
-type AuthMethod = "pera" | "webauthn";
-
-interface RegistrationChallenge {
-  challenge:       string;
-  userId:          string;
-  rpId:            string;
-  rpName:          string;
-  userName:        string;
-  userDisplayName: string;
-  hasCredentials:  boolean;
-}
-
-interface LoginChallenge {
-  challenge:        string;
-  allowCredentials: Array<{ id: string; type: string }>;
-  hasCredentials:   boolean;
-  rpId:             string;
-}
-
-// ── Pera Connect inline panel ──────────────────────────────────────
+// ── Pera Connect — owner-level (no agentId required) ─────────────────────
 
 function PeraConnectButton({
-  agentId,
   onVerified,
 }: {
-  agentId: string;
-  onVerified: (peraSessionId: string) => void;
+  onVerified: (ownerAddress: string) => void;
 }) {
   const peraRef = useRef<PeraWalletConnectType | null>(null);
   const [status, setStatus] = useState<"idle" | "connecting" | "signing" | "verifying" | "error">("idle");
@@ -103,11 +30,10 @@ function PeraConnectButton({
     setErrorMsg("");
 
     try {
-      // 1. Get challenge for this agent/intent
-      const chalRes = await fetch(`/api/agents/${agentId}/auth/pera-challenge`, {
+      // 1. Get owner-level challenge (not agent-scoped)
+      const chalRes = await fetch("/api/owner/auth/challenge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ intent: "register" }),
       });
       if (!chalRes.ok) {
         const b = await chalRes.json().catch(() => ({})) as { error?: string };
@@ -125,25 +51,24 @@ function PeraConnectButton({
       setStatus("signing");
       const challengeBytes = Uint8Array.from(atob(challengeB64), (c) => c.charCodeAt(0));
       const signatures = await pera.signData(
-        [{ data: challengeBytes, message: `Register as owner of agent ${agentId}` }],
+        [{ data: challengeBytes, message: "Sign in to your agent dashboard" }],
         address,
       );
       const signatureB64 = btoa(String.fromCharCode(...signatures[0]));
 
       // 4. Verify on backend
       setStatus("verifying");
-      const verifyRes = await fetch(`/api/agents/${agentId}/auth/pera-verify`, {
+      const verifyRes = await fetch("/api/owner/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ challengeId, intent: "register", address, signatureB64 }),
+        body: JSON.stringify({ challengeId, address, signatureB64 }),
       });
       if (!verifyRes.ok) {
         const b = await verifyRes.json().catch(() => ({})) as { error?: string };
         throw new Error(b.error ?? `HTTP ${verifyRes.status}`);
       }
-      const { verifiedSessionId } = await verifyRes.json() as { verifiedSessionId: string };
-
-      onVerified(verifiedSessionId);
+      const { ownerAddress } = await verifyRes.json() as { ownerAddress: string };
+      onVerified(ownerAddress);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("Session currently disconnected") || msg.toLowerCase().includes("cancel") || msg.toLowerCase().includes("closed")) {
@@ -153,11 +78,11 @@ function PeraConnectButton({
         setErrorMsg(msg);
       }
     }
-  }, [agentId, onVerified]);
+  }, [onVerified]);
 
   const busy = status === "connecting" || status === "signing" || status === "verifying";
   const buttonLabel = {
-    idle:       "Connect Pera Wallet",
+    idle:       "Connect Algorand Wallet",
     connecting: "Opening wallet…",
     signing:    "Sign in Pera app…",
     verifying:  "Verifying…",
@@ -199,25 +124,17 @@ function LoginForm() {
   const searchParams = useSearchParams();
   const from = searchParams.get("from") || "/app/dashboard";
 
-  const [agentIdInput, setAgentIdInput] = useState(searchParams.get("agentId") ?? "");
-  const [authMethod,   setAuthMethod]   = useState<AuthMethod>("pera");
-  const [submitting,   setSubmitting]   = useState(false);
-  const [step,         setStep]         = useState<string>("");
-  const [error,        setError]        = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError]           = useState("");
 
-  const agentId = agentIdInput.trim();
-
-  // ── Pera Connect path ────────────────────────────────────────────
-
-  const handlePeraVerified = useCallback(async (peraSessionId: string) => {
+  const handleVerified = useCallback(async (ownerAddress: string) => {
     setSubmitting(true);
     setError("");
-    setStep("Signing in…");
     try {
       const res = await fetch("/api/customer/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentId, peraSessionId }),
+        body: JSON.stringify({ ownerAddress }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -228,95 +145,8 @@ function LoginForm() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
-      setStep("");
     }
-  }, [agentId, from, router]);
-
-  // ── WebAuthn path ────────────────────────────────────────────────
-
-  const handleWebAuthn = useCallback(async () => {
-    if (!agentId) { setError("Enter your Agent ID first."); return; }
-    if (!window.PublicKeyCredential) {
-      setError("Passkeys are not supported in this browser. Use Algorand Wallet instead.");
-      return;
-    }
-    setSubmitting(true);
-    setError("");
-    try {
-      setStep("Checking device credentials…");
-      const lcRes = await fetch(`/api/agents/${agentId}/auth/webauthn-login-challenge`, { method: "POST" });
-      if (!lcRes.ok) {
-        const b = await lcRes.json().catch(() => ({}));
-        throw new Error((b as { error?: string }).error || `HTTP ${lcRes.status}`);
-      }
-      const lc = await lcRes.json() as LoginChallenge;
-
-      if (lc.hasCredentials) {
-        setStep("Touch your security key or use biometrics…");
-        const assertion = await navigator.credentials.get({
-          publicKey: {
-            challenge:        base64urlToBuf(lc.challenge),
-            allowCredentials: lc.allowCredentials.map((c) => ({
-              id: base64urlToBuf(c.id), type: c.type as PublicKeyCredentialType,
-            })),
-            rpId: lc.rpId, timeout: 60_000, userVerification: "preferred",
-          },
-        }) as PublicKeyCredential | null;
-        if (!assertion) throw new Error("Passkey authentication cancelled.");
-
-        setStep("Verifying…");
-        const loginRes = await fetch("/api/customer/auth/login", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agentId, webauthnAssertion: serializeAssertion(assertion) }),
-        });
-        if (!loginRes.ok) {
-          const b = await loginRes.json().catch(() => ({}));
-          throw new Error((b as { error?: string }).error || `HTTP ${loginRes.status}`);
-        }
-        router.push(from);
-
-      } else {
-        setStep("Registering new passkey…");
-        const rcRes = await fetch(`/api/agents/${agentId}/auth/webauthn-register-challenge`, { method: "POST" });
-        if (!rcRes.ok) {
-          const b = await rcRes.json().catch(() => ({}));
-          throw new Error((b as { error?: string }).error || `HTTP ${rcRes.status}`);
-        }
-        const rc = await rcRes.json() as RegistrationChallenge;
-
-        setStep("Create a passkey — follow your device prompt…");
-        const credential = await navigator.credentials.create({
-          publicKey: {
-            challenge: base64urlToBuf(rc.challenge),
-            rp: { id: rc.rpId, name: rc.rpName },
-            user: { id: base64urlToBuf(rc.userId), name: rc.userName, displayName: rc.userDisplayName },
-            pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
-            timeout: 60_000, attestation: "none",
-            authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
-          },
-        }) as PublicKeyCredential | null;
-        if (!credential) throw new Error("Passkey creation cancelled.");
-
-        setStep("Storing credential…");
-        const regRes = await fetch("/api/customer/auth/webauthn-register", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agentId, registrationResponse: serializeRegistrationResponse(credential) }),
-        });
-        if (!regRes.ok) {
-          const b = await regRes.json().catch(() => ({}));
-          throw new Error((b as { error?: string }).error || `HTTP ${regRes.status}`);
-        }
-        router.push(from);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSubmitting(false);
-      setStep("");
-    }
-  }, [agentId, from, router]);
-
-  const canProceed = agentId.length > 0 && !submitting;
+  }, [from, router]);
 
   return (
     <div className="min-h-screen bg-black flex items-center justify-center px-4">
@@ -330,66 +160,24 @@ function LoginForm() {
             </svg>
           </div>
           <h1 className="text-2xl font-bold text-white">Agent Dashboard</h1>
-          <p className="text-zinc-500 text-sm mt-1">Sign in with your Algorand wallet or device passkey</p>
+          <p className="text-zinc-500 text-sm mt-1">Connect your Algorand wallet to manage your agents</p>
         </div>
 
-        <div className="space-y-5">
-          <div>
-            <label htmlFor="agentId" className="block text-xs text-zinc-400 uppercase tracking-wider mb-2">Agent ID</label>
-            <input
-              id="agentId" type="text" value={agentIdInput}
-              onChange={(e) => setAgentIdInput(e.target.value)}
-              placeholder="sdk-abc123…" autoFocus autoComplete="off"
-              className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-3 text-white font-mono placeholder-zinc-600 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600/30 transition-colors"
-            />
-          </div>
-
-          <div className="flex gap-2 p-1 bg-zinc-900 border border-zinc-800 rounded-lg">
-            <button type="button" onClick={() => setAuthMethod("pera")}
-              className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${authMethod === "pera" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"}`}>
-              Algorand Wallet <span className="text-xs text-emerald-400">(Recommended)</span>
-            </button>
-            <button type="button" onClick={() => setAuthMethod("webauthn")}
-              className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${authMethod === "webauthn" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"}`}>
-              Device Passkey
-            </button>
-          </div>
-
-          {submitting && step && (
-            <div className="flex items-center gap-2 text-zinc-400 text-sm px-1">
-              <svg className="animate-spin w-4 h-4 shrink-0 text-emerald-400" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              {step}
-            </div>
-          )}
-
+        <div className="space-y-4">
           {error && (
             <div className="rounded-lg bg-red-950/50 border border-red-800 px-4 py-3 text-sm text-red-300">{error}</div>
           )}
 
-          {authMethod === "pera" && !submitting && canProceed && (
-            <PeraConnectButton agentId={agentId} onVerified={handlePeraVerified} />
-          )}
-          {authMethod === "pera" && !submitting && !canProceed && (
-            <button type="button" disabled
-              className="w-full bg-emerald-600 opacity-40 cursor-not-allowed text-white rounded-lg px-4 py-3 text-sm font-medium">
-              Connect Pera Wallet
-            </button>
-          )}
+          {!submitting && <PeraConnectButton onVerified={handleVerified} />}
 
-          {authMethod === "webauthn" && (
-            <button type="button" disabled={!canProceed} onClick={handleWebAuthn}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg px-4 py-3 text-sm font-medium transition-colors">
-              {submitting ? "Working…" : "Continue with Passkey"}
-            </button>
-          )}
-
-          {authMethod === "webauthn" && !submitting && (
-            <p className="text-xs text-zinc-600 text-center px-2">
-              First time? A new passkey is created on your device. Returning? Your device unlocks automatically.
-            </p>
+          {submitting && (
+            <div className="flex items-center justify-center gap-2 py-3 text-zinc-400 text-sm">
+              <svg className="animate-spin w-4 h-4 shrink-0 text-emerald-400" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Signing in…
+            </div>
           )}
         </div>
 

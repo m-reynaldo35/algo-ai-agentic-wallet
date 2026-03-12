@@ -103,6 +103,15 @@ export interface AgentRecord {
    * sends a counter lower than this value, the assertion is rejected.
    */
   webauthnCounter?: number;
+  // ── Ownership ──────────────────────────────────────────────────
+  /**
+   * Algorand address of the human owner who created or claimed this agent.
+   * Set at creation time or via /api/agents/:id/claim.
+   * Optional for backward compatibility with pre-Sprint-N agents.
+   */
+  ownerAddress?: string;
+  /** ISO timestamp of when ownerAddress was first set. */
+  ownerLinkedAt?: string;
 }
 
 // ── Rotation Batch ────────────────────────────────────────────────
@@ -149,6 +158,9 @@ const ROTATION_PREFIX  = "x402:rotation:";
 const ROTATION_ACTIVE  = "x402:rotation:active";   // distributed lock
 const DRIFT_PREFIX     = "x402:drift:";
 const HALT_KEY         = "x402:halt";
+const OWNER_PREFIX     = "x402:owner:";
+const CLAIM_PREFIX     = "x402:claim:";
+const CLAIM_TTL_S      = 300; // 5-minute claim challenge TTL
 
 // ── Cohort Assignment ─────────────────────────────────────────────
 // Phase 1: single cohort. Phase 2+: sha256(agentId) % totalCohorts.
@@ -174,10 +186,16 @@ export async function storeAgent(record: AgentRecord): Promise<void> {
   const redis = getRedis();
   if (!redis) throw new Error("Redis not available — cannot store agent record");
 
-  await Promise.all([
+  const ops: Promise<unknown>[] = [
     redis.set(`${AGENTS_PREFIX}${record.agentId}`, JSON.stringify(record)),
     redis.set(`${ADDR_IDX_PREFIX}${record.address}`, record.agentId),
-  ]);
+  ];
+
+  if (record.ownerAddress) {
+    ops.push(redis.sadd(`${OWNER_PREFIX}${record.ownerAddress}`, record.agentId));
+  }
+
+  await Promise.all(ops);
 }
 
 export async function getAgent(agentId: string): Promise<AgentRecord | null> {
@@ -203,7 +221,13 @@ export async function getAgentByAddress(address: string): Promise<AgentRecord | 
 export async function updateAgentRecord(record: AgentRecord): Promise<void> {
   const redis = getRedis();
   if (!redis) throw new Error("Redis not available");
-  await redis.set(`${AGENTS_PREFIX}${record.agentId}`, JSON.stringify(record));
+  const ops: Promise<unknown>[] = [
+    redis.set(`${AGENTS_PREFIX}${record.agentId}`, JSON.stringify(record)),
+  ];
+  if (record.ownerAddress) {
+    ops.push(redis.sadd(`${OWNER_PREFIX}${record.ownerAddress}`, record.agentId));
+  }
+  await Promise.all(ops);
 }
 
 export async function updateAgentStatus(
@@ -276,6 +300,124 @@ export async function listAgentsByCohort(cohort: string): Promise<AgentRecord[]>
 
   const raws = await Promise.all(keys.map((k) => redis.get<AgentRecord>(k)));
   return raws.filter((r): r is AgentRecord => r !== null && r.cohort === cohort);
+}
+
+/**
+ * List all agents owned by a given Algorand address.
+ * Uses the secondary owner index (x402:owner:{address}).
+ *
+ * On first call per owner, performs a one-time lazy migration: scans all agent
+ * records for any that have ownerWalletId === ownerAddress but no ownerAddress
+ * set (created before the portfolio model). Backfills ownerAddress + index so
+ * subsequent calls are O(1).
+ */
+export async function listAgentsByOwner(ownerAddress: string): Promise<AgentRecord[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+
+  const migrationKey = `x402:owner-migrated:${ownerAddress}`;
+  const migrated = await redis.get<string>(migrationKey);
+
+  if (!migrated) {
+    // One-time scan: find agents registered with this wallet via ownerWalletId
+    // but not yet in the owner index (pre-portfolio agents)
+    const allKeys = await redis.keys(`${AGENTS_PREFIX}*`);
+    if (allKeys.length > 0) {
+      const allRecords = await Promise.all(allKeys.map((k) => redis.get<AgentRecord>(k)));
+      const toMigrate = (allRecords.filter(Boolean) as AgentRecord[]).filter(
+        (r) => r.ownerWalletId === ownerAddress && !r.ownerAddress,
+      );
+      if (toMigrate.length > 0) {
+        await Promise.all(
+          toMigrate.map(async (r) => {
+            const updated: AgentRecord = { ...r, ownerAddress };
+            await Promise.all([
+              redis.set(`${AGENTS_PREFIX}${r.agentId}`, JSON.stringify(updated)),
+              redis.sadd(`${OWNER_PREFIX}${ownerAddress}`, r.agentId),
+            ]);
+          }),
+        );
+      }
+    }
+    await redis.set(migrationKey, "1");
+  }
+
+  const agentIds = await redis.smembers(`${OWNER_PREFIX}${ownerAddress}`);
+  if (!agentIds.length) return [];
+
+  const raws = await Promise.all(agentIds.map((id) => getAgent(id)));
+  return raws.filter((r): r is AgentRecord => r !== null);
+}
+
+/**
+ * Claim ownership of an orphan agent (one with no ownerAddress).
+ * The caller must have already verified the signature via the claim challenge.
+ */
+export async function claimAgentOwnership(agentId: string, ownerAddress: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const agent = await getAgent(agentId);
+  if (!agent) throw new Error(`Agent not found: ${agentId}`);
+  if (agent.ownerAddress) throw new Error(`Agent ${agentId} is already owned`);
+
+  agent.ownerAddress = ownerAddress;
+  agent.ownerLinkedAt = new Date().toISOString();
+
+  await Promise.all([
+    redis.set(`${AGENTS_PREFIX}${agentId}`, JSON.stringify(agent)),
+    redis.sadd(`${OWNER_PREFIX}${ownerAddress}`, agentId),
+  ]);
+}
+
+/**
+ * Transfer ownership of an agent from one Algorand address to another.
+ * The caller must have verified the from-address owns the agent.
+ */
+export async function transferAgentOwnership(
+  agentId: string,
+  fromAddress: string,
+  toAddress: string,
+): Promise<void> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const agent = await getAgent(agentId);
+  if (!agent) throw new Error(`Agent not found: ${agentId}`);
+  if (agent.ownerAddress !== fromAddress) {
+    throw new Error(`Not authorised: ${fromAddress} does not own agent ${agentId}`);
+  }
+
+  const prev = agent.ownerAddress;
+  agent.ownerAddress = toAddress;
+  agent.ownerLinkedAt = new Date().toISOString();
+
+  await Promise.all([
+    redis.set(`${AGENTS_PREFIX}${agentId}`, JSON.stringify(agent)),
+    redis.srem(`${OWNER_PREFIX}${prev}`, agentId),
+    redis.sadd(`${OWNER_PREFIX}${toAddress}`, agentId),
+  ]);
+}
+
+/** Store a one-time claim challenge (5-min TTL) */
+export async function storeClaimChallenge(
+  challengeId: string,
+  payload: { agentId: string; ownerAddress: string; challengeB64: string },
+): Promise<void> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+  await redis.set(`${CLAIM_PREFIX}${challengeId}`, JSON.stringify(payload), { ex: CLAIM_TTL_S });
+}
+
+/** Consume (GETDEL) a claim challenge — single-use */
+export async function consumeClaimChallenge(
+  challengeId: string,
+): Promise<{ agentId: string; ownerAddress: string; challengeB64: string } | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  return redis.getdel<{ agentId: string; ownerAddress: string; challengeB64: string }>(
+    `${CLAIM_PREFIX}${challengeId}`,
+  );
 }
 
 // ── Rotation Batch CRUD ───────────────────────────────────────────
@@ -508,8 +650,9 @@ export { crypto };
 // USDC opt-in + rekey automatically, using the stored secret key.
 // The record (and the secret key) is deleted immediately after activation.
 
-const PENDING_PREFIX = "x402:pending:";
-const PENDING_TTL_S  = 86_400; // 24 hours
+const PENDING_PREFIX       = "x402:pending:";
+const PENDING_OWNER_PREFIX = "x402:pending-owner:";
+const PENDING_TTL_S        = 86_400; // 24 hours
 
 export interface PendingAgentRecord {
   agentId:      string;
@@ -517,17 +660,61 @@ export interface PendingAgentRecord {
   /** Base64-encoded 64-byte Algorand secret key — deleted after activation */
   secretKeyB64: string;
   platform?:    string;
+  /** Algorand address of the owner who initiated creation */
+  ownerAddress?: string;
   createdAt:    string;
 }
 
 export async function storePendingAgent(record: PendingAgentRecord): Promise<void> {
   const redis = getRedis();
   if (!redis) throw new Error("Redis not available — cannot store pending agent");
-  await redis.set(
-    `${PENDING_PREFIX}${record.agentId}`,
-    JSON.stringify(record),
-    { ex: PENDING_TTL_S },
-  );
+  const ops: Promise<unknown>[] = [
+    redis.set(
+      `${PENDING_PREFIX}${record.agentId}`,
+      JSON.stringify(record),
+      { ex: PENDING_TTL_S },
+    ),
+  ];
+  if (record.ownerAddress) {
+    ops.push(redis.sadd(`${PENDING_OWNER_PREFIX}${record.ownerAddress}`, record.agentId));
+  }
+  await Promise.all(ops);
+}
+
+export interface PendingAgentSummary {
+  agentId:   string;
+  address:   string;
+  status:    "pending";
+  createdAt: string;
+  platform?: string;
+}
+
+/**
+ * List pending (not-yet-activated) agents for a given owner.
+ * Uses the secondary pending-owner index (x402:pending-owner:{address}).
+ * Stale index entries (agent expired/activated) are silently skipped.
+ */
+export async function listPendingAgentsByOwner(ownerAddress: string): Promise<PendingAgentSummary[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+
+  const agentIds = await redis.smembers(`${PENDING_OWNER_PREFIX}${ownerAddress}`);
+  if (!agentIds.length) return [];
+
+  const records = await Promise.all(agentIds.map((id) => getPendingAgent(id)));
+  const results: PendingAgentSummary[] = [];
+  for (const r of records) {
+    if (r !== null) {
+      results.push({
+        agentId:   r.agentId,
+        address:   r.address,
+        status:    "pending",
+        createdAt: r.createdAt,
+        platform:  r.platform,
+      });
+    }
+  }
+  return results;
 }
 
 export async function getPendingAgent(agentId: string): Promise<PendingAgentRecord | null> {

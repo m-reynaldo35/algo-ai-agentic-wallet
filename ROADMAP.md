@@ -383,6 +383,60 @@ Revenue is stable USDC. AI agents and humans both work seamlessly.
 
 ---
 
+## Sprint N — Multi-Agent Identity ✅
+
+**Design principle:** Identity is cryptographic, not custodial. One Algorand wallet = one sovereign
+identity. That wallet signs once to enter the dashboard. All agents live under it. The owner's
+signature is the root of trust — no passwords, no emails, no re-login between agents.
+
+```
+Wallet (identity root)
+    │  one Pera sign-in
+    ├── Agent A  (trading-bot)      active   ●
+    ├── Agent B  (research-agent)   active   ●
+    └── Agent C  (new...)           wizard opens inline → lands here on activation
+```
+
+### N.1 — CreateAgentWizard Modal Component ✅
+
+- [x] `components/customer/CreateAgentWizard.tsx` — 4-step inline modal wizard
+      Steps: Name → Save mnemonic → Send ALGO (polling) → Deposit USDC → back to portfolio
+- [x] `ownerAddress` prop injected into `POST /api/agents/create` body — associates agent
+      with owner identity immediately (before activation)
+- [x] ESC / backdrop click dismisses; confirmation guard on steps 2–3
+- [x] `onCreated()` callback — refreshes portfolio list on activation, no page navigation
+
+### N.2 — Pending Agents in Backend Owner Index ✅
+
+- [x] `src/services/agentRegistry.ts` — `PENDING_OWNER_PREFIX` index (`x402:pending-owner:{addr}`)
+      Written at `storePendingAgent()` when `ownerAddress` is present
+- [x] `listPendingAgentsByOwner()` — reads owner-pending index, strips `secretKeyB64`,
+      returns `PendingAgentSummary[]` with `status: "pending"`
+- [x] `GET /api/agents?owner=` — merges active + pending; active takes precedence on race
+
+### N.3 — Pending Agents in Portfolio Dashboard ✅
+
+- [x] Portfolio list shows pending agents with amber pulsing dot + "awaiting ALGO" label
+- [x] Pending agents display address fragment and "send 0.5 ALGO →" hint
+- [x] Pending agents are non-clickable (no `Link` wrapper) — no broken detail page
+- [x] `statusLabel()` helper maps all status strings to human-readable labels
+
+### N.4 — Standalone `/app/create` Deprecated ✅
+
+- [x] `/app/create/page.tsx` — redirects to `/app/dashboard` (server-side `redirect()`)
+      Users with old bookmarks land in portfolio and create from there
+
+### N.5 — End-to-End Verification *(needs real device — Pera)*
+
+- [ ] Wallet scan → sign → portfolio dashboard (no agent ID input anywhere)
+- [ ] "New Agent" button → inline wizard → agent appears in list with amber "awaiting ALGO"
+- [ ] Fund agent address → agent transitions amber → emerald in portfolio list
+- [ ] Click active agent card → `/app/dashboard/{agentId}` → back arrow → portfolio
+- [ ] Second agent created in same session → both visible in list
+- [ ] Legacy agentId-only JWT session still redirects to `/app/dashboard/{agentId}`
+
+---
+
 ## Launch Gate Checklist
 
 All items below must be `[x]` before going live.
@@ -392,6 +446,7 @@ All items below must be `[x]` before going live.
 - [x] Sprint 2 complete — agent creation wizard live
 - [x] Sprint 3 complete — landing page live
 - [ ] Sprint L complete — Pera Connect QR sign-in working (admin login, customer login, mandate ops)
+- [ ] Sprint N complete — multi-agent portfolio: one wallet → N agents, inline wizard, no re-login
 - [x] Sprint 5 complete — burst, sustained, velocity, failover, Redis failure tests pass
 - [ ] Sprint 6 complete — security audit clean, Telegram alerts verified
 - [x] Sprint M complete — payment rail redesign (ALGO activation, gas warnings, atomic refuel, gas station removed)

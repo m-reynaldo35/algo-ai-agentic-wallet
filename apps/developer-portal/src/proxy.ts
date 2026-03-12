@@ -43,6 +43,7 @@ export async function proxy(req: NextRequest) {
     pathname.startsWith("/monitoring") ||
     pathname.startsWith("/api/customer/balance/") ||
     pathname.startsWith("/api/admin/auth/") ||
+    pathname.startsWith("/api/owner/auth/") ||
     // Agent creation wizard — called from public /app/create (no session)
     pathname === "/api/agents/create" ||
     pathname === "/api/agents/register-existing" ||
