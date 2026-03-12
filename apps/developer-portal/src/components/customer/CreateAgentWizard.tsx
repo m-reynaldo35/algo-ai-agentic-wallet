@@ -375,7 +375,7 @@ function Step4({
           onClick={onDone}
           className="flex-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-sm font-medium py-2.5 rounded-md transition-colors"
         >
-          Deposit Later
+          Skip for now
         </button>
       </div>
     </div>

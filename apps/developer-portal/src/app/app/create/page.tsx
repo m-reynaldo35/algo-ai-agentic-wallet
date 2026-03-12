@@ -194,36 +194,16 @@ export default function CreateAgentPage() {
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-emerald-900/50 border border-emerald-800 mb-4">
             <svg className="w-6 h-6 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M12 4v16m8-8H4" />
+                d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
             </svg>
           </div>
           <h1 className="text-2xl font-bold text-white">Create Your Agent</h1>
-          <p className="text-zinc-500 text-sm mt-2 leading-relaxed">
-            Connect your Algorand wallet to get started.<br />
-            We&apos;ll walk you through generating a wallet, funding it with ALGO, and binding your identity.
-          </p>
-        </div>
-
-        {/* Steps preview */}
-        <div className="mb-8 space-y-2">
-          {[
-            "Generate an agent wallet & save your mnemonic",
-            "Fund with 0.5 ALGO to activate on-chain",
-            "Deposit USDC to start paying autonomously",
-            "Bind your wallet or passkey for authentication",
-          ].map((step, i) => (
-            <div key={i} className="flex items-start gap-3">
-              <span className="w-5 h-5 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-500 text-[10px] flex items-center justify-center shrink-0 mt-0.5 font-medium">
-                {i + 1}
-              </span>
-              <span className="text-zinc-400 text-xs leading-relaxed">{step}</span>
-            </div>
-          ))}
+          <p className="text-zinc-500 text-sm mt-1">Connect your Algorand wallet to get started</p>
         </div>
 
         <PeraConnectButton onVerified={setOwnerAddress} />
 
-        <p className="text-center text-zinc-700 text-xs mt-6">
+        <p className="text-center text-zinc-700 text-xs mt-8">
           Already have an agent?{" "}
           <a href="/app/login" className="text-zinc-500 hover:text-zinc-300 transition-colors underline">
             Sign in
