@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
 interface Props {
-  agentId: string;
+  ownerAddress: string;
 }
 
 const NAV_TABS = [
@@ -13,7 +13,7 @@ const NAV_TABS = [
   { href: "/app/history",   label: "History" },
 ];
 
-export default function CustomerNav({ agentId }: Props) {
+export default function CustomerNav({ ownerAddress }: Props) {
   const router   = useRouter();
   const pathname = usePathname();
 
@@ -22,10 +22,9 @@ export default function CustomerNav({ agentId }: Props) {
     router.push("/app/login");
   }
 
-  const displayId =
-    agentId.length > 20
-      ? `${agentId.slice(0, 10)}…${agentId.slice(-8)}`
-      : agentId;
+  const ownerShort = ownerAddress
+    ? `${ownerAddress.slice(0, 6)}…${ownerAddress.slice(-4)}`
+    : "";
 
   return (
     <nav className="sticky top-0 z-40 border-b border-zinc-800 bg-black/95 backdrop-blur supports-[backdrop-filter]:bg-black/80">
@@ -43,13 +42,15 @@ export default function CustomerNav({ agentId }: Props) {
           <span className="text-white font-semibold text-sm">x402</span>
         </div>
 
-        {/* Agent ID badge */}
-        <div className="flex items-center gap-2">
-          <span className="text-zinc-500 text-xs hidden sm:block">Agent:</span>
-          <span className="font-mono text-zinc-300 text-xs bg-zinc-900 border border-zinc-700 rounded px-2 py-1">
-            {displayId || "—"}
-          </span>
-        </div>
+        {/* Owner address badge */}
+        {ownerShort && (
+          <div className="flex items-center gap-2">
+            <span className="text-zinc-500 text-xs hidden sm:block">Identity:</span>
+            <span className="font-mono text-zinc-300 text-xs bg-zinc-900 border border-zinc-700 rounded px-2 py-1">
+              {ownerShort}
+            </span>
+          </div>
+        )}
 
         {/* Disconnect */}
         <button

@@ -12,14 +12,14 @@ export default function CustomerAppLayout({
   const pathname = usePathname();
   const isLoginPage = pathname === "/app/login";
 
-  const [agentId, setAgentId] = useState<string>("");
+  const [ownerAddress, setOwnerAddress] = useState<string>("");
 
   useEffect(() => {
     if (isLoginPage) return;
     fetch("/api/customer/session")
       .then((r) => r.ok ? r.json() : null)
-      .then((data: { agentId?: string } | null) => {
-        if (data?.agentId) setAgentId(data.agentId);
+      .then((data: { ownerAddress?: string } | null) => {
+        if (data?.ownerAddress) setOwnerAddress(data.ownerAddress);
       })
       .catch(() => {});
   }, [isLoginPage]);
@@ -30,7 +30,7 @@ export default function CustomerAppLayout({
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col">
-      <CustomerNav agentId={agentId} />
+      <CustomerNav ownerAddress={ownerAddress} />
       <main className="flex-1">{children}</main>
     </div>
   );

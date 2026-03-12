@@ -77,6 +77,13 @@ export default function AgentPortfolioDashboard() {
           router.replace(`/app/dashboard/${sess.agentId}`);
           return;
         }
+        // Portfolio: go directly to first active agent
+        const active = (sess.agents ?? []).find((a) => a.status !== "pending");
+        const first  = active ?? sess.agents?.[0];
+        if (first) {
+          router.replace(`/app/dashboard/${first.agentId}`);
+          return;
+        }
         setSession(sess);
         setLoading(false);
       })
