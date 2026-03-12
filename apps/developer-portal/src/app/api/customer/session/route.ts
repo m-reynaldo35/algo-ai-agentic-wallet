@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 import {
+  signCustomerSession,
   verifyCustomerSession,
   CUSTOMER_SESSION_COOKIE,
 } from "@/lib/customerSession";
@@ -19,18 +20,47 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Invalid session" }, { status: 401 });
   }
 
+  const portalSecret = process.env.PORTAL_API_SECRET || "";
+  const authHeaders: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(portalSecret ? { "X-Portal-Key": portalSecret } : {}),
+  };
+
+  // If ownerAddress was corrupted to a "webauthn:…" string (by an older version of
+  // the webauthn-register route), attempt recovery or force re-authentication.
+  let ownerAddress = payload.ownerAddress;
+  let sessionHealed = false;
+  if (ownerAddress.startsWith("webauthn:")) {
+    let recovered = "";
+    if (payload.agentId) {
+      try {
+        const ar = await fetch(`${API_URL}/api/agents/${encodeURIComponent(payload.agentId)}`, {
+          headers: authHeaders,
+        });
+        if (ar.ok) {
+          const agentData = await ar.json() as { ownerAddress?: string };
+          if (agentData.ownerAddress && !agentData.ownerAddress.startsWith("webauthn:")) {
+            recovered = agentData.ownerAddress;
+          }
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    if (!recovered) {
+      // Cannot recover — force clean re-authentication so the user gets a fresh session
+      return NextResponse.json({ error: "Session corrupted, please log in again" }, { status: 401 });
+    }
+
+    ownerAddress = recovered;
+    sessionHealed = true;
+  }
+
   // Fetch agents owned by this address from the backend
   let agents: unknown[] = [];
   try {
-    const portalSecret = process.env.PORTAL_API_SECRET || "";
     const r = await fetch(
-      `${API_URL}/api/agents?owner=${encodeURIComponent(payload.ownerAddress)}`,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          ...(portalSecret ? { "X-Portal-Key": portalSecret } : {}),
-        },
-      },
+      `${API_URL}/api/agents?owner=${encodeURIComponent(ownerAddress)}`,
+      { headers: authHeaders },
     );
     if (r.ok) {
       const data = await r.json() as { agents?: unknown[] };
@@ -38,9 +68,26 @@ export async function GET(req: NextRequest) {
     }
   } catch { /* non-fatal — return empty list */ }
 
-  return NextResponse.json({
-    ownerAddress: payload.ownerAddress,
+  const responseBody = NextResponse.json({
+    ownerAddress,
     agentId: payload.agentId,    // present on legacy per-agent sessions
     agents,
   });
+
+  // Self-heal: write a corrected session cookie so the corruption doesn't repeat
+  if (sessionHealed) {
+    const healedToken = await signCustomerSession({
+      agentId: payload.agentId,
+      ownerAddress,
+    });
+    responseBody.cookies.set(CUSTOMER_SESSION_COOKIE, healedToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 30 * 24 * 60 * 60,
+    });
+  }
+
+  return responseBody;
 }

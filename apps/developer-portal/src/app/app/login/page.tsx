@@ -4,7 +4,20 @@ import { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { PeraWalletConnect as PeraWalletConnectType } from "@perawallet/connect";
 
-// ── Pera Connect — owner-level (no agentId required) ─────────────────────
+// ── Helpers ───────────────────────────────────────────────────────
+
+function bufToBase64url(buf: ArrayBuffer): string {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+function base64urlToBuf(b64url: string): ArrayBuffer {
+  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64);
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0)).buffer;
+}
+
+// ── Pera Connect — owner-level (no agentId required) ─────────────
 
 function PeraConnectButton({
   onVerified,
@@ -30,7 +43,6 @@ function PeraConnectButton({
     setErrorMsg("");
 
     try {
-      // 1. Get owner-level challenge (not agent-scoped)
       const chalRes = await fetch("/api/owner/auth/challenge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -43,11 +55,9 @@ function PeraConnectButton({
         challengeId: string; challengeB64: string;
       };
 
-      // 2. Connect wallet
       const accounts = await pera.connect();
       const address = accounts[0];
 
-      // 3. Sign challenge
       setStatus("signing");
       const challengeBytes = Uint8Array.from(atob(challengeB64), (c) => c.charCodeAt(0));
       const signatures = await pera.signData(
@@ -56,7 +66,6 @@ function PeraConnectButton({
       );
       const signatureB64 = btoa(String.fromCharCode(...signatures[0]));
 
-      // 4. Verify on backend
       setStatus("verifying");
       const verifyRes = await fetch("/api/owner/auth/verify", {
         method: "POST",
@@ -117,17 +126,156 @@ function PeraConnectButton({
   );
 }
 
+// ── WebAuthn login — per-agent passkey ────────────────────────────
+
+function PasskeyLoginForm({
+  onVerified,
+}: {
+  onVerified: (agentId: string, ownerAddress: string) => void;
+}) {
+  const [agentId, setAgentId] = useState("");
+  const [status, setStatus]   = useState<"idle" | "busy" | "error">("idle");
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const handlePasskey = useCallback(async () => {
+    const id = agentId.trim();
+    if (!id) { setStatus("error"); setErrorMsg("Agent ID is required"); return; }
+
+    setStatus("busy");
+    setErrorMsg("");
+
+    try {
+      // 1. Get login challenge
+      const chalRes = await fetch(`/api/agents/${encodeURIComponent(id)}/auth/webauthn-login-challenge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!chalRes.ok) {
+        const b = await chalRes.json().catch(() => ({})) as { error?: string };
+        throw new Error(b.error ?? `HTTP ${chalRes.status}`);
+      }
+      const { challenge, allowCredentials, rpId } = await chalRes.json() as {
+        challenge: string;
+        allowCredentials: Array<{ id: string; type: string }>;
+        hasCredentials: boolean;
+        rpId: string;
+      };
+
+      // 2. Invoke device passkey
+      const cred = await navigator.credentials.get({
+        publicKey: {
+          challenge: base64urlToBuf(challenge),
+          allowCredentials: allowCredentials.map((c) => ({
+            id: base64urlToBuf(c.id),
+            type: "public-key" as PublicKeyCredentialType,
+          })),
+          rpId,
+          timeout: 60000,
+          userVerification: "preferred",
+        },
+      }) as PublicKeyCredential | null;
+
+      if (!cred) throw new Error("No credential returned");
+
+      const response = cred.response as AuthenticatorAssertionResponse;
+      const assertion = {
+        id: cred.id,
+        rawId: bufToBase64url(cred.rawId),
+        type: cred.type,
+        response: {
+          clientDataJSON:    bufToBase64url(response.clientDataJSON),
+          authenticatorData: bufToBase64url(response.authenticatorData),
+          signature:         bufToBase64url(response.signature),
+          ...(response.userHandle ? { userHandle: bufToBase64url(response.userHandle) } : {}),
+        },
+        clientExtensionResults: cred.getClientExtensionResults(),
+      };
+
+      // 3. Verify with portal → sets session cookie
+      const loginRes = await fetch("/api/customer/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: id, webauthnAssertion: assertion }),
+      });
+      if (!loginRes.ok) {
+        const b = await loginRes.json().catch(() => ({})) as { error?: string };
+        throw new Error(b.error ?? `HTTP ${loginRes.status}`);
+      }
+      const data = await loginRes.json() as { ownerAddress: string };
+      onVerified(id, data.ownerAddress);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.toLowerCase().includes("cancel") || msg.toLowerCase().includes("abort") || msg.toLowerCase().includes("not allowed")) {
+        setStatus("idle");
+      } else {
+        setStatus("error");
+        setErrorMsg(msg);
+      }
+    }
+  }, [agentId, onVerified]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <input
+        type="text"
+        value={agentId}
+        onChange={(e) => setAgentId(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && handlePasskey()}
+        placeholder="Agent ID"
+        className="w-full bg-zinc-900 border border-zinc-700 focus:border-zinc-500 text-white placeholder-zinc-600 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors font-mono"
+        autoComplete="off"
+        autoCapitalize="none"
+      />
+      <button
+        type="button"
+        disabled={status === "busy"}
+        onClick={handlePasskey}
+        className="w-full flex items-center justify-center gap-2 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg px-4 py-3 text-sm font-medium transition-colors"
+      >
+        {status === "busy" ? (
+          <>
+            <svg className="animate-spin w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            Waiting for passkey…
+          </>
+        ) : (
+          <>
+            {/* Fingerprint / passkey icon */}
+            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+                d="M12 11c0-1.657-1.343-3-3-3S6 9.343 6 11v2a6 6 0 0012 0v-2c0-1.657-1.343-3-3-3s-3 1.343-3 3" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+                d="M5 11a7 7 0 0114 0" />
+            </svg>
+            Sign in with Passkey
+          </>
+        )}
+      </button>
+      {status === "error" && errorMsg && (
+        <div className="rounded-lg bg-red-950/50 border border-red-800 px-3 py-2 text-xs text-red-300 text-center">
+          {errorMsg}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main login form ───────────────────────────────────────────────
+
+type Tab = "wallet" | "passkey";
 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const from = searchParams.get("from") || "/app/dashboard";
 
+  const [tab, setTab]           = useState<Tab>("wallet");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError]           = useState("");
 
-  const handleVerified = useCallback(async (ownerAddress: string) => {
+  const handleOwnerVerified = useCallback(async (ownerAddress: string) => {
     setSubmitting(true);
     setError("");
     try {
@@ -148,6 +296,10 @@ function LoginForm() {
     }
   }, [from, router]);
 
+  const handlePasskeyVerified = useCallback((_agentId: string, _ownerAddress: string) => {
+    router.push(from);
+  }, [from, router]);
+
   return (
     <div className="min-h-screen bg-black flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
@@ -160,7 +312,27 @@ function LoginForm() {
             </svg>
           </div>
           <h1 className="text-2xl font-bold text-white">Agent Dashboard</h1>
-          <p className="text-zinc-500 text-sm mt-1">Connect your Algorand wallet to manage your agents</p>
+          <p className="text-zinc-500 text-sm mt-1">Sign in to manage your agents</p>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex gap-1 p-1 bg-zinc-900 border border-zinc-800 rounded-lg mb-6">
+          {([
+            { id: "wallet" as Tab, label: "Algorand Wallet" },
+            { id: "passkey" as Tab, label: "Device Passkey" },
+          ]).map(({ id, label }) => (
+            <button
+              key={id}
+              onClick={() => { setTab(id); setError(""); }}
+              className={`flex-1 py-2 rounded text-sm font-medium transition-colors ${
+                tab === id
+                  ? "bg-zinc-700 text-white"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
 
         <div className="space-y-4">
@@ -168,16 +340,22 @@ function LoginForm() {
             <div className="rounded-lg bg-red-950/50 border border-red-800 px-4 py-3 text-sm text-red-300">{error}</div>
           )}
 
-          {!submitting && <PeraConnectButton onVerified={handleVerified} />}
+          {tab === "wallet" && (
+            submitting ? (
+              <div className="flex items-center justify-center gap-2 py-3 text-zinc-400 text-sm">
+                <svg className="animate-spin w-4 h-4 shrink-0 text-emerald-400" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Signing in…
+              </div>
+            ) : (
+              <PeraConnectButton onVerified={handleOwnerVerified} />
+            )
+          )}
 
-          {submitting && (
-            <div className="flex items-center justify-center gap-2 py-3 text-zinc-400 text-sm">
-              <svg className="animate-spin w-4 h-4 shrink-0 text-emerald-400" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              Signing in…
-            </div>
+          {tab === "passkey" && (
+            <PasskeyLoginForm onVerified={handlePasskeyVerified} />
           )}
         </div>
 

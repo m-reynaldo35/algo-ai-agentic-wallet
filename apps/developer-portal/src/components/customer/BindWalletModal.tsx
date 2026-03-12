@@ -1,0 +1,184 @@
+"use client";
+
+import { useState } from "react";
+import LiquidAuthQRModal from "@/components/mandates/LiquidAuthQRModal";
+
+type BindMethod = "liquid" | "webauthn";
+
+// WebAuthn helpers
+function bufToBase64url(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let str = "";
+  for (const b of bytes) str += String.fromCharCode(b);
+  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+function base64urlToBuf(b64: string): ArrayBuffer {
+  const padded = b64.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(b64.length / 4) * 4, "=");
+  const str = atob(padded);
+  const buf = new ArrayBuffer(str.length);
+  const view = new Uint8Array(buf);
+  for (let i = 0; i < str.length; i++) view[i] = str.charCodeAt(i);
+  return buf;
+}
+
+function serializeRegistration(cred: PublicKeyCredential) {
+  const resp = cred.response as AuthenticatorAttestationResponse;
+  return {
+    id:       cred.id,
+    rawId:    bufToBase64url(cred.rawId),
+    type:     cred.type,
+    response: {
+      attestationObject: bufToBase64url(resp.attestationObject),
+      clientDataJSON:    bufToBase64url(resp.clientDataJSON),
+    },
+  };
+}
+
+interface Props {
+  agentId:  string;
+  onDone:   () => void;
+  onClose:  () => void;
+}
+
+export default function BindWalletModal({ agentId, onDone, onClose }: Props) {
+  const [method, setMethod]         = useState<BindMethod>("liquid");
+  const [showQR, setShowQR]         = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError]           = useState("");
+
+  async function handleWebAuthn() {
+    if (!window.PublicKeyCredential) {
+      setError("Passkeys are not supported in this browser.");
+      return;
+    }
+    setSubmitting(true);
+    setError("");
+    try {
+      const chalRes = await fetch(`/api/agents/${agentId}/auth/webauthn-register-challenge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!chalRes.ok) throw new Error(`Challenge failed: HTTP ${chalRes.status}`);
+      const { challenge, userId, rpId, rpName, userName, userDisplayName } = await chalRes.json() as {
+        challenge: string; userId: string; rpId: string; rpName: string;
+        userName: string; userDisplayName: string;
+      };
+
+      const credential = await navigator.credentials.create({
+        publicKey: {
+          challenge:              base64urlToBuf(challenge),
+          rp:                     { id: rpId, name: rpName },
+          user: {
+            id:          base64urlToBuf(userId),
+            name:        userName,
+            displayName: userDisplayName,
+          },
+          pubKeyCredParams:       [{ alg: -7, type: "public-key" }, { alg: -257, type: "public-key" }],
+          authenticatorSelection: { userVerification: "preferred" },
+          timeout:                60_000,
+        },
+      }) as PublicKeyCredential | null;
+
+      if (!credential) throw new Error("Passkey registration cancelled.");
+
+      const res = await fetch("/api/customer/auth/webauthn-register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId, registrationResponse: serializeRegistration(credential) }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error || `HTTP ${res.status}`);
+      }
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
+        <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl">
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 pt-5 pb-4 border-b border-zinc-800">
+            <div>
+              <h2 className="text-sm font-semibold text-white">Bind Wallet</h2>
+              <p className="text-xs text-zinc-500 mt-0.5 font-mono">{agentId}</p>
+            </div>
+            <button
+              onClick={onClose}
+              className="flex items-center justify-center w-7 h-7 rounded-md bg-red-900/30 hover:bg-red-900/60 text-red-400 hover:text-red-300 transition-colors"
+              title="Close"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="p-5 space-y-4">
+            <p className="text-sm text-zinc-400">
+              Prove ownership to register an auth method. Required before creating mandates.
+            </p>
+
+            {/* Method toggle */}
+            <div className="flex gap-2 p-1 bg-zinc-800 rounded-md">
+              <button
+                onClick={() => setMethod("liquid")}
+                className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${
+                  method === "liquid" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"
+                }`}
+              >
+                Algorand Wallet QR <span className="text-xs text-emerald-400">(Recommended)</span>
+              </button>
+              <button
+                onClick={() => setMethod("webauthn")}
+                className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${
+                  method === "webauthn" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"
+                }`}
+              >
+                Device Passkey
+              </button>
+            </div>
+
+            {error && (
+              <div className="rounded-md bg-red-950/50 border border-red-800 px-3 py-2 text-xs text-red-300">
+                {error}
+              </div>
+            )}
+
+            {method === "liquid" ? (
+              <button
+                onClick={() => setShowQR(true)}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium py-2.5 rounded-md transition-colors"
+              >
+                Connect Wallet
+              </button>
+            ) : (
+              <button
+                onClick={handleWebAuthn}
+                disabled={submitting}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium py-2.5 rounded-md transition-colors"
+              >
+                {submitting ? "Registering passkey…" : "Sign with Passkey"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {showQR && (
+        <LiquidAuthQRModal
+          agentId={agentId}
+          intent="register"
+          onVerified={() => { setShowQR(false); onDone(); }}
+          onClose={() => setShowQR(false)}
+        />
+      )}
+    </>
+  );
+}

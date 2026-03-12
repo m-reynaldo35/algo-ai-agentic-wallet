@@ -13,6 +13,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import {
   signCustomerSession,
+  verifyCustomerSession,
   CUSTOMER_SESSION_COOKIE,
 } from "@/lib/customerSession";
 
@@ -71,7 +72,19 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const token = await signCustomerSession({ agentId, ownerAddress: data.ownerWalletId });
+  // Preserve the existing Algorand ownerAddress from the current session.
+  // The backend's ownerWalletId is "webauthn:credentialId" — an internal format
+  // that cannot be used to look up the agent owner index (which is keyed on the
+  // Algorand address). Only fall back to ownerWalletId when there is no existing
+  // authenticated session (e.g. first-time registration with no Pera login).
+  const existingToken = req.cookies.get(CUSTOMER_SESSION_COOKIE)?.value;
+  const existingSession = existingToken ? await verifyCustomerSession(existingToken) : null;
+  const ownerAddr =
+    existingSession?.ownerAddress && !existingSession.ownerAddress.startsWith("webauthn:")
+      ? existingSession.ownerAddress
+      : data.ownerWalletId;
+
+  const token = await signCustomerSession({ agentId, ownerAddress: ownerAddr });
 
   const res = NextResponse.json({ ok: true, agentId, ownerAddress: data.ownerWalletId });
   res.cookies.set(CUSTOMER_SESSION_COOKIE, token, {

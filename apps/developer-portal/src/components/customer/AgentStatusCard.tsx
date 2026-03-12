@@ -18,9 +18,10 @@ interface AgentInfo {
 }
 
 interface Props {
-  agentId: string;
-  agent: AgentInfo | null;
-  error?: string;
+  agentId:    string;
+  agent:      AgentInfo | null;
+  error?:     string;
+  onRegister?: () => void;
 }
 
 type StatusKind = "active" | "halted" | "suspended" | "orphaned" | "registered" | "unknown";
@@ -59,7 +60,7 @@ function CheckIcon({ ok }: { ok: boolean }) {
   );
 }
 
-export default function AgentStatusCard({ agentId, agent, error }: Props) {
+export default function AgentStatusCard({ agentId, agent, error, onRegister }: Props) {
   const [copied, setCopied] = useState(false);
 
   function copyId() {
@@ -148,22 +149,41 @@ export default function AgentStatusCard({ agentId, agent, error }: Props) {
             <div>
               <label className="block text-xs text-zinc-600 mb-2">Auth Methods</label>
               <div className="space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <CheckIcon ok={hasLiquidAuth} />
-                  <span className={`text-xs ${hasLiquidAuth ? "text-zinc-300" : "text-zinc-600"}`}>
-                    Algorand Wallet (Pera / Defly QR)
-                  </span>
+                {/* Algorand Wallet row */}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <CheckIcon ok={hasLiquidAuth} />
+                    <span className={`text-xs truncate ${hasLiquidAuth ? "text-zinc-300" : "text-zinc-600"}`}>
+                      Algorand Wallet (Pera / Defly QR)
+                    </span>
+                  </div>
+                  {!hasLiquidAuth && onRegister && (
+                    <button
+                      onClick={onRegister}
+                      className="shrink-0 text-[11px] text-red-400 hover:text-red-300 border border-red-900/60 hover:border-red-700/80 px-2 py-0.5 rounded transition-colors leading-tight"
+                    >
+                      Register →
+                    </button>
+                  )}
                 </div>
-                <div className="flex items-center gap-2">
-                  <CheckIcon ok={hasPasskey} />
-                  <span className={`text-xs ${hasPasskey ? "text-zinc-300" : "text-zinc-600"}`}>
-                    Device Passkey (Touch ID / Face ID / YubiKey)
-                  </span>
+                {/* Device Passkey row */}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <CheckIcon ok={hasPasskey} />
+                    <span className={`text-xs truncate ${hasPasskey ? "text-zinc-300" : "text-zinc-600"}`}>
+                      Device Passkey (Touch ID / Face ID / YubiKey)
+                    </span>
+                  </div>
+                  {!hasPasskey && onRegister && (
+                    <button
+                      onClick={onRegister}
+                      className="shrink-0 text-[11px] text-red-400 hover:text-red-300 border border-red-900/60 hover:border-red-700/80 px-2 py-0.5 rounded transition-colors leading-tight"
+                    >
+                      Register →
+                    </button>
+                  )}
                 </div>
               </div>
-              {!hasLiquidAuth && !hasPasskey && (
-                <p className="mt-2 text-xs text-amber-400">No auth method registered — you cannot create or revoke mandates.</p>
-              )}
             </div>
           )}
 

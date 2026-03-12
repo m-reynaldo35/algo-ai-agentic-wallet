@@ -7,9 +7,9 @@ const NETWORK        = process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? "testnet";
 const USDC_ASSET_ID  = NETWORK === "mainnet" ? 31566704 : 10458941;
 
 // Gas model
-const MBR_MICRO          = 200_000;   // minimum balance requirement
-const GAS_CRITICAL_MICRO = 50_000;    // µALGO above MBR → critical
-const GAS_LOW_MICRO      = 200_000;   // µALGO above MBR → low
+const MBR_MICRO           = 200_000;   // minimum balance requirement
+const GAS_CRITICAL_MICRO  = 50_000;    // µALGO above MBR → critical
+const GAS_LOW_MICRO       = 200_000;   // µALGO above MBR → low
 const REFUEL_TARGET_MICRO = MBR_MICRO + 700_000; // top up to ~700 txns above MBR
 
 // USDC model: x402 toll = 10,000 µUSDC per payment

@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import QRCode from "qrcode";
+import BindWalletModal from "@/components/customer/BindWalletModal";
 
 const NETWORK        = process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? "testnet";
 const USDC_ASSET_ID  = NETWORK === "mainnet" ? 31566704 : 10458941;
@@ -294,7 +295,7 @@ function Step3({
   );
 }
 
-// ── Step 4 — Done ─────────────────────────────────────────────────────────
+// ── Step 4 — Deposit USDC ──────────────────────────────────────────────────
 
 function Step4({
   agentId,
@@ -307,16 +308,16 @@ function Step4({
 }) {
   const canvasRef               = useRef<HTMLCanvasElement>(null);
   const [copied, setCopied]     = useState(false);
+  const usdcUri = `algorand://${address}?asset=${USDC_ASSET_ID}`;
 
   useEffect(() => {
     if (canvasRef.current) {
-      const uri = `algorand://${address}?asset=${USDC_ASSET_ID}`;
-      QRCode.toCanvas(canvasRef.current, uri, {
+      QRCode.toCanvas(canvasRef.current, usdcUri, {
         width: 140, margin: 2,
         color: { dark: "#000000", light: "#ffffff" },
       });
     }
-  }, [address]);
+  }, [usdcUri]);
 
   return (
     <div className="space-y-4">
@@ -324,9 +325,7 @@ function Step4({
         <svg className="w-4 h-4 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
         </svg>
-        <span className="text-emerald-400 text-xs font-medium">
-          {agentId} is active
-        </span>
+        <span className="text-emerald-400 text-xs font-medium">{agentId} is active</span>
       </div>
 
       <div>
@@ -364,15 +363,27 @@ function Step4({
         </div>
       </div>
 
-      <button
-        onClick={onDone}
-        className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium py-2.5 rounded-md transition-colors"
-      >
-        Back to Dashboard
-      </button>
+      <div className="flex gap-3">
+        <a
+          href={usdcUri}
+          onClick={onDone}
+          className="flex-1 text-center bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium py-2.5 rounded-md transition-colors"
+        >
+          Deposit
+        </a>
+        <button
+          onClick={onDone}
+          className="flex-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-sm font-medium py-2.5 rounded-md transition-colors"
+        >
+          Deposit Later
+        </button>
+      </div>
     </div>
   );
 }
+
+// ── Step 5 — Bind wallet ───────────────────────────────────────────────────
+// Rendered inline inside the wizard shell; BindWalletModal handles the UI.
 
 // ── Modal shell ────────────────────────────────────────────────────────────
 
@@ -383,20 +394,13 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
   const [genError, setGenError]     = useState("");
   const [generating, setGenerating] = useState(false);
 
-  const totalSteps = 4;
+  const totalSteps = 5;
 
-  // ESC closes the modal (with guard on steps 2-3 — mnemonic/activation in progress)
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key !== "Escape") return;
-      if (step >= 2 && step <= 3) {
-        if (!window.confirm("Close the wizard? Your pending agent will remain until you fund it.")) return;
-      }
+  function handleClose() {
+    if (window.confirm("Are you sure you wish to cancel? Your agent will remain in a pending state.")) {
       onClose();
     }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [step, onClose]);
+  }
 
   async function handleStep1(id: string) {
     setAgentId(id);
@@ -419,31 +423,27 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
     }
   }
 
-  function handleDone() {
-    onCreated();
-  }
-
-  function handleBackdropClick(e: React.MouseEvent<HTMLDivElement>) {
-    if (e.target !== e.currentTarget) return;
-    if (step >= 2 && step <= 3) {
-      if (!window.confirm("Close the wizard? Your pending agent will remain until you fund it.")) return;
-    }
-    onClose();
+  // Step 5: BindWalletModal takes over as a full modal
+  if (step === 5 && createData) {
+    return (
+      <BindWalletModal
+        agentId={agentId}
+        onDone={onCreated}
+        onClose={handleClose}
+      />
+    );
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
-      onClick={handleBackdropClick}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
       <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-5 pb-0">
           <StepDots current={step} total={totalSteps} />
           <button
-            onClick={onClose}
-            className="text-zinc-600 hover:text-zinc-400 transition-colors p-1 rounded"
-            title="Close"
+            onClick={handleClose}
+            className="flex items-center justify-center w-7 h-7 rounded-md bg-red-900/30 hover:bg-red-900/60 text-red-400 hover:text-red-300 transition-colors"
+            title="Cancel wizard"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -490,7 +490,7 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
             <Step4
               agentId={agentId}
               address={createData.address}
-              onDone={handleDone}
+              onDone={() => setStep(5)}
             />
           )}
         </div>

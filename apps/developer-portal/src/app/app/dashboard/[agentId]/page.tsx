@@ -9,6 +9,7 @@ import WalletQRPanel from "@/components/customer/WalletQRPanel";
 import MandateUsageCard from "@/components/customer/MandateUsageCard";
 import RecentTransactions from "@/components/customer/RecentTransactions";
 import CreateAgentWizard from "@/components/customer/CreateAgentWizard";
+import BindWalletModal from "@/components/customer/BindWalletModal";
 
 interface AgentListItem {
   agentId:   string;
@@ -56,12 +57,10 @@ function AgentSidebar({
   agents,
   currentId,
   ownerAddress,
-  onNewAgent,
 }: {
   agents:       AgentListItem[];
   currentId:    string;
   ownerAddress: string;
-  onNewAgent:   () => void;
 }) {
   const ownerShort = ownerAddress
     ? `${ownerAddress.slice(0, 6)}…${ownerAddress.slice(-4)}`
@@ -105,18 +104,6 @@ function AgentSidebar({
         </div>
       </div>
 
-      {/* New agent button */}
-      <div className="p-3 border-t border-zinc-800/70">
-        <button
-          onClick={onNewAgent}
-          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors font-medium"
-        >
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          New Agent
-        </button>
-      </div>
     </aside>
   );
 }
@@ -133,6 +120,7 @@ export default function AgentDetailPage() {
   const [agentError, setAgentError]   = useState("");
   const [loading, setLoading]         = useState(true);
   const [showCreate, setShowCreate]   = useState(false);
+  const [showBind, setShowBind]       = useState(false);
 
   const loadSession = useCallback(() => {
     return fetch("/api/customer/session")
@@ -144,6 +132,16 @@ export default function AgentDetailPage() {
       })
       .catch(() => router.replace("/app/login"));
   }, [router]);
+
+  const reloadAgent = useCallback(() => {
+    fetch(`/api/agents/${agentId}`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json() as Promise<AgentInfo>;
+      })
+      .then(setAgent)
+      .catch(() => {});
+  }, [agentId]);
 
   useEffect(() => {
     loadSession().then(() => {
@@ -179,7 +177,6 @@ export default function AgentDetailPage() {
         agents={session.agents ?? []}
         currentId={agentId}
         ownerAddress={session.ownerAddress}
-        onNewAgent={() => setShowCreate(true)}
       />
 
       {/* ── Main content ── */}
@@ -188,10 +185,9 @@ export default function AgentDetailPage() {
           {/* Header: agent name + New Agent button */}
           <div className="flex items-center justify-between">
             <h1 className="font-mono text-sm text-zinc-300">{agentId}</h1>
-            {/* Mobile-only New Agent — sidebar handles desktop */}
             <button
               onClick={() => setShowCreate(true)}
-              className="lg:hidden inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors font-medium"
             >
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -200,9 +196,9 @@ export default function AgentDetailPage() {
             </button>
           </div>
 
-          {/* Cards */}
+          {/* Cards — same row: status | wallet */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <AgentStatusCard agentId={agentId} agent={agent} error={agentError} />
+            <AgentStatusCard agentId={agentId} agent={agent} error={agentError} onRegister={() => setShowBind(true)} />
             {walletAddress && <WalletCard address={walletAddress} showQR={false} />}
           </div>
 
@@ -224,6 +220,15 @@ export default function AgentDetailPage() {
           ownerAddress={session.ownerAddress}
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); loadSession(); }}
+        />
+      )}
+
+      {/* ── Bind wallet modal ── */}
+      {showBind && (
+        <BindWalletModal
+          agentId={agentId}
+          onDone={() => { setShowBind(false); reloadAgent(); }}
+          onClose={() => setShowBind(false)}
         />
       )}
     </div>
