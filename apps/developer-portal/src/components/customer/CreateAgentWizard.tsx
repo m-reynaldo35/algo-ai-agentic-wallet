@@ -25,7 +25,7 @@ interface CreateResponse {
 interface Balance { microAlgo: number; microUsdc: number; }
 
 interface Props {
-  ownerAddress: string;
+  ownerAddress?: string;
   onClose:   () => void;
   onCreated: () => void;
 }
