@@ -49,21 +49,27 @@ export async function GET(req: NextRequest) {
     if (recovered) {
       ownerAddress = recovered;
       sessionHealed = true;
-    } else if (payload.agentId) {
-      // WebAuthn-only user: no Algorand address yet. Fetch the agent directly by ID
-      // so the agents list and sidebar still populate.
-      let agentEntry: unknown = null;
-      try {
-        const ar = await fetch(`${API_URL}/api/agents/${encodeURIComponent(payload.agentId)}`, {
-          headers: authHeaders,
-        });
-        if (ar.ok) agentEntry = await ar.json();
-      } catch { /* non-fatal */ }
+    } else if (payload.agentId || payload.agentIds?.length) {
+      // WebAuthn-only user: no Algorand address yet. Fetch all known agents by ID.
+      const allIds = Array.from(new Set([
+        ...(payload.agentIds ?? []),
+        ...(payload.agentId ? [payload.agentId] : []),
+      ]));
+      const agentEntries = (
+        await Promise.all(
+          allIds.map(async (id) => {
+            try {
+              const ar = await fetch(`${API_URL}/api/agents/${encodeURIComponent(id)}`, { headers: authHeaders });
+              return ar.ok ? ar.json() : null;
+            } catch { return null; }
+          }),
+        )
+      ).filter(Boolean);
 
       return NextResponse.json({
         ownerAddress: "",
         agentId: payload.agentId,
-        agents: agentEntry ? [agentEntry] : [],
+        agents: agentEntries,
       });
     } else {
       // No agentId and no recoverable address — force re-authentication

@@ -84,7 +84,14 @@ export async function POST(req: NextRequest) {
       ? existingSession.ownerAddress
       : data.ownerWalletId;
 
-  const token = await signCustomerSession({ agentId, ownerAddress: ownerAddr });
+  // Accumulate agentIds so registering a second agent doesn't lose the first.
+  const prevIds: string[] = [
+    ...(existingSession?.agentIds ?? []),
+    ...(existingSession?.agentId ? [existingSession.agentId] : []),
+  ];
+  const agentIds = Array.from(new Set([...prevIds, agentId]));
+
+  const token = await signCustomerSession({ agentId, agentIds, ownerAddress: ownerAddr });
 
   const res = NextResponse.json({ ok: true, agentId, ownerAddress: data.ownerWalletId });
   res.cookies.set(CUSTOMER_SESSION_COOKIE, token, {

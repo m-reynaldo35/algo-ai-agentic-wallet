@@ -16,6 +16,8 @@ export interface CustomerSessionPayload {
   ownerAddress: string;
   /** Legacy: single-agent sessions include agentId. Portfolio sessions omit it. */
   agentId?: string;
+  /** Multi-agent WebAuthn sessions accumulate agentIds here. */
+  agentIds?: string[];
 }
 
 export async function signCustomerSession(
@@ -36,7 +38,10 @@ export async function verifyCustomerSession(
     if (typeof payload.ownerAddress !== "string") return null;
     return {
       ownerAddress: payload.ownerAddress,
-      agentId: typeof payload.agentId === "string" ? payload.agentId : undefined,
+      agentId:  typeof payload.agentId === "string" ? payload.agentId : undefined,
+      agentIds: Array.isArray(payload.agentIds)
+        ? (payload.agentIds as string[]).filter((id) => typeof id === "string")
+        : undefined,
     };
   } catch {
     return null;
