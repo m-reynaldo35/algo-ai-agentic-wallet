@@ -46,13 +46,21 @@ export async function GET(req: NextRequest) {
       } catch { /* non-fatal */ }
     }
 
-    if (!recovered) {
-      // Cannot recover — force clean re-authentication so the user gets a fresh session
+    if (recovered) {
+      ownerAddress = recovered;
+      sessionHealed = true;
+    } else if (payload.agentId) {
+      // WebAuthn-only user: no Algorand address yet (passkey registered before any
+      // wallet binding). Session is valid — return agentId so dashboard can route them.
+      return NextResponse.json({
+        ownerAddress: "",
+        agentId: payload.agentId,
+        agents: [],
+      });
+    } else {
+      // No agentId and no recoverable address — force re-authentication
       return NextResponse.json({ error: "Session corrupted, please log in again" }, { status: 401 });
     }
-
-    ownerAddress = recovered;
-    sessionHealed = true;
   }
 
   // Fetch agents owned by this address from the backend
