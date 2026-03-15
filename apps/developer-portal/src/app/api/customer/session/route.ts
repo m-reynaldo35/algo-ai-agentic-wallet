@@ -50,12 +50,20 @@ export async function GET(req: NextRequest) {
       ownerAddress = recovered;
       sessionHealed = true;
     } else if (payload.agentId) {
-      // WebAuthn-only user: no Algorand address yet (passkey registered before any
-      // wallet binding). Session is valid — return agentId so dashboard can route them.
+      // WebAuthn-only user: no Algorand address yet. Fetch the agent directly by ID
+      // so the agents list and sidebar still populate.
+      let agentEntry: unknown = null;
+      try {
+        const ar = await fetch(`${API_URL}/api/agents/${encodeURIComponent(payload.agentId)}`, {
+          headers: authHeaders,
+        });
+        if (ar.ok) agentEntry = await ar.json();
+      } catch { /* non-fatal */ }
+
       return NextResponse.json({
         ownerAddress: "",
         agentId: payload.agentId,
-        agents: [],
+        agents: agentEntry ? [agentEntry] : [],
       });
     } else {
       // No agentId and no recoverable address — force re-authentication
