@@ -50,21 +50,38 @@ export async function GET(req: NextRequest) {
       ownerAddress = recovered;
       sessionHealed = true;
     } else if (payload.agentId || payload.agentIds?.length) {
-      // WebAuthn-only user: no Algorand address yet. Fetch all known agents by ID.
-      const allIds = Array.from(new Set([
-        ...(payload.agentIds ?? []),
-        ...(payload.agentId ? [payload.agentId] : []),
-      ]));
-      const agentEntries = (
-        await Promise.all(
-          allIds.map(async (id) => {
-            try {
-              const ar = await fetch(`${API_URL}/api/agents/${encodeURIComponent(id)}`, { headers: authHeaders });
-              return ar.ok ? ar.json() : null;
-            } catch { return null; }
-          }),
-        )
-      ).filter(Boolean);
+      // WebAuthn-only user: no Algorand address yet.
+      // First, try the backend ownerWalletId index to get ALL agents bound to this passkey.
+      let agentEntries: unknown[] = [];
+      try {
+        const ownerWalletId = ownerAddress; // still "webauthn:credentialId"
+        const r = await fetch(
+          `${API_URL}/api/agents?ownerWalletId=${encodeURIComponent(ownerWalletId)}`,
+          { headers: authHeaders },
+        );
+        if (r.ok) {
+          const data = await r.json() as { agents?: unknown[] };
+          agentEntries = data.agents ?? [];
+        }
+      } catch { /* fall through to JWT-based lookup */ }
+
+      // Fallback: fetch by agentIds stored in JWT (covers agents not yet indexed)
+      if (agentEntries.length === 0) {
+        const allIds = Array.from(new Set([
+          ...(payload.agentIds ?? []),
+          ...(payload.agentId ? [payload.agentId] : []),
+        ]));
+        agentEntries = (
+          await Promise.all(
+            allIds.map(async (id) => {
+              try {
+                const ar = await fetch(`${API_URL}/api/agents/${encodeURIComponent(id)}`, { headers: authHeaders });
+                return ar.ok ? ar.json() : null;
+              } catch { return null; }
+            }),
+          )
+        ).filter(Boolean);
+      }
 
       return NextResponse.json({
         ownerAddress: "",

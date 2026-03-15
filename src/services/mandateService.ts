@@ -31,7 +31,7 @@ import {
   isoBase64URL,
 }                                              from "@simplewebauthn/server/helpers";
 import { getRedis }                            from "./redis.js";
-import { getAgent, updateAgentRecord }         from "./agentRegistry.js";
+import { getAgent, updateAgentRecord, indexWebAuthnOwner } from "./agentRegistry.js";
 import { emitSecurityEvent }                   from "./securityAudit.js";
 import { consumeVerifiedSession, consumeVerifiedPeraSession } from "../auth/humanAuth.js";
 import type { Mandate, RecurringConfig }       from "../types/mandate.js";
@@ -325,6 +325,9 @@ export async function registerWebAuthnCredential(
   };
 
   await updateAgentRecord(updated);
+
+  // Maintain WebAuthn owner index so all agents with this credential can be found
+  await indexWebAuthnOwner(ownerWalletId, agentId).catch(() => {/* non-fatal */});
 }
 
 // ── Algorand address registration (Liquid Auth governance path) ────

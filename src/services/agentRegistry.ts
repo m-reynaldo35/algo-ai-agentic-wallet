@@ -158,8 +158,9 @@ const ROTATION_PREFIX  = "x402:rotation:";
 const ROTATION_ACTIVE  = "x402:rotation:active";   // distributed lock
 const DRIFT_PREFIX     = "x402:drift:";
 const HALT_KEY         = "x402:halt";
-const OWNER_PREFIX     = "x402:owner:";
-const CLAIM_PREFIX     = "x402:claim:";
+const OWNER_PREFIX       = "x402:owner:";
+const WAUTH_OWNER_PREFIX = "x402:wauth-owner:";  // WebAuthn ownerWalletId → agentId set
+const CLAIM_PREFIX       = "x402:claim:";
 const CLAIM_TTL_S      = 300; // 5-minute claim challenge TTL
 
 // ── Cohort Assignment ─────────────────────────────────────────────
@@ -347,6 +348,56 @@ export async function listAgentsByOwner(ownerAddress: string): Promise<AgentReco
 
   const raws = await Promise.all(agentIds.map((id) => getAgent(id)));
   return raws.filter((r): r is AgentRecord => r !== null);
+}
+
+/**
+ * List all agents registered with a given WebAuthn ownerWalletId
+ * (format: "webauthn:credentialId"). Uses a secondary Redis set index
+ * maintained by indexWebAuthnOwner(). Falls back to a one-time full scan
+ * to backfill the index for agents registered before this index existed.
+ */
+export async function listAgentsByWebAuthnOwner(ownerWalletId: string): Promise<AgentRecord[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+
+  const indexKey     = `${WAUTH_OWNER_PREFIX}${ownerWalletId}`;
+  const migrationKey = `${WAUTH_OWNER_PREFIX}migrated:${ownerWalletId}`;
+
+  const migrated = await redis.get(migrationKey) as string | null;
+  if (!migrated) {
+    // One-time scan: find all agents with this ownerWalletId and backfill the index
+    const all = await scanAllAgents();
+    const matches = all.filter((r) => r.ownerWalletId === ownerWalletId);
+    if (matches.length > 0) {
+      await Promise.all([
+        ...matches.map((r) => redis.sadd(indexKey, r.agentId)),
+        redis.set(migrationKey, "1"),
+      ]);
+    } else {
+      await redis.set(migrationKey, "1");
+    }
+  }
+
+  const agentIds = await redis.smembers(indexKey) as string[];
+  if (!agentIds.length) return [];
+
+  const raws = await Promise.all(agentIds.map((id) => getAgent(id)));
+  return raws.filter((r): r is AgentRecord => r !== null);
+}
+
+/**
+ * Add an agentId to the WebAuthn owner index for a given ownerWalletId.
+ * Called whenever a WebAuthn credential is registered for an agent.
+ */
+export async function indexWebAuthnOwner(ownerWalletId: string, agentId: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const indexKey     = `${WAUTH_OWNER_PREFIX}${ownerWalletId}`;
+  const migrationKey = `${WAUTH_OWNER_PREFIX}migrated:${ownerWalletId}`;
+  await Promise.all([
+    redis.sadd(indexKey, agentId),
+    redis.set(migrationKey, "1"),  // mark as migrated so scan is skipped
+  ]);
 }
 
 /**

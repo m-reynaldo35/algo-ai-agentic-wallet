@@ -39,7 +39,8 @@ import {
   setHalt, clearHalt, isHalted, getActiveRotation, getRotationBatch,
   assertCustodyInvariant,
   storePendingAgent, getPendingAgent, validateAgentId,
-  listAgentsByOwner, listPendingAgentsByOwner, claimAgentOwnership, transferAgentOwnership,
+  listAgentsByOwner, listPendingAgentsByOwner, listAgentsByWebAuthnOwner,
+  claimAgentOwnership, transferAgentOwnership,
   storeClaimChallenge, consumeClaimChallenge,
   type PendingAgentRecord,
 } from "./services/agentRegistry.js";
@@ -1458,6 +1459,11 @@ app.post("/api/owner/auth/verify", requirePortalAuth, async (req, res) => {
 
 app.get("/api/agents", requirePortalAuth, async (req, res) => {
   try {
+    if (req.query.ownerWalletId && typeof req.query.ownerWalletId === "string") {
+      const agents = await listAgentsByWebAuthnOwner(req.query.ownerWalletId);
+      res.json({ agents, count: agents.length });
+      return;
+    }
     if (req.query.owner && typeof req.query.owner === "string") {
       const [active, pending] = await Promise.all([
         listAgentsByOwner(req.query.owner),
