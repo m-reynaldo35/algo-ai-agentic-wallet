@@ -1,63 +1,72 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useCallback, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import MandateTable, { type MandateRecord } from "@/components/mandates/MandateTable";
 import MandateCreateModal from "@/components/mandates/MandateCreateModal";
 import MandateRevokeModal from "@/components/mandates/MandateRevokeModal";
 
 interface Session {
-  agentId: string;
+  agentId?: string;
   ownerAddress: string;
 }
 
-export default function CustomerMandatesPage() {
-  const router = useRouter();
-  const [session,       setSession]       = useState<Session | null>(null);
-  const [ownerWalletId, setOwnerWalletId] = useState("");
-  const [mandates,      setMandates]      = useState<MandateRecord[]>([]);
-  const [loading,       setLoading]       = useState(true);
-  const [error,         setError]         = useState("");
-  const [showCreate,    setShowCreate]    = useState(false);
-  const [revokeTarget,  setRevokeTarget]  = useState<MandateRecord | null>(null);
-  const [filter,        setFilter]        = useState<"all" | "active" | "revoked">("active");
+function MandatesContent() {
+  const router       = useRouter();
+  const searchParams = useSearchParams();
 
-  // Load session, then resolve ownerWalletId (may need agent fetch for WebAuthn-only users)
+  // agentId from ?agent= query param (set by nav link from dashboard) OR session fallback
+  const [agentId,      setAgentId]      = useState(searchParams.get("agent") ?? "");
+  const [ownerWalletId, setOwnerWalletId] = useState("");
+  const [mandates,     setMandates]     = useState<MandateRecord[]>([]);
+  const [ready,        setReady]        = useState(false);
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState("");
+  const [showCreate,   setShowCreate]   = useState(false);
+  const [revokeTarget, setRevokeTarget] = useState<MandateRecord | null>(null);
+  const [filter,       setFilter]       = useState<"all" | "active" | "revoked">("active");
+
+  // Resolve agentId + ownerWalletId from session / agent record
   useEffect(() => {
     fetch("/api/customer/session")
       .then((r) => (r.ok ? r.json() : null))
       .then(async (data: Session | null) => {
         if (!data) { router.replace("/app/login"); return; }
-        setSession(data);
 
-        // For Algorand-wallet users ownerAddress is the Algo address — use it directly.
-        if (data.ownerAddress && !data.ownerAddress.startsWith("webauthn:")) {
-          setOwnerWalletId(data.ownerAddress);
-          return;
+        // agentId priority: URL param → session.agentId
+        const resolvedAgentId = agentId || data.agentId || "";
+        if (!resolvedAgentId) { router.replace("/app/login"); return; }
+        setAgentId(resolvedAgentId);
+
+        // Fetch the agent to get its ownerWalletId (works for both Pera and WebAuthn users)
+        try {
+          const ar = await fetch(`/api/agents/${encodeURIComponent(resolvedAgentId)}`);
+          if (ar.ok) {
+            const agent = await ar.json() as { ownerWalletId?: string; ownerAddress?: string };
+            // Prefer agent's ownerWalletId; fall back to session ownerAddress for Pera users
+            const wid = agent.ownerWalletId || data.ownerAddress || "";
+            setOwnerWalletId(wid);
+          } else if (data.ownerAddress && !data.ownerAddress.startsWith("webauthn:")) {
+            setOwnerWalletId(data.ownerAddress);
+          }
+        } catch {
+          if (data.ownerAddress && !data.ownerAddress.startsWith("webauthn:")) {
+            setOwnerWalletId(data.ownerAddress);
+          }
         }
 
-        // For WebAuthn-only users the session ownerAddress is empty; fetch the agent
-        // to get its ownerWalletId (stored as "webauthn:credentialId" on the backend).
-        if (data.agentId) {
-          try {
-            const ar = await fetch(`/api/agents/${encodeURIComponent(data.agentId)}`);
-            if (ar.ok) {
-              const agent = await ar.json() as { ownerWalletId?: string };
-              if (agent.ownerWalletId) setOwnerWalletId(agent.ownerWalletId);
-            }
-          } catch { /* non-fatal */ }
-        }
+        setReady(true);
       })
       .catch(() => router.replace("/app/login"));
-  }, [router]);
+  }, [router, agentId]);
 
   const loadMandates = useCallback(async () => {
-    if (!session) return;
+    if (!agentId) return;
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`/api/agents/${session.agentId}/mandates?includeRevoked=true`);
+      const res = await fetch(`/api/agents/${agentId}/mandates?includeRevoked=true`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as MandateRecord[] | { mandates?: MandateRecord[] };
       setMandates(Array.isArray(data) ? data : (data.mandates ?? []));
@@ -66,18 +75,15 @@ export default function CustomerMandatesPage() {
     } finally {
       setLoading(false);
     }
-  }, [session]);
+  }, [agentId]);
 
-  useEffect(() => { loadMandates(); }, [loadMandates]);
+  useEffect(() => { if (ready) loadMandates(); }, [ready, loadMandates]);
 
-  const displayed = mandates.filter((m) =>
-    filter === "all" ? true : m.status === filter,
-  );
-
+  const displayed    = mandates.filter((m) => filter === "all" ? true : m.status === filter);
   const activeCount  = mandates.filter((m) => m.status === "active").length;
   const revokedCount = mandates.filter((m) => m.status === "revoked").length;
 
-  if (!session) return null;
+  if (!ready) return null;
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-6">
@@ -91,9 +97,9 @@ export default function CustomerMandatesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {session && (
+          {agentId && (
             <Link
-              href={`/app/dashboard/${session.agentId}`}
+              href={`/app/dashboard/${agentId}`}
               className="flex items-center gap-1.5 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-sm rounded-md transition-colors"
             >
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -117,9 +123,9 @@ export default function CustomerMandatesPage() {
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4">
         {[
-          { label: "Active",  value: activeCount,           color: "text-emerald-400" },
-          { label: "Revoked", value: revokedCount,          color: "text-zinc-400" },
-          { label: "Total",   value: mandates.length,       color: "text-white" },
+          { label: "Active",  value: activeCount,     color: "text-emerald-400" },
+          { label: "Revoked", value: revokedCount,    color: "text-zinc-400" },
+          { label: "Total",   value: mandates.length, color: "text-white" },
         ].map(({ label, value, color }) => (
           <div key={label} className="bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3">
             <p className="text-xs text-zinc-500 mb-1">{label}</p>
@@ -147,9 +153,7 @@ export default function CustomerMandatesPage() {
             key={f}
             onClick={() => setFilter(f)}
             className={`px-4 py-1.5 rounded text-sm font-medium capitalize transition-colors ${
-              filter === f
-                ? "bg-zinc-700 text-white"
-                : "text-zinc-400 hover:text-white"
+              filter === f ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"
             }`}
           >
             {f}
@@ -180,17 +184,14 @@ export default function CustomerMandatesPage() {
             )}
           </div>
         ) : (
-          <MandateTable
-            mandates={displayed}
-            onRevoke={(m) => setRevokeTarget(m)}
-          />
+          <MandateTable mandates={displayed} onRevoke={(m) => setRevokeTarget(m)} />
         )}
       </div>
 
       {/* Create modal */}
       {showCreate && (
         <MandateCreateModal
-          agentId={session.agentId}
+          agentId={agentId}
           ownerWalletId={ownerWalletId}
           onCreated={() => { setShowCreate(false); loadMandates(); }}
           onClose={() => setShowCreate(false)}
@@ -200,12 +201,20 @@ export default function CustomerMandatesPage() {
       {/* Revoke modal */}
       {revokeTarget && (
         <MandateRevokeModal
-          agentId={session.agentId}
+          agentId={agentId}
           mandate={revokeTarget}
           onRevoked={() => { setRevokeTarget(null); loadMandates(); }}
           onClose={() => setRevokeTarget(null)}
         />
       )}
     </div>
+  );
+}
+
+export default function CustomerMandatesPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-black" />}>
+      <MandatesContent />
+    </Suspense>
   );
 }

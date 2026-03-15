@@ -5,15 +5,10 @@ import { usePathname, useRouter } from "next/navigation";
 
 interface Props {
   ownerAddress: string;
+  agentId?: string;
 }
 
-const NAV_TABS = [
-  { href: "/app/dashboard", label: "Overview" },
-  { href: "/app/mandates",  label: "Mandates" },
-  { href: "/app/history",   label: "History" },
-];
-
-export default function CustomerNav({ ownerAddress }: Props) {
+export default function CustomerNav({ ownerAddress, agentId }: Props) {
   const router   = useRouter();
   const pathname = usePathname();
 
@@ -25,6 +20,12 @@ export default function CustomerNav({ ownerAddress }: Props) {
   const ownerShort = ownerAddress
     ? `${ownerAddress.slice(0, 6)}…${ownerAddress.slice(-4)}`
     : "";
+
+  const NAV_TABS = [
+    { href: "/app/dashboard",                                        label: "Overview"  },
+    { href: agentId ? `/app/mandates?agent=${agentId}` : "/app/mandates", label: "Mandates"  },
+    { href: "/app/history",                                          label: "History"   },
+  ];
 
   return (
     <nav className="sticky top-0 z-40 border-b border-zinc-800 bg-black/95 backdrop-blur supports-[backdrop-filter]:bg-black/80">
@@ -69,10 +70,11 @@ export default function CustomerNav({ ownerAddress }: Props) {
       {/* Tab bar */}
       <div className="flex items-center gap-1 px-6 border-t border-zinc-800/60">
         {NAV_TABS.map((tab) => {
-          const active = pathname === tab.href || pathname?.startsWith(tab.href + "/");
+          const base   = tab.href.split("?")[0];
+          const active = pathname === base || pathname?.startsWith(base + "/");
           return (
             <Link
-              key={tab.href}
+              key={tab.label}
               href={tab.href}
               className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
                 active
