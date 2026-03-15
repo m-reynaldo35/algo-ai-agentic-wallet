@@ -15,6 +15,7 @@ interface Session {
 export default function CustomerMandatesPage() {
   const router = useRouter();
   const [session,       setSession]       = useState<Session | null>(null);
+  const [ownerWalletId, setOwnerWalletId] = useState("");
   const [mandates,      setMandates]      = useState<MandateRecord[]>([]);
   const [loading,       setLoading]       = useState(true);
   const [error,         setError]         = useState("");
@@ -22,13 +23,31 @@ export default function CustomerMandatesPage() {
   const [revokeTarget,  setRevokeTarget]  = useState<MandateRecord | null>(null);
   const [filter,        setFilter]        = useState<"all" | "active" | "revoked">("active");
 
-  // Load session
+  // Load session, then resolve ownerWalletId (may need agent fetch for WebAuthn-only users)
   useEffect(() => {
     fetch("/api/customer/session")
       .then((r) => (r.ok ? r.json() : null))
-      .then((data: Session | null) => {
+      .then(async (data: Session | null) => {
         if (!data) { router.replace("/app/login"); return; }
         setSession(data);
+
+        // For Algorand-wallet users ownerAddress is the Algo address — use it directly.
+        if (data.ownerAddress && !data.ownerAddress.startsWith("webauthn:")) {
+          setOwnerWalletId(data.ownerAddress);
+          return;
+        }
+
+        // For WebAuthn-only users the session ownerAddress is empty; fetch the agent
+        // to get its ownerWalletId (stored as "webauthn:credentialId" on the backend).
+        if (data.agentId) {
+          try {
+            const ar = await fetch(`/api/agents/${encodeURIComponent(data.agentId)}`);
+            if (ar.ok) {
+              const agent = await ar.json() as { ownerWalletId?: string };
+              if (agent.ownerWalletId) setOwnerWalletId(agent.ownerWalletId);
+            }
+          } catch { /* non-fatal */ }
+        }
       })
       .catch(() => router.replace("/app/login"));
   }, [router]);
@@ -172,7 +191,7 @@ export default function CustomerMandatesPage() {
       {showCreate && (
         <MandateCreateModal
           agentId={session.agentId}
-          ownerWalletId={session.ownerAddress}
+          ownerWalletId={ownerWalletId}
           onCreated={() => { setShowCreate(false); loadMandates(); }}
           onClose={() => setShowCreate(false)}
         />
