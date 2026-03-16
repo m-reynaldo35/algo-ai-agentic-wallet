@@ -45,7 +45,10 @@ function serializeAssertion(assertion: PublicKeyCredential) {
 }
 
 export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, onClose }: Props) {
-  const [authMethod,   setAuthMethod]   = useState<AuthMethod>("liquid");
+  // Default to WebAuthn if the agent is passkey-only (no Algorand address as owner)
+  const [authMethod,   setAuthMethod]   = useState<AuthMethod>(
+    ownerWalletId.startsWith("webauthn:") ? "webauthn" : "liquid",
+  );
   const [sessionId,    setSessionId]    = useState<string | null>(null);
   const [showQR,       setShowQR]       = useState(false);
 

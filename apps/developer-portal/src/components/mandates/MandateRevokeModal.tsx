@@ -66,7 +66,10 @@ function formatExpiry(expiresAt?: number | string | null): string {
 }
 
 export default function MandateRevokeModal({ agentId, mandate, onRevoked, onClose }: Props) {
-  const [authMethod, setAuthMethod] = useState<AuthMethod>("liquid");
+  // Default to WebAuthn if the mandate was created by a passkey-only user
+  const [authMethod, setAuthMethod] = useState<AuthMethod>(
+    mandate.ownerWalletId?.startsWith("webauthn:") ? "webauthn" : "liquid",
+  );
   const [showQR,     setShowQR]     = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error,      setError]      = useState("");
