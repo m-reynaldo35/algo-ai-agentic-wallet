@@ -7,25 +7,79 @@ import MandateTable, { type MandateRecord } from "@/components/mandates/MandateT
 import MandateCreateModal from "@/components/mandates/MandateCreateModal";
 import MandateRevokeModal from "@/components/mandates/MandateRevokeModal";
 
-interface Session {
-  agentId?: string;
-  ownerAddress: string;
+interface AgentSummary {
+  agentId:  string;
+  status?:  string;
+  address?: string;
 }
+
+interface Session {
+  agentId?:     string;
+  ownerAddress: string;
+  agents?:      AgentSummary[];
+}
+
+// ── Agent picker — shown when no ?agent= param and the user has multiple agents ──
+
+function AgentPicker({
+  agents,
+  onPick,
+}: {
+  agents:  AgentSummary[];
+  onPick:  (agentId: string) => void;
+}) {
+  return (
+    <div className="max-w-md mx-auto px-4 py-16 text-center space-y-6">
+      <div>
+        <h1 className="text-white font-semibold text-lg">Select an Agent</h1>
+        <p className="text-zinc-500 text-sm mt-1">
+          Choose which agent wallet you want to manage mandates for.
+        </p>
+      </div>
+      <div className="space-y-2">
+        {agents.map((a) => (
+          <button
+            key={a.agentId}
+            onClick={() => onPick(a.agentId)}
+            className="w-full flex items-center gap-3 px-4 py-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 rounded-lg transition-colors group"
+          >
+            <div className={`w-2 h-2 rounded-full shrink-0 ${
+              a.status === "active" || a.status === "registered"
+                ? "bg-emerald-400"
+                : a.status === "pending"
+                ? "bg-amber-400 animate-pulse"
+                : "bg-zinc-600"
+            }`} />
+            <span className="font-mono text-sm text-zinc-300 group-hover:text-white transition-colors flex-1 text-left">
+              {a.agentId}
+            </span>
+            <svg className="w-4 h-4 text-zinc-600 group-hover:text-zinc-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Main mandates view ───────────────────────────────────────────────────────
 
 function MandatesContent() {
   const router       = useRouter();
   const searchParams = useSearchParams();
 
   // agentId from ?agent= query param (set by nav link from dashboard) OR session fallback
-  const [agentId,      setAgentId]      = useState(searchParams.get("agent") ?? "");
+  const [agentId,       setAgentId]       = useState(searchParams.get("agent") ?? "");
   const [ownerWalletId, setOwnerWalletId] = useState("");
-  const [mandates,     setMandates]     = useState<MandateRecord[]>([]);
-  const [ready,        setReady]        = useState(false);
-  const [loading,      setLoading]      = useState(true);
-  const [error,        setError]        = useState("");
-  const [showCreate,   setShowCreate]   = useState(false);
-  const [revokeTarget, setRevokeTarget] = useState<MandateRecord | null>(null);
-  const [filter,       setFilter]       = useState<"all" | "active" | "revoked">("active");
+  const [mandates,      setMandates]      = useState<MandateRecord[]>([]);
+  const [ready,         setReady]         = useState(false);
+  const [loading,       setLoading]       = useState(true);
+  const [error,         setError]         = useState("");
+  const [showCreate,    setShowCreate]    = useState(false);
+  const [revokeTarget,  setRevokeTarget]  = useState<MandateRecord | null>(null);
+  const [filter,        setFilter]        = useState<"all" | "active" | "revoked">("active");
+  const [pickAgents,    setPickAgents]    = useState<AgentSummary[] | null>(null);
 
   // Resolve agentId + ownerWalletId from session / agent record
   useEffect(() => {
@@ -36,15 +90,31 @@ function MandatesContent() {
 
         // agentId priority: URL param → session.agentId
         const resolvedAgentId = agentId || data.agentId || "";
-        if (!resolvedAgentId) { router.replace("/app/login"); return; }
+
+        // No specific agent — show a picker if the user has multiple, else redirect
+        if (!resolvedAgentId) {
+          const agents = data.agents ?? [];
+          const active = agents.filter((a) => a.status !== "pending");
+          if (active.length === 1) {
+            // Auto-select the only active agent
+            setAgentId(active[0].agentId);
+            return; // re-run via agentId state change
+          } else if (agents.length > 0) {
+            setPickAgents(agents);
+            return;
+          }
+          router.replace("/app/login");
+          return;
+        }
+
         setAgentId(resolvedAgentId);
 
-        // Fetch the agent to get its ownerWalletId (works for both Pera and WebAuthn users)
+        // Fetch the agent record to get its ownerWalletId
+        // (works for both Pera and WebAuthn users)
         try {
           const ar = await fetch(`/api/agents/${encodeURIComponent(resolvedAgentId)}`);
           if (ar.ok) {
             const agent = await ar.json() as { ownerWalletId?: string; ownerAddress?: string };
-            // Prefer agent's ownerWalletId; fall back to session ownerAddress for Pera users
             const wid = agent.ownerWalletId || data.ownerAddress || "";
             setOwnerWalletId(wid);
           } else if (data.ownerAddress && !data.ownerAddress.startsWith("webauthn:")) {
@@ -83,6 +153,19 @@ function MandatesContent() {
   const activeCount  = mandates.filter((m) => m.status === "active").length;
   const revokedCount = mandates.filter((m) => m.status === "revoked").length;
 
+  // Show agent picker when no specific agent is selected
+  if (pickAgents) {
+    return (
+      <AgentPicker
+        agents={pickAgents}
+        onPick={(id) => {
+          setPickAgents(null);
+          setAgentId(id);
+        }}
+      />
+    );
+  }
+
   if (!ready) return null;
 
   return (
@@ -93,7 +176,8 @@ function MandatesContent() {
         <div>
           <h1 className="text-white font-semibold text-lg">Mandates</h1>
           <p className="text-zinc-500 text-sm mt-0.5">
-            Authorise and manage your agent&apos;s spending limits. Every change requires wallet or passkey verification.
+            <span className="font-mono text-zinc-400">{agentId}</span>
+            {" · "}authorise and manage spending limits. Every change requires wallet or passkey verification.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -105,7 +189,7 @@ function MandatesContent() {
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
               </svg>
-              Top Up
+              Dashboard
             </Link>
           )}
           <button

@@ -21,8 +21,11 @@
 import { type NextRequest, NextResponse } from "next/server";
 import {
   signCustomerSession,
+  verifyCustomerSession,
   CUSTOMER_SESSION_COOKIE,
 } from "@/lib/customerSession";
+
+const MAX_AGENT_IDS = 50;
 
 export const runtime = "nodejs";
 
@@ -117,7 +120,17 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const token = await signCustomerSession({ agentId, ownerAddress: result.ownerWalletId });
+  // Preserve agentIds accumulated in the existing session so that logging in
+  // with one agent does not wipe the full multi-agent list from the cookie.
+  const existingToken = req.cookies.get(CUSTOMER_SESSION_COOKIE)?.value;
+  const existingSession = existingToken ? await verifyCustomerSession(existingToken) : null;
+  const prevIds: string[] = [
+    ...(existingSession?.agentIds ?? []),
+    ...(existingSession?.agentId ? [existingSession.agentId] : []),
+  ];
+  const agentIds = Array.from(new Set([...prevIds, agentId])).slice(0, MAX_AGENT_IDS);
+
+  const token = await signCustomerSession({ agentId, agentIds, ownerAddress: result.ownerWalletId });
   const res = NextResponse.json({ ok: true, agentId, ownerAddress: result.ownerWalletId });
   setCookie(res, token);
   return res;

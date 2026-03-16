@@ -89,7 +89,8 @@ export async function POST(req: NextRequest) {
     ...(existingSession?.agentIds ?? []),
     ...(existingSession?.agentId ? [existingSession.agentId] : []),
   ];
-  const agentIds = Array.from(new Set([...prevIds, agentId]));
+  const MAX_AGENT_IDS = 50;
+  const agentIds = Array.from(new Set([...prevIds, agentId])).slice(0, MAX_AGENT_IDS);
 
   const token = await signCustomerSession({ agentId, agentIds, ownerAddress: ownerAddr });
 

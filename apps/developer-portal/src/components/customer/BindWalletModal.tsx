@@ -175,7 +175,17 @@ export default function BindWalletModal({ agentId, onDone, onClose }: Props) {
         <LiquidAuthQRModal
           agentId={agentId}
           intent="register"
-          onVerified={() => { setShowQR(false); onDone(); }}
+          onVerified={async () => {
+            // Refresh the session cookie to include this agentId so the agent
+            // appears in the list immediately without a full re-login.
+            await fetch("/api/customer/auth/session-refresh", {
+              method:  "POST",
+              headers: { "Content-Type": "application/json" },
+              body:    JSON.stringify({ agentId }),
+            }).catch(() => {/* non-fatal — agent will appear on next full session load */});
+            setShowQR(false);
+            onDone();
+          }}
           onClose={() => setShowQR(false)}
         />
       )}

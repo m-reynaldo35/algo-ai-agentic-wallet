@@ -117,7 +117,8 @@ export async function GET(req: NextRequest) {
   // Self-heal: write a corrected session cookie so the corruption doesn't repeat
   if (sessionHealed) {
     const healedToken = await signCustomerSession({
-      agentId: payload.agentId,
+      agentId:  payload.agentId,
+      agentIds: payload.agentIds,   // preserve the full multi-agent list
       ownerAddress,
     });
     responseBody.cookies.set(CUSTOMER_SESSION_COOKIE, healedToken, {

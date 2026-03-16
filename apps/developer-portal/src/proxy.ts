@@ -58,7 +58,29 @@ export async function proxy(req: NextRequest) {
   const customerToken = req.cookies.get(CUSTOMER_SESSION_COOKIE)?.value;
   if (customerToken) {
     const payload = await verifyCustomerSession(customerToken);
-    if (payload) return NextResponse.next();
+    if (payload) {
+      // Ownership gate for mandate endpoints.
+      // Mandate create/revoke are the most sensitive operations — restrict them
+      // to agents the session holder owns. Pera sessions (ownerAddress is an
+      // Algorand address) are allowed through; their ownership is enforced by
+      // the backend's ownerWalletId + Pera session verification. Only WebAuthn
+      // sessions with a non-empty agentIds list are restricted here.
+      const mandateMatch = pathname.match(/^\/api\/agents\/([^/]+)\/mandate/);
+      if (mandateMatch) {
+        const requestedId     = decodeURIComponent(mandateMatch[1]);
+        const isPeraSession   = payload.ownerAddress &&
+          !payload.ownerAddress.startsWith("webauthn:") &&
+          payload.ownerAddress !== "";
+        const knownIds = new Set([
+          ...(payload.agentIds ?? []),
+          ...(payload.agentId ? [payload.agentId] : []),
+        ]);
+        if (!isPeraSession && knownIds.size > 0 && !knownIds.has(requestedId)) {
+          return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+        }
+      }
+      return NextResponse.next();
+    }
   }
 
   // Customer-only routes — reject if no valid customer session

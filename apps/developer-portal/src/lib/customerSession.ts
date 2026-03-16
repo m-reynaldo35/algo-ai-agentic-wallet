@@ -7,8 +7,13 @@ function getSecret(): Uint8Array {
   const raw =
     process.env.CUSTOMER_SESSION_SECRET ||
     process.env.PORTAL_SESSION_SECRET ||
-    process.env.PORTAL_API_SECRET ||
     "dev-secret-change-in-production";
+  if (process.env.NODE_ENV === "production" && raw === "dev-secret-change-in-production") {
+    // Loud warning — operator must set CUSTOMER_SESSION_SECRET in production.
+    // Do NOT fall back to PORTAL_API_SECRET: the two secrets must be independent
+    // so rotating one does not silently invalidate the other.
+    console.error("[SECURITY] CUSTOMER_SESSION_SECRET is not configured. Customer sessions are insecure.");
+  }
   return new TextEncoder().encode(raw);
 }
 

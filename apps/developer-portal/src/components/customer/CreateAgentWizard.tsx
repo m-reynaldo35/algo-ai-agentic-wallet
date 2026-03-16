@@ -397,7 +397,10 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
   const totalSteps = 5;
 
   function handleClose() {
-    if (window.confirm("Are you sure you wish to cancel? Your agent will remain in a pending state.")) {
+    const msg = step >= 4
+      ? "Your agent is already active on-chain. If you exit now it won't be linked to a wallet — you can complete this from the agent dashboard. Exit anyway?"
+      : "Are you sure you want to cancel? Your agent will remain in a pending state until you fund it.";
+    if (window.confirm(msg)) {
       onClose();
     }
   }
