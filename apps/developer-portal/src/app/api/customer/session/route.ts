@@ -51,37 +51,38 @@ export async function GET(req: NextRequest) {
       sessionHealed = true;
     } else if (payload.agentId || payload.agentIds?.length) {
       // WebAuthn-only user: no Algorand address yet.
-      // First, try the backend ownerWalletId index to get ALL agents bound to this passkey.
-      let agentEntries: unknown[] = [];
+      // Collect agentIds from the JWT (accumulated across all registrations).
+      const jwtIds = Array.from(new Set([
+        ...(payload.agentIds ?? []),
+        ...(payload.agentId ? [payload.agentId] : []),
+      ]));
+
+      // Also query the backend ownerWalletId index — may find agents registered
+      // under the same credential but not yet in this JWT.
+      let indexIds: string[] = [];
       try {
-        const ownerWalletId = ownerAddress; // still "webauthn:credentialId"
         const r = await fetch(
-          `${API_URL}/api/agents?ownerWalletId=${encodeURIComponent(ownerWalletId)}`,
+          `${API_URL}/api/agents?ownerWalletId=${encodeURIComponent(ownerAddress)}`,
           { headers: authHeaders },
         );
         if (r.ok) {
-          const data = await r.json() as { agents?: unknown[] };
-          agentEntries = data.agents ?? [];
+          const data = await r.json() as { agents?: Array<{ agentId?: string }> };
+          indexIds = (data.agents ?? []).map((a) => a.agentId).filter(Boolean) as string[];
         }
-      } catch { /* fall through to JWT-based lookup */ }
+      } catch { /* non-fatal */ }
 
-      // Fallback: fetch by agentIds stored in JWT (covers agents not yet indexed)
-      if (agentEntries.length === 0) {
-        const allIds = Array.from(new Set([
-          ...(payload.agentIds ?? []),
-          ...(payload.agentId ? [payload.agentId] : []),
-        ]));
-        agentEntries = (
-          await Promise.all(
-            allIds.map(async (id) => {
-              try {
-                const ar = await fetch(`${API_URL}/api/agents/${encodeURIComponent(id)}`, { headers: authHeaders });
-                return ar.ok ? ar.json() : null;
-              } catch { return null; }
-            }),
-          )
-        ).filter(Boolean);
-      }
+      // Union of both sources — JWT is authoritative for agents across different credentials
+      const allIds = Array.from(new Set([...jwtIds, ...indexIds]));
+      const agentEntries = (
+        await Promise.all(
+          allIds.map(async (id) => {
+            try {
+              const ar = await fetch(`${API_URL}/api/agents/${encodeURIComponent(id)}`, { headers: authHeaders });
+              return ar.ok ? ar.json() : null;
+            } catch { return null; }
+          }),
+        )
+      ).filter(Boolean);
 
       return NextResponse.json({
         ownerAddress: "",
