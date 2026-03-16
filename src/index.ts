@@ -1496,7 +1496,11 @@ app.get("/api/agents/:agentId", requirePortalAuth, async (req, res) => {
       return;
     }
 
-    res.json(agent);
+    // Strip the raw COSE public key — it is only needed server-side for
+    // WebAuthn assertion verification and should not be exposed to clients.
+    // webauthnCredentialId is kept (already exposed via mandate challenge).
+    const { webauthnPublicKey: _stripped, ...safeAgent } = agent;
+    res.json(safeAgent);
   } catch (err) {
     console.error("[agents/get]", err);
     res.status(500).json({ error: "Failed to fetch agent" });

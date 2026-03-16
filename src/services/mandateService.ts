@@ -980,6 +980,10 @@ export async function verifyAndRegisterWebAuthn(
     webauthnCounter:      counter,
   });
 
+  // Keep the WebAuthn owner index up to date so listAgentsByWebAuthnOwner
+  // can find this agent without a full Redis scan.
+  await indexWebAuthnOwner(ownerWalletId, agentId).catch(() => {/* non-fatal */});
+
   console.log(`[MandateService] WebAuthn credential registered: agent=${agentId} credId=${credentialID.slice(0, 16)}…`);
   return { ownerWalletId, credentialId: credentialID };
 }
