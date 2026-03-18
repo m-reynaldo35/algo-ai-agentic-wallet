@@ -83,54 +83,43 @@ function MandatesContent() {
   const [filter,        setFilter]        = useState<"all" | "active" | "revoked">("active");
   const [pickAgents,    setPickAgents]    = useState<AgentSummary[] | null>(null);
 
-  // Resolve agentId + ownerWalletId from session / agent record
+  // Effect 1: resolve agentId from session (runs once on mount)
   useEffect(() => {
     fetch("/api/customer/session")
       .then((r) => (r.ok ? r.json() : null))
-      .then(async (data: Session | null) => {
+      .then((data: Session | null) => {
         if (!data) { router.replace("/app/login"); return; }
 
-        // agentId priority: URL param → session.agentId
         const resolvedAgentId = agentId || data.agentId || "";
 
-        // No specific agent — show a picker if the user has multiple, else redirect
         if (!resolvedAgentId) {
           const agents = data.agents ?? [];
           const active = agents.filter((a) => a.status !== "pending");
-          if (active.length === 1) {
-            // Auto-select the only active agent
-            setAgentId(active[0].agentId);
-            return; // re-run via agentId state change
-          } else if (agents.length > 0) {
-            setPickAgents(agents);
-            return;
-          }
+          if (active.length === 1) { setAgentId(active[0].agentId); return; }
+          if (agents.length > 0)   { setPickAgents(agents); return; }
           router.replace("/app/login");
           return;
         }
 
-        setAgentId(resolvedAgentId);
-
-        // Seed immediately from the session agents list (WebAuthn users get full
-        // agent objects back in the session response — no extra round-trip needed)
-        const sessionAgent = (data.agents ?? []).find((a) => a.agentId === resolvedAgentId);
-        if (sessionAgent?.ownerWalletId) setOwnerWalletId(sessionAgent.ownerWalletId);
-        if (sessionAgent?.address)       setAgentAddress(sessionAgent.address);
-
-        // Confirm / override with a fresh agent fetch (more authoritative)
-        try {
-          const ar = await fetch(`/api/agents/${encodeURIComponent(resolvedAgentId)}`);
-          if (ar.ok) {
-            const agent = await ar.json() as { ownerWalletId?: string; address?: string };
-            if (agent.ownerWalletId) setOwnerWalletId(agent.ownerWalletId);
-            if (agent.address)       setAgentAddress(agent.address);
-          }
-        } catch { /* use session-seeded values */ }
-
-        setReady(true);
+        if (resolvedAgentId !== agentId) setAgentId(resolvedAgentId);
       })
       .catch(() => router.replace("/app/login"));
-  }, [router, agentId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Effect 2: fetch agent record whenever agentId is known — mirrors dashboard pattern
+  useEffect(() => {
+    if (!agentId) return;
+    fetch(`/api/agents/${agentId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((agent: { ownerWalletId?: string; address?: string } | null) => {
+        if (!agent) return;
+        setOwnerWalletId(agent.ownerWalletId ?? "");
+        setAgentAddress(agent.address ?? "");
+        setReady(true);
+      })
+      .catch(() => setReady(true));
+  }, [agentId]);
 
   const loadMandates = useCallback(async () => {
     if (!agentId) return;
