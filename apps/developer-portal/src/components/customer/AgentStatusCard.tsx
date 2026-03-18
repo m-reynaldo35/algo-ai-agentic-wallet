@@ -13,6 +13,7 @@ interface AgentInfo {
   custody?: "rocca" | "user";
   ownerWalletId?: string;
   webauthnPublicKey?: string;
+  webauthnCredentialId?: string;
   registeredAt?: string;
   createdAt?: string;
 }
@@ -76,7 +77,8 @@ export default function AgentStatusCard({ agentId, agent, error, onRegister }: P
 
   // Auth method derivation
   const hasLiquidAuth  = !!agent?.ownerWalletId && !agent.ownerWalletId.startsWith("webauthn:");
-  const hasPasskey     = !!agent?.webauthnPublicKey;
+  const hasPasskey     = !!agent?.webauthnCredentialId;
+  const hasAnyAuth     = hasLiquidAuth || hasPasskey;
 
   // Custody label
   const custodyLabel = agent?.custody === "user"
@@ -150,39 +152,28 @@ export default function AgentStatusCard({ agentId, agent, error, onRegister }: P
               <label className="block text-xs text-zinc-600 mb-2">Auth Methods</label>
               <div className="space-y-1.5">
                 {/* Algorand Wallet row */}
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <CheckIcon ok={hasLiquidAuth} />
-                    <span className={`text-xs truncate ${hasLiquidAuth ? "text-zinc-300" : "text-zinc-600"}`}>
-                      Algorand Wallet (Pera / Defly QR)
-                    </span>
-                  </div>
-                  {!hasLiquidAuth && onRegister && (
-                    <button
-                      onClick={onRegister}
-                      className="shrink-0 text-[11px] text-red-400 hover:text-red-300 border border-red-900/60 hover:border-red-700/80 px-2 py-0.5 rounded transition-colors leading-tight"
-                    >
-                      Register →
-                    </button>
-                  )}
+                <div className="flex items-center gap-2 min-w-0">
+                  <CheckIcon ok={hasLiquidAuth} />
+                  <span className={`text-xs truncate ${hasLiquidAuth ? "text-zinc-300" : "text-zinc-600"}`}>
+                    Algorand Wallet (Pera / Defly QR)
+                  </span>
                 </div>
                 {/* Device Passkey row */}
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <CheckIcon ok={hasPasskey} />
-                    <span className={`text-xs truncate ${hasPasskey ? "text-zinc-300" : "text-zinc-600"}`}>
-                      Device Passkey (Touch ID / Face ID / YubiKey)
-                    </span>
-                  </div>
-                  {!hasPasskey && onRegister && (
-                    <button
-                      onClick={onRegister}
-                      className="shrink-0 text-[11px] text-red-400 hover:text-red-300 border border-red-900/60 hover:border-red-700/80 px-2 py-0.5 rounded transition-colors leading-tight"
-                    >
-                      Register →
-                    </button>
-                  )}
+                <div className="flex items-center gap-2 min-w-0">
+                  <CheckIcon ok={hasPasskey} />
+                  <span className={`text-xs truncate ${hasPasskey ? "text-zinc-300" : "text-zinc-600"}`}>
+                    Device Passkey (Touch ID / Face ID / YubiKey)
+                  </span>
                 </div>
+                {/* Single register button — only when no auth method is bound */}
+                {!hasAnyAuth && onRegister && (
+                  <button
+                    onClick={onRegister}
+                    className="mt-1 text-[11px] text-red-400 hover:text-red-300 border border-red-900/60 hover:border-red-700/80 px-2 py-0.5 rounded transition-colors leading-tight"
+                  >
+                    Register →
+                  </button>
+                )}
               </div>
             </div>
           )}
