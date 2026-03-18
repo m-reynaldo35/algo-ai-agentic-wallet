@@ -7,7 +7,6 @@ import {
   useState,
 } from "react";
 import QRCode from "qrcode";
-import BindWalletModal from "@/components/customer/BindWalletModal";
 
 const NETWORK        = process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? "testnet";
 const USDC_ASSET_ID  = NETWORK === "mainnet" ? 31566704 : 10458941;
@@ -385,15 +384,11 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
   const [genError, setGenError]     = useState("");
   const [generating, setGenerating] = useState(false);
 
-  // Algorand wallet users have proved ownership via Liquid Auth — skip the bind step.
-  // Passkey users still need step 5 to run the adopt flow, which copies the
-  // WebAuthn credential to the new agent so mandate operations work.
-  const ownerAlreadyKnown = !!ownerAddress && !ownerAddress.startsWith("webauthn:");
-  const totalSteps = ownerAlreadyKnown ? 4 : 5;
+  const totalSteps = 4;
 
   function handleClose() {
     const msg = step >= 4
-      ? "Your agent is already active on-chain. If you exit now it won't be linked to a wallet — you can complete this from the agent dashboard. Exit anyway?"
+      ? "Your agent is already active on-chain. Exit anyway?"
       : "Are you sure you want to cancel? Your agent will remain in a pending state until you fund it.";
     if (window.confirm(msg)) {
       onClose();
@@ -411,8 +406,6 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
         body:    JSON.stringify({
           agentId: id,
           ownerAddress,
-          // ownerWalletId ensures the agent is owned from creation for both
-          // Algorand wallet users (Algorand address) and passkey users (webauthn:…)
           ...(ownerAddress ? { ownerWalletId: ownerAddress } : {}),
         }),
       });
@@ -425,18 +418,6 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
     } finally {
       setGenerating(false);
     }
-  }
-
-  // Step 5: BindWalletModal — only shown for users with no known owner identity.
-  // Passkey users and Algorand wallet users skip this step (ownership already set at creation).
-  if (step === 5 && createData && !ownerAlreadyKnown) {
-    return (
-      <BindWalletModal
-        agentId={agentId}
-        onDone={onCreated}
-        onClose={handleClose}
-      />
-    );
   }
 
   return (
@@ -495,7 +476,7 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
             <Step4
               agentId={agentId}
               address={createData.address}
-              onDone={() => ownerAlreadyKnown ? onCreated() : setStep(5)}
+              onDone={() => onCreated()}
             />
           )}
         </div>

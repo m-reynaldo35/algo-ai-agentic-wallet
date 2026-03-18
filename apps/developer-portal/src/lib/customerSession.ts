@@ -19,10 +19,6 @@ function getSecret(): Uint8Array {
 
 export interface CustomerSessionPayload {
   ownerAddress: string;
-  /** Legacy: single-agent sessions include agentId. Portfolio sessions omit it. */
-  agentId?: string;
-  /** Multi-agent WebAuthn sessions accumulate agentIds here. */
-  agentIds?: string[];
   /** JWT expiry (seconds since epoch) — returned by verifyCustomerSession for refresh logic. */
   exp?: number;
 }
@@ -45,10 +41,6 @@ export async function verifyCustomerSession(
     if (typeof payload.ownerAddress !== "string") return null;
     return {
       ownerAddress: payload.ownerAddress,
-      agentId:  typeof payload.agentId === "string" ? payload.agentId : undefined,
-      agentIds: Array.isArray(payload.agentIds)
-        ? (payload.agentIds as string[]).filter((id) => typeof id === "string")
-        : undefined,
       exp: typeof payload.exp === "number" ? payload.exp : undefined,
     };
   } catch {

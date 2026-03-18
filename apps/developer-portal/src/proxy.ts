@@ -25,7 +25,6 @@ const PUBLIC_PATHS = new Set([
   "/app/create",          // new agent creation wizard (no session required)
   "/api/customer/auth/login",
   "/api/customer/auth/logout",
-  "/api/customer/auth/webauthn-register",
   "/docs",
   "/monitoring", // Sentry tunnel
   "/favicon.ico",
@@ -60,22 +59,13 @@ export async function proxy(req: NextRequest) {
     const payload = await verifyCustomerSession(customerToken);
     if (payload) {
       // Ownership gate for mandate endpoints.
-      // Mandate create/revoke are the most sensitive operations — restrict them
-      // to agents the session holder owns. Pera sessions (ownerAddress is an
-      // Algorand address) are allowed through; their ownership is enforced by
-      // the backend's ownerWalletId + Pera session verification. Only WebAuthn
-      // sessions with a non-empty agentIds list are restricted here.
+      // Mandate create/revoke are the most sensitive operations — their
+      // ownership is enforced by the backend's ownerWalletId + Pera session
+      // verification. The customer session only needs to be valid and carry
+      // a real Algorand address (not a legacy webauthn: prefix).
       const mandateMatch = pathname.match(/^\/api\/agents\/([^/]+)\/mandate/);
       if (mandateMatch) {
-        const requestedId     = decodeURIComponent(mandateMatch[1]);
-        const isPeraSession   = payload.ownerAddress &&
-          !payload.ownerAddress.startsWith("webauthn:") &&
-          payload.ownerAddress !== "";
-        const knownIds = new Set([
-          ...(payload.agentIds ?? []),
-          ...(payload.agentId ? [payload.agentId] : []),
-        ]);
-        if (!isPeraSession && knownIds.size > 0 && !knownIds.has(requestedId)) {
+        if (!payload.ownerAddress || payload.ownerAddress.startsWith("webauthn:")) {
           return NextResponse.json({ error: "Forbidden" }, { status: 403 });
         }
       }

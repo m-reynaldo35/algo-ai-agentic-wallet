@@ -11,39 +11,6 @@ interface Props {
   onClose:   () => void;
 }
 
-type AuthMethod = "liquid" | "webauthn";
-
-function bufToBase64url(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let str = "";
-  for (const b of bytes) str += String.fromCharCode(b);
-  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
-}
-
-function base64urlToBuf(b64: string): ArrayBuffer {
-  const padded = b64.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(b64.length / 4) * 4, "=");
-  const str = atob(padded);
-  const buf = new ArrayBuffer(str.length);
-  const view = new Uint8Array(buf);
-  for (let i = 0; i < str.length; i++) view[i] = str.charCodeAt(i);
-  return buf;
-}
-
-function serializeAssertion(assertion: PublicKeyCredential) {
-  const resp = assertion.response as AuthenticatorAssertionResponse;
-  return {
-    id:       assertion.id,
-    rawId:    bufToBase64url(assertion.rawId),
-    type:     assertion.type,
-    response: {
-      authenticatorData: bufToBase64url(resp.authenticatorData),
-      clientDataJSON:    bufToBase64url(resp.clientDataJSON),
-      signature:         bufToBase64url(resp.signature),
-      userHandle:        resp.userHandle ? bufToBase64url(resp.userHandle) : null,
-    },
-  };
-}
-
 function microUsdcToUsdc(val: string | number | undefined): string {
   if (val === undefined || val === null) return "—";
   try {
@@ -66,10 +33,6 @@ function formatExpiry(expiresAt?: number | string | null): string {
 }
 
 export default function MandateRevokeModal({ agentId, mandate, onRevoked, onClose }: Props) {
-  // Default to WebAuthn if the mandate was created by a passkey-only user
-  const [authMethod, setAuthMethod] = useState<AuthMethod>(
-    mandate.ownerWalletId?.startsWith("webauthn:") ? "webauthn" : "liquid",
-  );
   const [showQR,     setShowQR]     = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error,      setError]      = useState("");
@@ -81,7 +44,7 @@ export default function MandateRevokeModal({ agentId, mandate, onRevoked, onClos
       const res = await fetch(`/api/agents/${agentId}/mandate/${mandate.mandateId}/revoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // ownerWalletId is required by the server for both auth paths
+        // ownerWalletId is required by the server
         body: JSON.stringify({ ownerWalletId: mandate.ownerWalletId, ...body }),
       });
       if (!res.ok) {
@@ -92,42 +55,6 @@ export default function MandateRevokeModal({ agentId, mandate, onRevoked, onClos
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleWebAuthn() {
-    if (!window.PublicKeyCredential) {
-      setError("Passkeys are not supported in this browser.");
-      return;
-    }
-    setSubmitting(true);
-    setError("");
-    try {
-      const challengeRes = await fetch(`/api/agents/${agentId}/mandate/challenge`, { method: "POST" });
-      if (!challengeRes.ok) throw new Error(`Challenge failed: HTTP ${challengeRes.status}`);
-      const { challenge: nonce, allowCredentials } = await challengeRes.json() as { challenge: string; allowCredentials?: { id: string; type: string }[] };
-
-      // Server verifies the raw nonce directly — pass it straight to the authenticator
-      const challengeBuf = base64urlToBuf(nonce);
-
-      const assertion = await navigator.credentials.get({
-        publicKey: {
-          challenge:        challengeBuf,
-          allowCredentials: (allowCredentials || []).map((c: { id: string; type: string }) => ({
-            id:   base64urlToBuf(c.id),
-            type: c.type as PublicKeyCredentialType,
-          })),
-          timeout:          60_000,
-          userVerification: "preferred",
-        },
-      }) as PublicKeyCredential | null;
-
-      if (!assertion) throw new Error("Passkey authentication cancelled.");
-
-      await revokeWithSession({ webauthnAssertion: serializeAssertion(assertion) });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
       setSubmitting(false);
     }
   }
@@ -170,26 +97,6 @@ export default function MandateRevokeModal({ agentId, mandate, onRevoked, onClos
             </div>
           </div>
 
-          {/* Auth method toggle */}
-          <div className="flex gap-2 mb-5 p-1 bg-zinc-800 rounded-md">
-            <button
-              onClick={() => setAuthMethod("liquid")}
-              className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${
-                authMethod === "liquid" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"
-              }`}
-            >
-              Wallet QR
-            </button>
-            <button
-              onClick={() => setAuthMethod("webauthn")}
-              className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${
-                authMethod === "webauthn" ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-white"
-              }`}
-            >
-              Passkey
-            </button>
-          </div>
-
           {/* Warning */}
           <p className="text-sm text-amber-400 mb-4">
             This will permanently revoke the mandate. The agent will no longer be able to use it.
@@ -202,23 +109,13 @@ export default function MandateRevokeModal({ agentId, mandate, onRevoked, onClos
 
           {/* Actions */}
           <div className="flex gap-3">
-            {authMethod === "liquid" ? (
-              <button
-                onClick={() => setShowQR(true)}
-                disabled={submitting}
-                className="flex-1 py-2 rounded-md bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-              >
-                Revoke via Wallet QR
-              </button>
-            ) : (
-              <button
-                onClick={handleWebAuthn}
-                disabled={submitting}
-                className="flex-1 py-2 rounded-md bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-              >
-                {submitting ? "Revoking…" : "Sign & Revoke"}
-              </button>
-            )}
+            <button
+              onClick={() => setShowQR(true)}
+              disabled={submitting}
+              className="flex-1 py-2 rounded-md bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+            >
+              Revoke via Wallet QR
+            </button>
             <button
               onClick={onClose}
               className="flex-1 py-2 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm font-medium transition-colors"

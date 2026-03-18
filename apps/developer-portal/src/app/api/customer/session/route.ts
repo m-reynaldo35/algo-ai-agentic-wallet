@@ -21,8 +21,6 @@ async function maybeRefreshCookie(
   if (secsRemaining < 4 * 60 * 60) {
     const newToken = await signCustomerSession({
       ownerAddress: payload.ownerAddress,
-      agentId:      payload.agentId,
-      agentIds:     payload.agentIds,
     });
     res.cookies.set(CUSTOMER_SESSION_COOKIE, newToken, {
       httpOnly: true,
@@ -45,78 +43,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Invalid session" }, { status: 401 });
   }
 
+  const ownerAddress = payload.ownerAddress;
+
+  // Stale session from old WebAuthn-based flow — force re-authentication
+  if (!ownerAddress || ownerAddress.startsWith("webauthn:")) {
+    return NextResponse.json({ error: "Stale session — please sign in again" }, { status: 401 });
+  }
+
   const portalSecret = process.env.PORTAL_API_SECRET || "";
   const authHeaders: Record<string, string> = {
     "Content-Type": "application/json",
     ...(portalSecret ? { "X-Portal-Key": portalSecret } : {}),
   };
-
-  // If ownerAddress was corrupted to a "webauthn:…" string (by an older version of
-  // the webauthn-register route), attempt recovery or force re-authentication.
-  let ownerAddress = payload.ownerAddress;
-  let sessionHealed = false;
-  if (ownerAddress.startsWith("webauthn:")) {
-    let recovered = "";
-    if (payload.agentId) {
-      try {
-        const ar = await fetch(`${API_URL}/api/agents/${encodeURIComponent(payload.agentId)}`, {
-          headers: authHeaders,
-        });
-        if (ar.ok) {
-          const agentData = await ar.json() as { ownerWalletId?: string };
-          if (agentData.ownerWalletId && !agentData.ownerWalletId.startsWith("webauthn:")) {
-            recovered = agentData.ownerWalletId;
-          }
-        }
-      } catch { /* non-fatal */ }
-    }
-
-    if (recovered) {
-      ownerAddress = recovered;
-      sessionHealed = true;
-    } else {
-      // WebAuthn-only user: no Algorand address (yet).
-      // This path is reached both from legacy per-agent sessions (agentId in JWT)
-      // and from owner-level passkey login (only ownerAddress in JWT, no agentId).
-      // Always query the ownerWalletId index so we find all linked agents.
-      const jwtIds = Array.from(new Set([
-        ...(payload.agentIds ?? []),
-        ...(payload.agentId ? [payload.agentId] : []),
-      ]));
-
-      // Backend index lookup — canonical source for owner-level passkey sessions
-      let indexIds: string[] = [];
-      try {
-        const r = await fetch(
-          `${API_URL}/api/agents?ownerWalletId=${encodeURIComponent(ownerAddress)}`,
-          { headers: authHeaders },
-        );
-        if (r.ok) {
-          const data = await r.json() as { agents?: Array<{ agentId?: string }> };
-          indexIds = (data.agents ?? []).map((a) => a.agentId).filter(Boolean) as string[];
-        }
-      } catch { /* non-fatal */ }
-
-      const allIds = Array.from(new Set([...jwtIds, ...indexIds]));
-      const agentEntries = (
-        await Promise.all(
-          allIds.map(async (id) => {
-            try {
-              const ar = await fetch(`${API_URL}/api/agents/${encodeURIComponent(id)}`, { headers: authHeaders });
-              return ar.ok ? ar.json() : null;
-            } catch { return null; }
-          }),
-        )
-      ).filter(Boolean);
-
-      // Return the webauthn: ownerAddress so the dashboard can show pk-XXXX-XXXX
-      return NextResponse.json({
-        ownerAddress: payload.ownerAddress,
-        agentId: payload.agentId,
-        agents: agentEntries,
-      });
-    }
-  }
 
   // Fetch agents owned by this address from the backend
   let agents: unknown[] = [];
@@ -131,30 +69,10 @@ export async function GET(req: NextRequest) {
     }
   } catch { /* non-fatal — return empty list */ }
 
-  const responseBody = NextResponse.json({
-    ownerAddress,
-    agentId: payload.agentId,    // present on legacy per-agent sessions
-    agents,
-  });
+  const responseBody = NextResponse.json({ ownerAddress, agents });
 
-  // Self-heal: write a corrected session cookie so the corruption doesn't repeat
-  if (sessionHealed) {
-    const healedToken = await signCustomerSession({
-      agentId:  payload.agentId,
-      agentIds: payload.agentIds,   // preserve the full multi-agent list
-      ownerAddress,
-    });
-    responseBody.cookies.set(CUSTOMER_SESSION_COOKIE, healedToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: SESSION_MAX_AGE,
-    });
-  } else {
-    // Silent refresh: extend session if it expires within 4 hours
-    await maybeRefreshCookie(responseBody, payload);
-  }
+  // Silent refresh: extend session if it expires within 4 hours
+  await maybeRefreshCookie(responseBody, payload);
 
   return responseBody;
 }

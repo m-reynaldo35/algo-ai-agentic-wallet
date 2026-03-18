@@ -167,7 +167,7 @@ function MandatesContent() {
           <h1 className="text-white font-semibold text-lg">Mandates</h1>
           <p className="text-zinc-500 text-sm mt-0.5">
             <span className="font-mono text-zinc-400">{agentId}</span>
-            {" · "}authorise and manage spending limits. Every change requires wallet or passkey verification.
+            {" · "}authorise and manage spending limits. Every change requires wallet verification.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -216,7 +216,7 @@ function MandatesContent() {
           />
         </svg>
         <p className="text-zinc-400 text-xs leading-relaxed">
-          Creating or revoking a mandate requires a fresh verification — either scan a QR code with your Algorand wallet (Pera / Defly) or use your device passkey (Touch ID / Face ID / YubiKey). Your session alone is not sufficient.
+          Creating or revoking a mandate requires a fresh verification — scan a QR code with your Algorand wallet (Pera / Defly). Your session alone is not sufficient.
         </p>
       </div>
 

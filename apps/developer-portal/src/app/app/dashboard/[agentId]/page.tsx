@@ -9,7 +9,6 @@ import WalletQRPanel from "@/components/customer/WalletQRPanel";
 import MandateUsageCard from "@/components/customer/MandateUsageCard";
 import RecentTransactions from "@/components/customer/RecentTransactions";
 import CreateAgentWizard from "@/components/customer/CreateAgentWizard";
-import BindWalletModal from "@/components/customer/BindWalletModal";
 
 interface AgentListItem {
   agentId:   string;
@@ -33,7 +32,6 @@ interface AgentInfo {
   halted?: boolean;
   custody?: "rocca" | "user";
   ownerWalletId?: string;
-  webauthnPublicKey?: string;
   registeredAt?: string;
   createdAt?: string;
 }
@@ -120,7 +118,6 @@ export default function AgentDetailPage() {
   const [agentError, setAgentError]   = useState("");
   const [loading, setLoading]         = useState(true);
   const [showCreate, setShowCreate]   = useState(false);
-  const [showBind, setShowBind]       = useState(false);
 
   const loadSession = useCallback(() => {
     return fetch("/api/customer/session")
@@ -132,16 +129,6 @@ export default function AgentDetailPage() {
       })
       .catch(() => router.replace("/app/login"));
   }, [router]);
-
-  const reloadAgent = useCallback(() => {
-    fetch(`/api/agents/${agentId}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json() as Promise<AgentInfo>;
-      })
-      .then(setAgent)
-      .catch(() => {});
-  }, [agentId]);
 
   useEffect(() => {
     loadSession().then(() => {
@@ -166,9 +153,8 @@ export default function AgentDetailPage() {
 
   if (!session) return null;
 
-  const rawOwner       = session.ownerAddress ?? "";
-  const ownerAlgoAddr  = rawOwner.startsWith("webauthn:") ? "" : rawOwner;
-  const walletAddress  = agent?.address || agent?.authAddr || ownerAlgoAddr;
+  const ownerAddress   = session.ownerAddress ?? "";
+  const walletAddress  = agent?.address || agent?.authAddr || ownerAddress;
 
   return (
     <div className="flex min-h-[calc(100vh-94px)]">
@@ -198,7 +184,7 @@ export default function AgentDetailPage() {
 
           {/* Cards — same row: status | wallet */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <AgentStatusCard agentId={agentId} agent={agent} error={agentError} onRegister={() => setShowBind(true)} />
+            <AgentStatusCard agentId={agentId} agent={agent} error={agentError} />
             {walletAddress && <WalletCard address={walletAddress} showQR={false} />}
           </div>
 
@@ -223,14 +209,6 @@ export default function AgentDetailPage() {
         />
       )}
 
-      {/* ── Bind wallet modal ── */}
-      {showBind && (
-        <BindWalletModal
-          agentId={agentId}
-          onDone={() => { setShowBind(false); reloadAgent(); }}
-          onClose={() => setShowBind(false)}
-        />
-      )}
     </div>
   );
 }
