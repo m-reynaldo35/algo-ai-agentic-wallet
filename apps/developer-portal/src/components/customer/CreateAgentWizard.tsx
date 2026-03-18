@@ -385,9 +385,10 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
   const [genError, setGenError]     = useState("");
   const [generating, setGenerating] = useState(false);
 
-  // If the user is already authenticated (Algorand wallet or passkey), the agent
-  // is created with ownerWalletId set and the bind step (5) can be skipped.
-  const ownerAlreadyKnown = !!ownerAddress;
+  // Algorand wallet users have proved ownership via Liquid Auth — skip the bind step.
+  // Passkey users still need step 5 to run the adopt flow, which copies the
+  // WebAuthn credential to the new agent so mandate operations work.
+  const ownerAlreadyKnown = !!ownerAddress && !ownerAddress.startsWith("webauthn:");
   const totalSteps = ownerAlreadyKnown ? 4 : 5;
 
   function handleClose() {
