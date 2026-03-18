@@ -385,7 +385,10 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
   const [genError, setGenError]     = useState("");
   const [generating, setGenerating] = useState(false);
 
-  const totalSteps = 5;
+  // If the user is already authenticated (Algorand wallet or passkey), the agent
+  // is created with ownerWalletId set and the bind step (5) can be skipped.
+  const ownerAlreadyKnown = !!ownerAddress;
+  const totalSteps = ownerAlreadyKnown ? 4 : 5;
 
   function handleClose() {
     const msg = step >= 4
@@ -404,7 +407,13 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
       const res  = await fetch("/api/agents/create", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ agentId: id, ownerAddress }),
+        body:    JSON.stringify({
+          agentId: id,
+          ownerAddress,
+          // ownerWalletId ensures the agent is owned from creation for both
+          // Algorand wallet users (Algorand address) and passkey users (webauthn:…)
+          ...(ownerAddress ? { ownerWalletId: ownerAddress } : {}),
+        }),
       });
       const data = await res.json() as CreateResponse & { error?: string };
       if (!res.ok) { setGenError(data.error ?? `Failed (${res.status})`); setGenerating(false); return; }
@@ -417,8 +426,9 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
     }
   }
 
-  // Step 5: BindWalletModal takes over as a full modal
-  if (step === 5 && createData) {
+  // Step 5: BindWalletModal — only shown for users with no known owner identity.
+  // Passkey users and Algorand wallet users skip this step (ownership already set at creation).
+  if (step === 5 && createData && !ownerAlreadyKnown) {
     return (
       <BindWalletModal
         agentId={agentId}
@@ -484,7 +494,7 @@ export default function CreateAgentWizard({ ownerAddress, onClose, onCreated }: 
             <Step4
               agentId={agentId}
               address={createData.address}
-              onDone={() => setStep(5)}
+              onDone={() => ownerAlreadyKnown ? onCreated() : setStep(5)}
             />
           )}
         </div>

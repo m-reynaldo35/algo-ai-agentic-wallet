@@ -8,6 +8,16 @@ interface Props {
   agentId?: string;
 }
 
+function deriveDisplayId(ownerAddress: string): string {
+  if (ownerAddress.startsWith("webauthn:")) {
+    const credId = ownerAddress.slice(9);
+    const a = credId.slice(0, 4).toUpperCase();
+    const b = credId.slice(4, 8).toUpperCase();
+    return `pk-${a}-${b}`;
+  }
+  return `${ownerAddress.slice(0, 6)}…${ownerAddress.slice(-4)}`;
+}
+
 export default function CustomerNav({ ownerAddress, agentId }: Props) {
   const router   = useRouter();
   const pathname = usePathname();
@@ -17,9 +27,7 @@ export default function CustomerNav({ ownerAddress, agentId }: Props) {
     router.push("/app/login");
   }
 
-  const ownerShort = ownerAddress
-    ? `${ownerAddress.slice(0, 6)}…${ownerAddress.slice(-4)}`
-    : "";
+  const ownerShort = ownerAddress ? deriveDisplayId(ownerAddress) : "";
 
   const NAV_TABS = [
     { href: "/app/dashboard",                                        label: "Overview"  },

@@ -71,8 +71,8 @@ export default function BindWalletModal({ agentId, onDone, onClose }: Props) {
     setSubmitting(true);
     setError("");
     try {
-      // 1. Issue login challenge for this agent
-      const chalRes = await fetch(`/api/agents/${agentId}/auth/webauthn-login-challenge`, {
+      // 1. Issue adopt challenge for this agent (purpose-bound — prevents confused deputy)
+      const chalRes = await fetch(`/api/agents/${agentId}/auth/webauthn-adopt-challenge`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
       });

@@ -8,6 +8,31 @@ import {
 export const runtime = "nodejs";
 
 const API_URL = process.env.API_URL || "https://api.ai-agentic-wallet.com";
+const SESSION_MAX_AGE = 24 * 60 * 60; // 24 hours
+
+/** Attach a refreshed session cookie if the current token expires within 4 hours. */
+async function maybeRefreshCookie(
+  res: NextResponse,
+  payload: import("@/lib/customerSession").CustomerSessionPayload,
+): Promise<void> {
+  const exp = payload.exp;
+  if (!exp) return;
+  const secsRemaining = exp - Math.floor(Date.now() / 1000);
+  if (secsRemaining < 4 * 60 * 60) {
+    const newToken = await signCustomerSession({
+      ownerAddress: payload.ownerAddress,
+      agentId:      payload.agentId,
+      agentIds:     payload.agentIds,
+    });
+    res.cookies.set(CUSTOMER_SESSION_COOKIE, newToken, {
+      httpOnly: true,
+      secure:   process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path:     "/",
+      maxAge:   SESSION_MAX_AGE,
+    });
+  }
+}
 
 export async function GET(req: NextRequest) {
   const token = req.cookies.get(CUSTOMER_SESSION_COOKIE)?.value;
@@ -38,9 +63,9 @@ export async function GET(req: NextRequest) {
           headers: authHeaders,
         });
         if (ar.ok) {
-          const agentData = await ar.json() as { ownerAddress?: string };
-          if (agentData.ownerAddress && !agentData.ownerAddress.startsWith("webauthn:")) {
-            recovered = agentData.ownerAddress;
+          const agentData = await ar.json() as { ownerWalletId?: string };
+          if (agentData.ownerWalletId && !agentData.ownerWalletId.startsWith("webauthn:")) {
+            recovered = agentData.ownerWalletId;
           }
         }
       } catch { /* non-fatal */ }
@@ -126,8 +151,11 @@ export async function GET(req: NextRequest) {
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       path: "/",
-      maxAge: 30 * 24 * 60 * 60,
+      maxAge: SESSION_MAX_AGE,
     });
+  } else {
+    // Silent refresh: extend session if it expires within 4 hours
+    await maybeRefreshCookie(responseBody, payload);
   }
 
   return responseBody;

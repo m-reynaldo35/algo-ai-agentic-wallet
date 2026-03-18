@@ -1,7 +1,7 @@
 import { SignJWT, jwtVerify } from "jose";
 
 export const CUSTOMER_SESSION_COOKIE = "x402_customer_session";
-const SESSION_DURATION = 30 * 24 * 60 * 60; // 30 days in seconds
+const SESSION_DURATION = 24 * 60 * 60; // 24 hours in seconds
 
 function getSecret(): Uint8Array {
   const raw =
@@ -23,6 +23,8 @@ export interface CustomerSessionPayload {
   agentId?: string;
   /** Multi-agent WebAuthn sessions accumulate agentIds here. */
   agentIds?: string[];
+  /** JWT expiry (seconds since epoch) — returned by verifyCustomerSession for refresh logic. */
+  exp?: number;
 }
 
 export async function signCustomerSession(
@@ -47,6 +49,7 @@ export async function verifyCustomerSession(
       agentIds: Array.isArray(payload.agentIds)
         ? (payload.agentIds as string[]).filter((id) => typeof id === "string")
         : undefined,
+      exp: typeof payload.exp === "number" ? payload.exp : undefined,
     };
   } catch {
     return null;

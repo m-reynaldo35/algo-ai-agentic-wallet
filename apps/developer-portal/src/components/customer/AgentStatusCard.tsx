@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 
 const NETWORK = process.env.NEXT_PUBLIC_ALGORAND_NETWORK ?? "testnet";
 
@@ -23,6 +23,7 @@ interface Props {
   agent:      AgentInfo | null;
   error?:     string;
   onRegister?: () => void;
+  onRecoveryLinked?: () => void;
 }
 
 type StatusKind = "active" | "halted" | "suspended" | "orphaned" | "registered" | "unknown";
@@ -61,8 +62,35 @@ function CheckIcon({ ok }: { ok: boolean }) {
   );
 }
 
-export default function AgentStatusCard({ agentId, agent, error, onRegister }: Props) {
-  const [copied, setCopied] = useState(false);
+export default function AgentStatusCard({ agentId, agent, error, onRegister, onRecoveryLinked }: Props) {
+  const [copied, setCopied]             = useState(false);
+  const [linkingRecovery, setLinking]   = useState(false);
+  const [recoveryError, setRecoveryErr] = useState("");
+  const [recoveryDone, setRecoveryDone] = useState(false);
+
+  // For passkey-owned agents: link an Algorand wallet as recovery
+  const handleLinkRecovery = useCallback(async () => {
+    if (!agent?.ownerWalletId?.startsWith("webauthn:")) return;
+    setLinking(true);
+    setRecoveryErr("");
+    try {
+      const res = await fetch("/api/owner/auth/link-algorand-recovery", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ ownerWalletId: agent.ownerWalletId }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(d.error || `HTTP ${res.status}`);
+      }
+      setRecoveryDone(true);
+      onRecoveryLinked?.();
+    } catch (err) {
+      setRecoveryErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLinking(false);
+    }
+  }, [agent?.ownerWalletId, onRecoveryLinked]);
 
   function copyId() {
     navigator.clipboard.writeText(agentId).then(() => {
@@ -173,6 +201,32 @@ export default function AgentStatusCard({ agentId, agent, error, onRegister }: P
                   >
                     Register →
                   </button>
+                )}
+
+                {/* Recovery wallet link — for passkey-owned agents without Liquid Auth */}
+                {hasPasskey && !hasLiquidAuth && (
+                  <div className="mt-1.5 space-y-1">
+                    {recoveryDone ? (
+                      <div className="flex items-center gap-1.5 text-[11px] text-emerald-400">
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                        </svg>
+                        Recovery wallet linked
+                      </div>
+                    ) : (
+                      <button
+                        onClick={handleLinkRecovery}
+                        disabled={linkingRecovery}
+                        className="text-[11px] text-zinc-500 hover:text-zinc-300 border border-zinc-700/60 hover:border-zinc-600 px-2 py-0.5 rounded transition-colors leading-tight disabled:opacity-50"
+                        title="Link an Algorand wallet as a backup login method"
+                      >
+                        {linkingRecovery ? "Linking…" : "+ Set recovery wallet"}
+                      </button>
+                    )}
+                    {recoveryError && (
+                      <p className="text-[10px] text-red-400">{recoveryError}</p>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
