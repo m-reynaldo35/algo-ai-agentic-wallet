@@ -45,25 +45,28 @@ function serializeAssertion(assertion: PublicKeyCredential) {
   };
 }
 
-export default function MandateCreateModal({ agentId, ownerWalletId, agentAddress: agentAddressProp, onCreated, onClose }: Props) {
-  // Default to WebAuthn if the agent is passkey-only (no Algorand address as owner)
-  const [authMethod,   setAuthMethod]   = useState<AuthMethod>(
-    ownerWalletId.startsWith("webauthn:") ? "webauthn" : "liquid",
-  );
+export default function MandateCreateModal({ agentId, ownerWalletId: ownerWalletIdProp, agentAddress: agentAddressProp, onCreated, onClose }: Props) {
+  const [authMethod,   setAuthMethod]   = useState<AuthMethod>("webauthn");
   const [sessionId,    setSessionId]    = useState<string | null>(null);
   const [showQR,       setShowQR]       = useState(false);
 
-  // Fetch the agent's Algorand address directly — simple and reliable
-  const [agentAddress, setAgentAddress] = useState(agentAddressProp ?? "");
+  // Fetch agent record on open — get both display address and ownerWalletId for payload
+  const [agentAddress,  setAgentAddress]  = useState(agentAddressProp ?? "");
+  const [ownerWalletId, setOwnerWalletId] = useState(ownerWalletIdProp ?? "");
+
   useEffect(() => {
-    if (agentAddress) return; // already have it from prop
     fetch(`/api/agents/${agentId}`)
       .then((r) => r.ok ? r.json() : null)
-      .then((data: { address?: string } | null) => {
-        if (data?.address) setAgentAddress(data.address);
+      .then((data: { address?: string; ownerWalletId?: string } | null) => {
+        if (!data) return;
+        if (data.address)       setAgentAddress(data.address);
+        if (data.ownerWalletId) {
+          setOwnerWalletId(data.ownerWalletId);
+          setAuthMethod(data.ownerWalletId.startsWith("webauthn:") ? "webauthn" : "liquid");
+        }
       })
       .catch(() => {});
-  }, [agentId, agentAddress]);
+  }, [agentId]);
 
   // Form fields
   const [maxPerTx,     setMaxPerTx]     = useState("");
