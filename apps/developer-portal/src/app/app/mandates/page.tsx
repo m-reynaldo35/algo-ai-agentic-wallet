@@ -72,6 +72,7 @@ function MandatesContent() {
   // agentId from ?agent= query param (set by nav link from dashboard) OR session fallback
   const [agentId,       setAgentId]       = useState(searchParams.get("agent") ?? "");
   const [ownerWalletId, setOwnerWalletId] = useState("");
+  const [agentAddress,  setAgentAddress]  = useState("");
   const [mandates,      setMandates]      = useState<MandateRecord[]>([]);
   const [ready,         setReady]         = useState(false);
   const [loading,       setLoading]       = useState(true);
@@ -115,8 +116,9 @@ function MandatesContent() {
         try {
           const ar = await fetch(`/api/agents/${encodeURIComponent(resolvedAgentId)}`);
           if (ar.ok) {
-            const agent = await ar.json() as { ownerWalletId?: string };
+            const agent = await ar.json() as { ownerWalletId?: string; address?: string };
             setOwnerWalletId(agent.ownerWalletId ?? "");
+            setAgentAddress(agent.address ?? "");
           }
         } catch { /* ownerWalletId stays "" — modal will show binding prompt */ }
 
@@ -271,6 +273,7 @@ function MandatesContent() {
         <MandateCreateModal
           agentId={agentId}
           ownerWalletId={ownerWalletId}
+          agentAddress={agentAddress}
           onCreated={() => { setShowCreate(false); loadMandates(); }}
           onClose={() => setShowCreate(false)}
         />

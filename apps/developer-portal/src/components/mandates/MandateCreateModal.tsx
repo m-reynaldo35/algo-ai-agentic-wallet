@@ -6,6 +6,7 @@ import LiquidAuthQRModal from "./LiquidAuthQRModal";
 interface Props {
   agentId:       string;
   ownerWalletId: string;
+  agentAddress?: string;
   onCreated:     () => void;
   onClose:       () => void;
 }
@@ -44,7 +45,7 @@ function serializeAssertion(assertion: PublicKeyCredential) {
   };
 }
 
-export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, onClose }: Props) {
+export default function MandateCreateModal({ agentId, ownerWalletId, agentAddress, onCreated, onClose }: Props) {
   // Default to WebAuthn if the agent is passkey-only (no Algorand address as owner)
   const [authMethod,   setAuthMethod]   = useState<AuthMethod>(
     ownerWalletId.startsWith("webauthn:") ? "webauthn" : "liquid",
@@ -203,12 +204,12 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
 
           {/* Form fields */}
           <div className="space-y-4">
-            {/* Owner (readonly) */}
+            {/* Owner (readonly) — show the agent's blockchain address */}
             <div>
-              <label className="block text-xs text-zinc-500 mb-1">Owner Wallet</label>
+              <label className="block text-xs text-zinc-500 mb-1">Agent Wallet Address</label>
               <input
                 readOnly
-                value={ownerWalletId.startsWith("webauthn:") ? "Device Passkey (passkey-bound)" : ownerWalletId}
+                value={agentAddress || ownerWalletId || ""}
                 className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-zinc-400 text-sm font-mono cursor-not-allowed"
               />
             </div>
