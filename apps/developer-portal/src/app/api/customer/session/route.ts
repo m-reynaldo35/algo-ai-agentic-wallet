@@ -74,16 +74,17 @@ export async function GET(req: NextRequest) {
     if (recovered) {
       ownerAddress = recovered;
       sessionHealed = true;
-    } else if (payload.agentId || payload.agentIds?.length) {
-      // WebAuthn-only user: no Algorand address yet.
-      // Collect agentIds from the JWT (accumulated across all registrations).
+    } else {
+      // WebAuthn-only user: no Algorand address (yet).
+      // This path is reached both from legacy per-agent sessions (agentId in JWT)
+      // and from owner-level passkey login (only ownerAddress in JWT, no agentId).
+      // Always query the ownerWalletId index so we find all linked agents.
       const jwtIds = Array.from(new Set([
         ...(payload.agentIds ?? []),
         ...(payload.agentId ? [payload.agentId] : []),
       ]));
 
-      // Also query the backend ownerWalletId index — may find agents registered
-      // under the same credential but not yet in this JWT.
+      // Backend index lookup — canonical source for owner-level passkey sessions
       let indexIds: string[] = [];
       try {
         const r = await fetch(
@@ -96,7 +97,6 @@ export async function GET(req: NextRequest) {
         }
       } catch { /* non-fatal */ }
 
-      // Union of both sources — JWT is authoritative for agents across different credentials
       const allIds = Array.from(new Set([...jwtIds, ...indexIds]));
       const agentEntries = (
         await Promise.all(
@@ -109,14 +109,12 @@ export async function GET(req: NextRequest) {
         )
       ).filter(Boolean);
 
+      // Return the webauthn: ownerAddress so the dashboard can show pk-XXXX-XXXX
       return NextResponse.json({
-        ownerAddress: "",
+        ownerAddress: payload.ownerAddress,
         agentId: payload.agentId,
         agents: agentEntries,
       });
-    } else {
-      // No agentId and no recoverable address — force re-authentication
-      return NextResponse.json({ error: "Session corrupted, please log in again" }, { status: 401 });
     }
   }
 

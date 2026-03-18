@@ -103,7 +103,9 @@ export default function AgentPortfolioDashboard() {
   if (!session) return null;
 
   const ownerShort = session.ownerAddress
-    ? `${session.ownerAddress.slice(0, 6)}…${session.ownerAddress.slice(-4)}`
+    ? session.ownerAddress.startsWith("webauthn:")
+      ? `pk-${session.ownerAddress.slice(9, 13).toUpperCase()}-${session.ownerAddress.slice(13, 17).toUpperCase()}`
+      : `${session.ownerAddress.slice(0, 6)}…${session.ownerAddress.slice(-4)}`
     : "";
 
   return (
