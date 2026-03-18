@@ -74,6 +74,9 @@ export async function POST(req: NextRequest) {
     agentId?: string;
     peraSessionId?: string;
     webauthnAssertion?: unknown;
+    // Owner-level passkey login (no agentId)
+    webauthnOwnerAssertion?: unknown;
+    challengeId?: string;
   };
 
   // ── Path 1: Owner-level (wallet-first, no agentId) ───────────────
@@ -82,6 +85,33 @@ export async function POST(req: NextRequest) {
   if (body.ownerAddress && !body.agentId && !body.peraSessionId && !body.webauthnAssertion) {
     const token = await signCustomerSession({ ownerAddress: body.ownerAddress });
     const res = NextResponse.json({ ok: true, ownerAddress: body.ownerAddress });
+    setCookie(res, token);
+    return res;
+  }
+
+  // ── Path 4: Owner-level WebAuthn (passkey login, no agentId) ────
+  if (body.webauthnOwnerAssertion && body.challengeId) {
+    let upstream: Response;
+    try {
+      upstream = await fetch(`${API_URL}/api/owner/auth/webauthn-login`, {
+        method:  "POST",
+        headers: portalHeaders(),
+        body:    JSON.stringify({ challengeId: body.challengeId, assertion: body.webauthnOwnerAssertion }),
+      });
+    } catch (err) {
+      return NextResponse.json({ error: `upstream_unavailable: ${err instanceof Error ? err.message : String(err)}` }, { status: 502 });
+    }
+
+    const data = await upstream.json().catch(() => ({})) as { ownerWalletId?: string; error?: string };
+    if (!upstream.ok || !data.ownerWalletId) {
+      return NextResponse.json(
+        { error: data.error || `Backend HTTP ${upstream.status}` },
+        { status: upstream.status >= 400 ? upstream.status : 502 },
+      );
+    }
+
+    const token = await signCustomerSession({ ownerAddress: data.ownerWalletId });
+    const res   = NextResponse.json({ ok: true, ownerAddress: data.ownerWalletId });
     setCookie(res, token);
     return res;
   }

@@ -59,6 +59,8 @@ import {
   registerWebAuthnCredential, issueMandateChallenge, registerAlgorandAddress,
   issueWebAuthnRegistrationChallenge, verifyAndRegisterWebAuthn,
   issueWebAuthnLoginChallenge, verifyWebAuthnLoginAssertion,
+  issueOwnerWebAuthnLoginChallenge, verifyOwnerWebAuthnLoginAssertion,
+  adoptWebAuthnOwner,
 }                                        from "./services/mandateService.js";
 import {
   issueAlgorandChallenge, getLiquidAuthStatus,
@@ -1457,6 +1459,37 @@ app.post("/api/owner/auth/verify", requirePortalAuth, async (req, res) => {
   }
 });
 
+// ── Owner-level WebAuthn (master account / passkey login without agentId) ───
+// POST /api/owner/auth/webauthn-challenge
+//   Issue a challenge; no agentId required.
+// POST /api/owner/auth/webauthn-login
+//   Verify assertion; return ownerWalletId (and implicitly all linked agents).
+
+app.post("/api/owner/auth/webauthn-challenge", requirePortalAuth, async (_req, res) => {
+  try {
+    res.json(await issueOwnerWebAuthnLoginChallenge());
+  } catch (err) {
+    console.error("[owner/auth/webauthn-challenge]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Failed" });
+  }
+});
+
+app.post("/api/owner/auth/webauthn-login", requirePortalAuth, async (req, res) => {
+  const { challengeId, assertion } = req.body as { challengeId?: string; assertion?: unknown };
+  if (!challengeId || !assertion) {
+    res.status(400).json({ error: "challengeId and assertion required" });
+    return;
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await verifyOwnerWebAuthnLoginAssertion(challengeId, assertion as any);
+    res.json(result);
+  } catch (err) {
+    console.error("[owner/auth/webauthn-login]", err);
+    res.status(400).json({ error: err instanceof Error ? err.message : "Verification failed" });
+  }
+});
+
 app.get("/api/agents", requirePortalAuth, async (req, res) => {
   try {
     if (req.query.ownerWalletId && typeof req.query.ownerWalletId === "string") {
@@ -2286,6 +2319,33 @@ app.post("/api/agents/:agentId/auth/webauthn-login", requirePortalAuth, async (r
       msg.includes("verification") ? 401 :
       msg.includes("challenge")    ? 400 :
       401;
+    res.status(status).json({ error: msg });
+  }
+});
+
+// POST /api/agents/:agentId/auth/webauthn-adopt-owner
+//   Bind an existing owner passkey to a new agent (no new registration).
+//   Requires a login challenge pre-issued via webauthn-login-challenge.
+//   Copies the master credential to the new agent, sets same ownerWalletId.
+app.post("/api/agents/:agentId/auth/webauthn-adopt-owner", requirePortalAuth, async (req, res) => {
+  const agentId   = String(req.params.agentId || "");
+  const assertion = req.body?.assertion ?? req.body;
+
+  if (!assertion?.id || !assertion?.response) {
+    res.status(400).json({ error: "Missing assertion (AuthenticationResponseJSON)" });
+    return;
+  }
+
+  try {
+    const result = await adoptWebAuthnOwner(agentId, assertion);
+    res.json({ agentId, ...result });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status =
+      msg.includes("not found")    ? 404 :
+      msg.includes("verification") ? 401 :
+      msg.includes("challenge")    ? 400 :
+      400;
     res.status(status).json({ error: msg });
   }
 });

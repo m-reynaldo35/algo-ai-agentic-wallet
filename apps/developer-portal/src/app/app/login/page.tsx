@@ -126,27 +126,23 @@ function PeraConnectButton({
   );
 }
 
-// ── WebAuthn login — per-agent passkey ────────────────────────────
+// ── WebAuthn login — owner-level (no agentId required) ───────────
 
 function PasskeyLoginForm({
   onVerified,
 }: {
-  onVerified: (agentId: string, ownerAddress: string) => void;
+  onVerified: (ownerAddress: string) => void;
 }) {
-  const [agentId, setAgentId] = useState("");
-  const [status, setStatus]   = useState<"idle" | "busy" | "error">("idle");
+  const [status, setStatus]     = useState<"idle" | "busy" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
 
   const handlePasskey = useCallback(async () => {
-    const id = agentId.trim();
-    if (!id) { setStatus("error"); setErrorMsg("Agent ID is required"); return; }
-
     setStatus("busy");
     setErrorMsg("");
 
     try {
-      // 1. Get login challenge
-      const chalRes = await fetch(`/api/agents/${encodeURIComponent(id)}/auth/webauthn-login-challenge`, {
+      // 1. Get owner-level challenge (no agentId needed)
+      const chalRes = await fetch("/api/owner/auth/webauthn-challenge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
@@ -154,23 +150,19 @@ function PasskeyLoginForm({
         const b = await chalRes.json().catch(() => ({})) as { error?: string };
         throw new Error(b.error ?? `HTTP ${chalRes.status}`);
       }
-      const { challenge, allowCredentials, rpId } = await chalRes.json() as {
+      const { challengeId, challenge, rpId } = await chalRes.json() as {
+        challengeId: string;
         challenge: string;
-        allowCredentials: Array<{ id: string; type: string }>;
-        hasCredentials: boolean;
         rpId: string;
       };
 
-      // 2. Invoke device passkey
+      // 2. Invoke device passkey — browser shows credential picker
       const cred = await navigator.credentials.get({
         publicKey: {
-          challenge: base64urlToBuf(challenge),
-          allowCredentials: allowCredentials.map((c) => ({
-            id: base64urlToBuf(c.id),
-            type: "public-key" as PublicKeyCredentialType,
-          })),
+          challenge:        base64urlToBuf(challenge),
+          allowCredentials: [],   // empty = discoverable / resident credentials
           rpId,
-          timeout: 60000,
+          timeout:          60_000,
           userVerification: "preferred",
         },
       }) as PublicKeyCredential | null;
@@ -179,9 +171,9 @@ function PasskeyLoginForm({
 
       const response = cred.response as AuthenticatorAssertionResponse;
       const assertion = {
-        id: cred.id,
+        id:    cred.id,
         rawId: bufToBase64url(cred.rawId),
-        type: cred.type,
+        type:  cred.type,
         response: {
           clientDataJSON:    bufToBase64url(response.clientDataJSON),
           authenticatorData: bufToBase64url(response.authenticatorData),
@@ -193,16 +185,16 @@ function PasskeyLoginForm({
 
       // 3. Verify with portal → sets session cookie
       const loginRes = await fetch("/api/customer/auth/login", {
-        method: "POST",
+        method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentId: id, webauthnAssertion: assertion }),
+        body:    JSON.stringify({ webauthnOwnerAssertion: assertion, challengeId }),
       });
       if (!loginRes.ok) {
         const b = await loginRes.json().catch(() => ({})) as { error?: string };
         throw new Error(b.error ?? `HTTP ${loginRes.status}`);
       }
       const data = await loginRes.json() as { ownerAddress: string };
-      onVerified(id, data.ownerAddress);
+      onVerified(data.ownerAddress);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.toLowerCase().includes("cancel") || msg.toLowerCase().includes("abort") || msg.toLowerCase().includes("not allowed")) {
@@ -212,20 +204,13 @@ function PasskeyLoginForm({
         setErrorMsg(msg);
       }
     }
-  }, [agentId, onVerified]);
+  }, [onVerified]);
 
   return (
     <div className="flex flex-col gap-3">
-      <input
-        type="text"
-        value={agentId}
-        onChange={(e) => setAgentId(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && handlePasskey()}
-        placeholder="Agent ID"
-        className="w-full bg-zinc-900 border border-zinc-700 focus:border-zinc-500 text-white placeholder-zinc-600 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors font-mono"
-        autoComplete="off"
-        autoCapitalize="none"
-      />
+      <p className="text-zinc-500 text-xs text-center">
+        Your device will present all passkeys registered with this dashboard.
+      </p>
       <button
         type="button"
         disabled={status === "busy"}
@@ -242,7 +227,6 @@ function PasskeyLoginForm({
           </>
         ) : (
           <>
-            {/* Fingerprint / passkey icon */}
             <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
                 d="M12 11c0-1.657-1.343-3-3-3S6 9.343 6 11v2a6 6 0 0012 0v-2c0-1.657-1.343-3-3-3s-3 1.343-3 3" />
@@ -296,7 +280,7 @@ function LoginForm() {
     }
   }, [from, router]);
 
-  const handlePasskeyVerified = useCallback((_agentId: string, _ownerAddress: string) => {
+  const handlePasskeyVerified = useCallback((_ownerAddress: string) => {
     router.push(from);
   }, [from, router]);
 

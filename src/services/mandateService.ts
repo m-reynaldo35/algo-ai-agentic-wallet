@@ -31,7 +31,7 @@ import {
   isoBase64URL,
 }                                              from "@simplewebauthn/server/helpers";
 import { getRedis }                            from "./redis.js";
-import { getAgent, updateAgentRecord, indexWebAuthnOwner } from "./agentRegistry.js";
+import { getAgent, updateAgentRecord, indexWebAuthnOwner, listAgentsByWebAuthnOwner } from "./agentRegistry.js";
 import { emitSecurityEvent }                   from "./securityAudit.js";
 import { consumeVerifiedSession, consumeVerifiedPeraSession } from "../auth/humanAuth.js";
 import type { Mandate, RecurringConfig }       from "../types/mandate.js";
@@ -215,8 +215,9 @@ function verifyMandateHmac(mandate: Mandate): boolean {
 
 // ── WebAuthn config ───────────────────────────────────────────────
 
-const WEBAUTHN_REG_CHAL_PREFIX   = "x402:webauthn:reg-challenge:";   // {agentId} → challenge
-const WEBAUTHN_LOGIN_CHAL_PREFIX = "x402:webauthn:login-challenge:";  // {agentId} → challenge
+const WEBAUTHN_REG_CHAL_PREFIX   = "x402:webauthn:reg-challenge:";    // {agentId} → challenge
+const WEBAUTHN_LOGIN_CHAL_PREFIX = "x402:webauthn:login-challenge:";   // {agentId} → challenge
+const OWNER_WEBAUTHN_CHAL_PREFIX = "x402:owner-webauthn-chal:";        // {challengeId} → challenge
 
 function getWebAuthnConfig(): { rpId: string; origins: string[] } {
   const rpId = process.env.FIDO2_RP_ID ?? process.env.LIQUID_AUTH_RP_ID ?? "localhost";
@@ -1081,4 +1082,169 @@ export async function verifyWebAuthnLoginAssertion(
 
   console.log(`[MandateService] WebAuthn login verified: agent=${agentId} owner=${agent.ownerWalletId.slice(0, 16)}…`);
   return { ownerWalletId: agent.ownerWalletId };
+}
+
+// ── Owner-level WebAuthn (master account) ────────────────────────
+//
+// These endpoints allow a user to log in with their passkey WITHOUT
+// needing to know which agent ID to enter. The credential ID in the
+// assertion identifies which ownerWalletId (and therefore which agents)
+// belong to this user.
+//
+// POST /api/owner/auth/webauthn-challenge
+//   Issue challenge; no agentId required.
+//
+// POST /api/owner/auth/webauthn-login
+//   Verify assertion; find all agents with this ownerWalletId.
+
+/**
+ * Issue an owner-level WebAuthn login challenge.
+ * No agentId is required — the browser presents all matching credentials.
+ */
+export async function issueOwnerWebAuthnLoginChallenge(): Promise<{
+  challengeId: string;
+  challenge:   string;
+  rpId:        string;
+}> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const challengeId    = randomUUID();
+  const challengeBytes = new Uint8Array(32);
+  crypto.getRandomValues(challengeBytes);
+  const challenge = isoBase64URL.fromBuffer(Buffer.from(challengeBytes));
+
+  await redis.set(`${OWNER_WEBAUTHN_CHAL_PREFIX}${challengeId}`, challenge, { ex: CHALLENGE_TTL_S });
+
+  const { rpId } = getWebAuthnConfig();
+  return { challengeId, challenge, rpId };
+}
+
+/**
+ * Verify an owner-level WebAuthn assertion.
+ * Extracts credentialId → ownerWalletId, finds the master agent holding the
+ * public key, verifies the assertion, and returns the ownerWalletId.
+ */
+export async function verifyOwnerWebAuthnLoginAssertion(
+  challengeId: string,
+  assertion:   AuthenticationResponseJSON,
+): Promise<{ ownerWalletId: string }> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const challenge = await redis.getdel(`${OWNER_WEBAUTHN_CHAL_PREFIX}${challengeId}`) as string | null;
+  if (!challenge) throw new Error("No active owner login challenge — expired or not issued");
+
+  const credentialId  = assertion.id;
+  const ownerWalletId = `webauthn:${credentialId}`;
+
+  // Find an agent that holds the public key for this credential
+  const agents     = await listAgentsByWebAuthnOwner(ownerWalletId);
+  const masterAgent = agents.find((a) => a.webauthnPublicKey && a.webauthnCredentialId === credentialId);
+  if (!masterAgent?.webauthnPublicKey) {
+    throw new Error("No agent registered with this passkey. Please register an agent first.");
+  }
+
+  const { rpId, origins } = getWebAuthnConfig();
+  let verification;
+  try {
+    verification = await verifyAuthenticationResponse({
+      response:          assertion,
+      expectedChallenge: challenge,
+      expectedOrigin:    origins,
+      expectedRPID:      rpId,
+      credential: {
+        id:        credentialId,
+        publicKey: isoBase64URL.toBuffer(masterAgent.webauthnPublicKey),
+        counter:   masterAgent.webauthnCounter ?? 0,
+      },
+    });
+  } catch (err) {
+    throw new Error(`Owner WebAuthn verification failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!verification.verified) throw new Error("Owner WebAuthn assertion not verified");
+
+  // Update counter on the master agent (anti-replay)
+  await updateAgentRecord({ ...masterAgent, webauthnCounter: verification.authenticationInfo.newCounter });
+
+  console.log(`[MandateService] Owner WebAuthn login: owner=${ownerWalletId.slice(0, 24)}… agents=${agents.length}`);
+  return { ownerWalletId };
+}
+
+/**
+ * Adopt an existing owner passkey for a new agent (no new registration required).
+ *
+ * Flow:
+ *   1. Client issues a login challenge via the existing webauthn-login-challenge endpoint
+ *   2. User signs with their existing passkey (assertion)
+ *   3. Backend verifies against the master agent's public key
+ *   4. Copies credential fields to the new agent; sets the same ownerWalletId
+ *
+ * The new agent inherits the same ownerWalletId so listAgentsByWebAuthnOwner
+ * will return it alongside all other agents under this owner.
+ */
+export async function adoptWebAuthnOwner(
+  agentId:   string,
+  assertion: AuthenticationResponseJSON,
+): Promise<{ ownerWalletId: string }> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const challenge = await redis.getdel(`${WEBAUTHN_LOGIN_CHAL_PREFIX}${agentId}`) as string | null;
+  if (!challenge) throw new Error("No active adopt challenge — call webauthn-login-challenge first");
+
+  const agent = await getAgent(agentId);
+  if (!agent) throw new Error(`Agent not found: ${agentId}`);
+  if (agent.webauthnPublicKey) {
+    throw new Error("Agent already has a passkey registered. Use webauthn-login instead.");
+  }
+
+  const credentialId  = assertion.id;
+  const ownerWalletId = `webauthn:${credentialId}`;
+
+  // Find master agent with the public key for this credential
+  const siblings   = await listAgentsByWebAuthnOwner(ownerWalletId);
+  const masterAgent = siblings.find((a) => a.webauthnPublicKey && a.webauthnCredentialId === credentialId);
+  if (!masterAgent?.webauthnPublicKey) {
+    throw new Error("No existing agent found with this passkey. Please register the passkey on another agent first.");
+  }
+
+  const { rpId, origins } = getWebAuthnConfig();
+  let verification;
+  try {
+    verification = await verifyAuthenticationResponse({
+      response:          assertion,
+      expectedChallenge: challenge,
+      expectedOrigin:    origins,
+      expectedRPID:      rpId,
+      credential: {
+        id:        credentialId,
+        publicKey: isoBase64URL.toBuffer(masterAgent.webauthnPublicKey),
+        counter:   masterAgent.webauthnCounter ?? 0,
+      },
+    });
+  } catch (err) {
+    throw new Error(`Adopt WebAuthn verification failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!verification.verified) throw new Error("Adopt WebAuthn assertion not verified");
+
+  const newCounter = verification.authenticationInfo.newCounter;
+
+  // Update counter on master agent (anti-replay for that credential)
+  await updateAgentRecord({ ...masterAgent, webauthnCounter: newCounter });
+
+  // Bind the new agent under the same ownerWalletId and copy credential fields
+  await updateAgentRecord({
+    ...agent,
+    ownerWalletId,
+    webauthnCredentialId: credentialId,
+    webauthnPublicKey:    masterAgent.webauthnPublicKey,
+    webauthnCounter:      newCounter,
+  });
+
+  // Add new agent to the WebAuthn owner index
+  await indexWebAuthnOwner(ownerWalletId, agentId).catch(() => {/* non-fatal */});
+
+  console.log(`[MandateService] WebAuthn owner adopted: agent=${agentId} owner=${ownerWalletId.slice(0, 24)}…`);
+  return { ownerWalletId };
 }

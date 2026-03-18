@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import LiquidAuthQRModal from "@/components/mandates/LiquidAuthQRModal";
 
 type BindMethod = "liquid" | "webauthn";
@@ -42,10 +42,98 @@ interface Props {
 }
 
 export default function BindWalletModal({ agentId, onDone, onClose }: Props) {
-  const [method, setMethod]         = useState<BindMethod>("liquid");
-  const [showQR, setShowQR]         = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError]           = useState("");
+  const [method, setMethod]               = useState<BindMethod>("liquid");
+  const [showQR, setShowQR]               = useState(false);
+  const [submitting, setSubmitting]       = useState(false);
+  const [error, setError]                 = useState("");
+  // existingOwnerWalletId: set when the user already has a passkey account
+  const [existingOwnerWalletId, setExistingOwnerWalletId] = useState<string | null>(null);
+
+  // On mount, check session for existing passkey-based owner so we can offer
+  // "use your existing passkey" (adopt) instead of creating a brand-new credential.
+  useEffect(() => {
+    fetch("/api/customer/session")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data: { ownerAddress?: string } | null) => {
+        if (data?.ownerAddress?.startsWith("webauthn:")) {
+          setExistingOwnerWalletId(data.ownerAddress);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  async function handleWebAuthnAdopt() {
+    // Uses the existing owner passkey to claim this new agent — no new registration.
+    if (!window.PublicKeyCredential) {
+      setError("Passkeys are not supported in this browser.");
+      return;
+    }
+    setSubmitting(true);
+    setError("");
+    try {
+      // 1. Issue login challenge for this agent
+      const chalRes = await fetch(`/api/agents/${agentId}/auth/webauthn-login-challenge`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!chalRes.ok) throw new Error(`Challenge failed: HTTP ${chalRes.status}`);
+      const { challenge, rpId } = await chalRes.json() as {
+        challenge: string; rpId: string;
+        allowCredentials: Array<{ id: string; type: string }>;
+      };
+
+      // 2. Assertion with existing passkey (empty allowCredentials → discoverable)
+      const cred = await navigator.credentials.get({
+        publicKey: {
+          challenge:        base64urlToBuf(challenge),
+          allowCredentials: [],
+          rpId,
+          timeout:          60_000,
+          userVerification: "preferred",
+        },
+      }) as PublicKeyCredential | null;
+
+      if (!cred) throw new Error("Passkey authentication cancelled.");
+
+      const resp = cred.response as AuthenticatorAssertionResponse;
+      const assertion = {
+        id:    cred.id,
+        rawId: bufToBase64url(cred.rawId),
+        type:  cred.type,
+        response: {
+          clientDataJSON:    bufToBase64url(resp.clientDataJSON),
+          authenticatorData: bufToBase64url(resp.authenticatorData),
+          signature:         bufToBase64url(resp.signature),
+          ...(resp.userHandle ? { userHandle: bufToBase64url(resp.userHandle) } : {}),
+        },
+        clientExtensionResults: cred.getClientExtensionResults(),
+      };
+
+      // 3. Call adopt endpoint — binds new agent to existing owner passkey
+      const res = await fetch(`/api/agents/${agentId}/auth/webauthn-adopt-owner`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(assertion),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error || `HTTP ${res.status}`);
+      }
+
+      // 4. Refresh session so new agent appears in the list
+      await fetch("/api/customer/auth/session-refresh", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ agentId }),
+      }).catch(() => {});
+
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   async function handleWebAuthn() {
     if (!window.PublicKeyCredential) {
@@ -158,13 +246,30 @@ export default function BindWalletModal({ agentId, onDone, onClose }: Props) {
               >
                 Connect Wallet
               </button>
+            ) : existingOwnerWalletId ? (
+              // User already has a passkey account — adopt this agent under it
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 px-3 py-2 bg-emerald-900/20 border border-emerald-800/50 rounded-md text-xs text-emerald-400">
+                  <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Existing passkey account detected — no new registration needed.
+                </div>
+                <button
+                  onClick={handleWebAuthnAdopt}
+                  disabled={submitting}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium py-2.5 rounded-md transition-colors"
+                >
+                  {submitting ? "Linking…" : "Link with Existing Passkey"}
+                </button>
+              </div>
             ) : (
               <button
                 onClick={handleWebAuthn}
                 disabled={submitting}
                 className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium py-2.5 rounded-md transition-colors"
               >
-                {submitting ? "Registering passkey…" : "Sign with Passkey"}
+                {submitting ? "Registering passkey…" : "Register New Passkey"}
               </button>
             )}
           </div>
