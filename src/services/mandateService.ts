@@ -920,7 +920,7 @@ export async function issueWebAuthnRegistrationChallenge(agentId: string): Promi
     rpId,
     rpName:          "x402 Agent Dashboard",
     userName:        agentId,
-    userDisplayName: `Agent ${agentId.slice(0, 8)}`,
+    userDisplayName: agentId,
     hasCredentials:  !!agent.webauthnPublicKey,
   };
 }

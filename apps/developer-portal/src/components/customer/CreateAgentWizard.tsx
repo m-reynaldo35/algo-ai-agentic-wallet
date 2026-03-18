@@ -363,21 +363,12 @@ function Step4({
         </div>
       </div>
 
-      <div className="flex gap-3">
-        <a
-          href={usdcUri}
-          onClick={onDone}
-          className="flex-1 text-center bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium py-2.5 rounded-md transition-colors"
-        >
-          Deposit
-        </a>
-        <button
-          onClick={onDone}
-          className="flex-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-sm font-medium py-2.5 rounded-md transition-colors"
-        >
-          Skip for now
-        </button>
-      </div>
+      <button
+        onClick={onDone}
+        className="w-full bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 text-sm font-medium py-2.5 rounded-md transition-colors"
+      >
+        Skip for now →
+      </button>
     </div>
   );
 }

@@ -194,6 +194,13 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
             </button>
           </div>
 
+          {/* Unbound-agent guard */}
+          {!ownerWalletId && (
+            <div className="mb-4 rounded-md bg-amber-950/50 border border-amber-800 px-3 py-2.5 text-xs text-amber-300">
+              This agent has no bound wallet yet. Go to the agent dashboard and register an auth method before creating mandates.
+            </div>
+          )}
+
           {/* Form fields */}
           <div className="space-y-4">
             {/* Owner (readonly) */}
@@ -201,7 +208,7 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
               <label className="block text-xs text-zinc-500 mb-1">Owner Wallet</label>
               <input
                 readOnly
-                value={ownerWalletId}
+                value={ownerWalletId.startsWith("webauthn:") ? "Device Passkey (passkey-bound)" : ownerWalletId}
                 className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-zinc-400 text-sm font-mono cursor-not-allowed"
               />
             </div>
@@ -251,7 +258,7 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
                 value={expiresAt}
                 min={new Date().toISOString().split("T")[0]}
                 onChange={(e) => setExpiresAt(e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-white text-sm focus:outline-none focus:border-zinc-500"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-white text-sm focus:outline-none focus:border-zinc-500 [color-scheme:dark]"
               />
             </div>
 
@@ -318,7 +325,8 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
                 {!sessionId && (
                   <button
                     onClick={() => setShowQR(true)}
-                    className="flex-1 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-colors"
+                    disabled={!ownerWalletId}
+                    className="flex-1 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
                   >
                     Continue to Wallet Sign
                   </button>
@@ -326,7 +334,7 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
                 {sessionId && (
                   <button
                     onClick={handleLiquidSubmit}
-                    disabled={submitting}
+                    disabled={submitting || !ownerWalletId}
                     className="flex-1 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
                   >
                     {submitting ? "Creating…" : "Create Mandate"}
@@ -336,7 +344,7 @@ export default function MandateCreateModal({ agentId, ownerWalletId, onCreated, 
             ) : (
               <button
                 onClick={handleWebAuthn}
-                disabled={submitting}
+                disabled={submitting || !ownerWalletId}
                 className="flex-1 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
               >
                 {submitting ? "Signing…" : "Sign with Passkey"}

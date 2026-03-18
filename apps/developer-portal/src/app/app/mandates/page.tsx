@@ -110,21 +110,15 @@ function MandatesContent() {
         setAgentId(resolvedAgentId);
 
         // Fetch the agent record to get its ownerWalletId
-        // (works for both Pera and WebAuthn users)
+        // Use only the value stored on the agent — falling back to session address
+        // causes server-side "ownerWalletId mismatch" errors on mandate creation.
         try {
           const ar = await fetch(`/api/agents/${encodeURIComponent(resolvedAgentId)}`);
           if (ar.ok) {
-            const agent = await ar.json() as { ownerWalletId?: string; ownerAddress?: string };
-            const wid = agent.ownerWalletId || data.ownerAddress || "";
-            setOwnerWalletId(wid);
-          } else if (data.ownerAddress && !data.ownerAddress.startsWith("webauthn:")) {
-            setOwnerWalletId(data.ownerAddress);
+            const agent = await ar.json() as { ownerWalletId?: string };
+            setOwnerWalletId(agent.ownerWalletId ?? "");
           }
-        } catch {
-          if (data.ownerAddress && !data.ownerAddress.startsWith("webauthn:")) {
-            setOwnerWalletId(data.ownerAddress);
-          }
-        }
+        } catch { /* ownerWalletId stays "" — modal will show binding prompt */ }
 
         setReady(true);
       })
