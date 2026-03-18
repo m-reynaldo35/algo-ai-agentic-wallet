@@ -42,6 +42,7 @@ import {
   listAgentsByOwner, listPendingAgentsByOwner, listAgentsByWebAuthnOwner,
   claimAgentOwnership, transferAgentOwnership,
   storeClaimChallenge, consumeClaimChallenge,
+  linkAlgorandRecovery,
   type PendingAgentRecord,
 } from "./services/agentRegistry.js";
 import {
@@ -60,7 +61,7 @@ import {
   issueWebAuthnRegistrationChallenge, verifyAndRegisterWebAuthn,
   issueWebAuthnLoginChallenge, verifyWebAuthnLoginAssertion,
   issueOwnerWebAuthnLoginChallenge, verifyOwnerWebAuthnLoginAssertion,
-  adoptWebAuthnOwner,
+  adoptWebAuthnOwner, issueWebAuthnAdoptChallenge,
 }                                        from "./services/mandateService.js";
 import {
   issueAlgorandChallenge, getLiquidAuthStatus,
@@ -1145,7 +1146,7 @@ app.get("/api/portal/stream", requirePortalAuth, (req, res) => {
 // Per-IP cap: max 10 per hour.
 app.post("/api/agents/create", requirePortalAuth, async (req, res) => {
   try {
-    const { agentId } = req.body;
+    const { agentId, ownerWalletId: creationOwnerWalletId } = req.body as { agentId?: string; ownerWalletId?: string };
 
     if (!agentId || typeof agentId !== "string") {
       res.status(400).json({ error: "Missing required field: agentId" });
@@ -1216,6 +1217,7 @@ app.post("/api/agents/create", requirePortalAuth, async (req, res) => {
       secretKeyB64,
       platform,
       ownerAddress,
+      ownerWalletId: creationOwnerWalletId ?? undefined,
       createdAt:    new Date().toISOString(),
     };
     await storePendingAgent(pending);
@@ -1465,7 +1467,7 @@ app.post("/api/owner/auth/verify", requirePortalAuth, async (req, res) => {
 // POST /api/owner/auth/webauthn-login
 //   Verify assertion; return ownerWalletId (and implicitly all linked agents).
 
-app.post("/api/owner/auth/webauthn-challenge", requirePortalAuth, async (_req, res) => {
+app.post("/api/owner/auth/webauthn-challenge", requirePortalAuth, rateLimiter, async (_req, res) => {
   try {
     res.json(await issueOwnerWebAuthnLoginChallenge());
   } catch (err) {
@@ -1487,6 +1489,25 @@ app.post("/api/owner/auth/webauthn-login", requirePortalAuth, async (req, res) =
   } catch (err) {
     console.error("[owner/auth/webauthn-login]", err);
     res.status(400).json({ error: err instanceof Error ? err.message : "Verification failed" });
+  }
+});
+
+app.post("/api/owner/auth/link-algorand-recovery", requirePortalAuth, async (req, res) => {
+  const { ownerWalletId, algorandAddress } = req.body as { ownerWalletId?: string; algorandAddress?: string };
+  if (!ownerWalletId || !algorandAddress) {
+    res.status(400).json({ error: "ownerWalletId and algorandAddress required" });
+    return;
+  }
+  if (!ownerWalletId.startsWith("webauthn:")) {
+    res.status(400).json({ error: "ownerWalletId must be a passkey identity (webauthn:...)" });
+    return;
+  }
+  try {
+    const linkedAgents = await linkAlgorandRecovery(ownerWalletId, algorandAddress);
+    res.json({ ok: true, linkedAgents, recoveryAddress: algorandAddress });
+  } catch (err) {
+    console.error("[owner/auth/link-algorand-recovery]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Failed" });
   }
 });
 
@@ -2319,6 +2340,17 @@ app.post("/api/agents/:agentId/auth/webauthn-login", requirePortalAuth, async (r
       msg.includes("verification") ? 401 :
       msg.includes("challenge")    ? 400 :
       401;
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.post("/api/agents/:agentId/auth/webauthn-adopt-challenge", requirePortalAuth, async (req, res) => {
+  const agentId = String(req.params.agentId || "");
+  try {
+    res.json(await issueWebAuthnAdoptChallenge(agentId));
+  } catch (err) {
+    const msg    = err instanceof Error ? err.message : String(err);
+    const status = msg.includes("not found") ? 404 : 500;
     res.status(status).json({ error: msg });
   }
 });

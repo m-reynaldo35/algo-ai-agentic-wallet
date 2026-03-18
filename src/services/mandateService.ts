@@ -217,7 +217,9 @@ function verifyMandateHmac(mandate: Mandate): boolean {
 
 const WEBAUTHN_REG_CHAL_PREFIX   = "x402:webauthn:reg-challenge:";    // {agentId} → challenge
 const WEBAUTHN_LOGIN_CHAL_PREFIX = "x402:webauthn:login-challenge:";   // {agentId} → challenge
+const WEBAUTHN_ADOPT_CHAL_PREFIX = "x402:webauthn:adopt-challenge:";   // {agentId} → challenge (purpose-bound)
 const OWNER_WEBAUTHN_CHAL_PREFIX = "x402:owner-webauthn-chal:";        // {challengeId} → challenge
+const WEBAUTHN_COUNTER_PREFIX    = "x402:webauthn-counter:";            // {credentialId} → canonical counter
 
 function getWebAuthnConfig(): { rpId: string; origins: string[] } {
   const rpId = process.env.FIDO2_RP_ID ?? process.env.LIQUID_AUTH_RP_ID ?? "localhost";
@@ -235,6 +237,21 @@ function getWebAuthnConfig(): { rpId: string; origins: string[] } {
 
   const origins = rawOrigins.split(",").map((s) => s.trim()).filter(Boolean);
   return { rpId, origins };
+}
+
+/** Get the canonical anti-replay counter for a WebAuthn credential. */
+async function getCanonicalCounter(credentialId: string, fallback = 0): Promise<number> {
+  const redis = getRedis();
+  if (!redis) return fallback;
+  const stored = await redis.get<number>(`${WEBAUTHN_COUNTER_PREFIX}${credentialId}`);
+  return stored != null ? Number(stored) : fallback;
+}
+
+/** Persist the updated counter for a WebAuthn credential. */
+async function setCanonicalCounter(credentialId: string, counter: number): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.set(`${WEBAUTHN_COUNTER_PREFIX}${credentialId}`, counter);
 }
 
 // ── Challenge lifecycle ────────────────────────────────────────────
@@ -443,6 +460,7 @@ export async function createMandate(
     const { rpId, origins } = getWebAuthnConfig();
     let verification;
     try {
+      const canonicalCounter = await getCanonicalCounter(input.webauthnAssertion!.id, agent.webauthnCounter ?? 0);
       verification = await verifyAuthenticationResponse({
         response:            input.webauthnAssertion!,
         expectedChallenge,
@@ -451,7 +469,7 @@ export async function createMandate(
         credential: {
           id:        input.webauthnAssertion!.id,
           publicKey: isoBase64URL.toBuffer(agent.webauthnPublicKey),
-          counter:   agent.webauthnCounter ?? 0,
+          counter:   canonicalCounter,
         },
       });
     } catch (err) {
@@ -463,8 +481,8 @@ export async function createMandate(
       throw new Error("WebAuthn assertion not verified");
     }
 
-    // Update counter (anti-replay)
-    await updateAgentRecord({ ...agent, webauthnCounter: verification.authenticationInfo.newCounter });
+    // Update canonical counter (shared across all agents using this credential)
+    await setCanonicalCounter(input.webauthnAssertion!.id, verification.authenticationInfo.newCounter);
 
   } else {
     // ── Liquid Auth / Pera Connect path ───────────────────────
@@ -973,12 +991,16 @@ export async function verifyAndRegisterWebAuthn(
 
   const ownerWalletId = agent.ownerWalletId || `webauthn:${credentialID}`;
 
+  // Store canonical counter in dedicated Redis key so all agents sharing this
+  // credential use the same anti-replay counter.
+  await setCanonicalCounter(credentialID, counter);
+
   await updateAgentRecord({
     ...agent,
     ownerWalletId,
     webauthnCredentialId: credentialID,
     webauthnPublicKey:    publicKeyCose,
-    webauthnCounter:      counter,
+    webauthnCounter:      counter, // kept for backwards-compat reads; canonical is in Redis
   });
 
   // Keep the WebAuthn owner index up to date so listAgentsByWebAuthnOwner
@@ -1024,6 +1046,36 @@ export async function issueWebAuthnLoginChallenge(agentId: string): Promise<{
 }
 
 /**
+ * Issue a purpose-bound challenge for the adopt-owner flow.
+ * Stored under a separate key prefix from login challenges so the two
+ * cannot be confused (defence against confused-deputy attacks).
+ */
+export async function issueWebAuthnAdoptChallenge(agentId: string): Promise<{
+  challenge:        string;
+  allowCredentials: Array<{ id: string; type: "public-key" }>;
+  rpId:             string;
+}> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const agent = await getAgent(agentId);
+  if (!agent) throw new Error(`Agent not found: ${agentId}`);
+
+  const challengeBytes = new Uint8Array(32);
+  crypto.getRandomValues(challengeBytes);
+  const challenge = isoBase64URL.fromBuffer(Buffer.from(challengeBytes));
+
+  await redis.set(`${WEBAUTHN_ADOPT_CHAL_PREFIX}${agentId}`, challenge, { ex: CHALLENGE_TTL_S });
+
+  const { rpId } = getWebAuthnConfig();
+  return {
+    challenge,
+    allowCredentials: [],   // discoverable — browser shows all matching credentials
+    rpId,
+  };
+}
+
+/**
  * Verify a WebAuthn login assertion (navigator.credentials.get result).
  * Consumes the single-use login challenge and updates the authenticator counter.
  * Returns the agent's ownerWalletId on success.
@@ -1051,18 +1103,19 @@ export async function verifyWebAuthnLoginAssertion(
   }
 
   const { rpId, origins } = getWebAuthnConfig();
+  const canonicalCounter  = await getCanonicalCounter(assertion.id, agent.webauthnCounter ?? 0);
 
   let verification;
   try {
     verification = await verifyAuthenticationResponse({
-      response:         assertion,
+      response:          assertion,
       expectedChallenge: challenge,
-      expectedOrigin:   origins,
-      expectedRPID:     rpId,
+      expectedOrigin:    origins,
+      expectedRPID:      rpId,
       credential: {
         id:        assertion.id,
         publicKey: isoBase64URL.toBuffer(agent.webauthnPublicKey),
-        counter:   agent.webauthnCounter ?? 0,
+        counter:   canonicalCounter,
       },
     });
   } catch (err) {
@@ -1075,10 +1128,7 @@ export async function verifyWebAuthnLoginAssertion(
     throw new Error("WebAuthn login assertion not verified");
   }
 
-  await updateAgentRecord({
-    ...agent,
-    webauthnCounter: verification.authenticationInfo.newCounter,
-  });
+  await setCanonicalCounter(assertion.id, verification.authenticationInfo.newCounter);
 
   console.log(`[MandateService] WebAuthn login verified: agent=${agentId} owner=${agent.ownerWalletId.slice(0, 16)}…`);
   return { ownerWalletId: agent.ownerWalletId };
@@ -1146,6 +1196,8 @@ export async function verifyOwnerWebAuthnLoginAssertion(
   }
 
   const { rpId, origins } = getWebAuthnConfig();
+  const canonicalCounter  = await getCanonicalCounter(credentialId, masterAgent.webauthnCounter ?? 0);
+
   let verification;
   try {
     verification = await verifyAuthenticationResponse({
@@ -1156,7 +1208,7 @@ export async function verifyOwnerWebAuthnLoginAssertion(
       credential: {
         id:        credentialId,
         publicKey: isoBase64URL.toBuffer(masterAgent.webauthnPublicKey),
-        counter:   masterAgent.webauthnCounter ?? 0,
+        counter:   canonicalCounter,
       },
     });
   } catch (err) {
@@ -1164,8 +1216,7 @@ export async function verifyOwnerWebAuthnLoginAssertion(
   }
   if (!verification.verified) throw new Error("Owner WebAuthn assertion not verified");
 
-  // Update counter on the master agent (anti-replay)
-  await updateAgentRecord({ ...masterAgent, webauthnCounter: verification.authenticationInfo.newCounter });
+  await setCanonicalCounter(credentialId, verification.authenticationInfo.newCounter);
 
   console.log(`[MandateService] Owner WebAuthn login: owner=${ownerWalletId.slice(0, 24)}… agents=${agents.length}`);
   return { ownerWalletId };
@@ -1190,8 +1241,8 @@ export async function adoptWebAuthnOwner(
   const redis = getRedis();
   if (!redis) throw new Error("Redis not available");
 
-  const challenge = await redis.getdel(`${WEBAUTHN_LOGIN_CHAL_PREFIX}${agentId}`) as string | null;
-  if (!challenge) throw new Error("No active adopt challenge — call webauthn-login-challenge first");
+  const challenge = await redis.getdel(`${WEBAUTHN_ADOPT_CHAL_PREFIX}${agentId}`) as string | null;
+  if (!challenge) throw new Error("No active adopt challenge — call webauthn-adopt-challenge first");
 
   const agent = await getAgent(agentId);
   if (!agent) throw new Error(`Agent not found: ${agentId}`);
@@ -1209,7 +1260,9 @@ export async function adoptWebAuthnOwner(
     throw new Error("No existing agent found with this passkey. Please register the passkey on another agent first.");
   }
 
-  const { rpId, origins } = getWebAuthnConfig();
+  const { rpId, origins }  = getWebAuthnConfig();
+  const canonicalCounter   = await getCanonicalCounter(credentialId, masterAgent.webauthnCounter ?? 0);
+
   let verification;
   try {
     verification = await verifyAuthenticationResponse({
@@ -1220,7 +1273,7 @@ export async function adoptWebAuthnOwner(
       credential: {
         id:        credentialId,
         publicKey: isoBase64URL.toBuffer(masterAgent.webauthnPublicKey),
-        counter:   masterAgent.webauthnCounter ?? 0,
+        counter:   canonicalCounter,
       },
     });
   } catch (err) {
@@ -1229,9 +1282,7 @@ export async function adoptWebAuthnOwner(
   if (!verification.verified) throw new Error("Adopt WebAuthn assertion not verified");
 
   const newCounter = verification.authenticationInfo.newCounter;
-
-  // Update counter on master agent (anti-replay for that credential)
-  await updateAgentRecord({ ...masterAgent, webauthnCounter: newCounter });
+  await setCanonicalCounter(credentialId, newCounter);
 
   // Bind the new agent under the same ownerWalletId and copy credential fields
   await updateAgentRecord({
@@ -1245,6 +1296,7 @@ export async function adoptWebAuthnOwner(
   // Add new agent to the WebAuthn owner index
   await indexWebAuthnOwner(ownerWalletId, agentId).catch(() => {/* non-fatal */});
 
+  emitSecurityEvent({ type: "WEBAUTHN_OWNER_ADOPTED", agentId, detail: { ownerWalletId: ownerWalletId.slice(0, 24) }, timestamp: new Date().toISOString() });
   console.log(`[MandateService] WebAuthn owner adopted: agent=${agentId} owner=${ownerWalletId.slice(0, 24)}…`);
   return { ownerWalletId };
 }

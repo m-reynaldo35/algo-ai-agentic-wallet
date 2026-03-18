@@ -52,7 +52,8 @@ export type SecurityEventType =
   | "DRAIN_VELOCITY_HALT"       // signer balance dropped too fast — guardian halted signing
   | "SWEEP_ADDR_TAMPER"         // cold wallet sweep address mismatch detected
   // ── On-chain monitor events (Module 9) ───────────────────────
-  | "SIGNER_KEY_COMPROMISE";    // on-chain outflows exceed Gate 5 authorized total — key compromise suspected
+  | "SIGNER_KEY_COMPROMISE"     // on-chain outflows exceed Gate 5 authorized total — key compromise suspected
+  | "WEBAUTHN_OWNER_ADOPTED";   // existing passkey adopted for a new agent (master account link)
 
 // ── Event shape ────────────────────────────────────────────────────
 

@@ -706,14 +706,16 @@ const PENDING_OWNER_PREFIX = "x402:pending-owner:";
 const PENDING_TTL_S        = 86_400; // 24 hours
 
 export interface PendingAgentRecord {
-  agentId:      string;
-  address:      string;
+  agentId:        string;
+  address:        string;
   /** Base64-encoded 64-byte Algorand secret key — deleted after activation */
-  secretKeyB64: string;
-  platform?:    string;
+  secretKeyB64:   string;
+  platform?:      string;
   /** Algorand address of the owner who initiated creation */
-  ownerAddress?: string;
-  createdAt:    string;
+  ownerAddress?:  string;
+  /** WebAuthn ownerWalletId if agent was created by a passkey-authenticated user */
+  ownerWalletId?: string;
+  createdAt:      string;
 }
 
 export async function storePendingAgent(record: PendingAgentRecord): Promise<void> {
@@ -803,4 +805,24 @@ export async function scanAllPendingAgents(): Promise<PendingAgentRecord[]> {
   } while (cursor !== 0);
 
   return records;
+}
+
+/**
+ * Link all agents owned by a WebAuthn passkey account to an Algorand address index.
+ * After linking, users can log in with their Algorand wallet to recover access.
+ */
+export async function linkAlgorandRecovery(
+  webauthnOwnerWalletId: string,
+  algorandAddress:       string,
+): Promise<number> {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis not available");
+
+  const agents = await listAgentsByWebAuthnOwner(webauthnOwnerWalletId);
+  if (!agents.length) return 0;
+
+  await Promise.all(
+    agents.map((a) => redis.sadd(`${OWNER_PREFIX}${algorandAddress}`, a.agentId)),
+  );
+  return agents.length;
 }

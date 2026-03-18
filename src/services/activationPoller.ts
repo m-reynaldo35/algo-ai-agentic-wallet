@@ -113,6 +113,7 @@ async function checkAndActivate(): Promise<void> {
         authAddr:          signerAddress,
         custody:           "rocca",
         platform:          pending.platform,
+        ownerWalletId:     pending.ownerWalletId,
         ownerAddress:      pending.ownerAddress,
         ownerLinkedAt:     pending.ownerAddress ? new Date().toISOString() : undefined,
         createdAt:         pending.createdAt,
