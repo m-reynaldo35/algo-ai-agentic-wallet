@@ -8,9 +8,10 @@ import MandateCreateModal from "@/components/mandates/MandateCreateModal";
 import MandateRevokeModal from "@/components/mandates/MandateRevokeModal";
 
 interface AgentSummary {
-  agentId:  string;
-  status?:  string;
-  address?: string;
+  agentId:       string;
+  status?:       string;
+  address?:      string;
+  ownerWalletId?: string;
 }
 
 interface Session {
@@ -110,17 +111,21 @@ function MandatesContent() {
 
         setAgentId(resolvedAgentId);
 
-        // Fetch the agent record to get its ownerWalletId
-        // Use only the value stored on the agent — falling back to session address
-        // causes server-side "ownerWalletId mismatch" errors on mandate creation.
+        // Seed immediately from the session agents list (WebAuthn users get full
+        // agent objects back in the session response — no extra round-trip needed)
+        const sessionAgent = (data.agents ?? []).find((a) => a.agentId === resolvedAgentId);
+        if (sessionAgent?.ownerWalletId) setOwnerWalletId(sessionAgent.ownerWalletId);
+        if (sessionAgent?.address)       setAgentAddress(sessionAgent.address);
+
+        // Confirm / override with a fresh agent fetch (more authoritative)
         try {
           const ar = await fetch(`/api/agents/${encodeURIComponent(resolvedAgentId)}`);
           if (ar.ok) {
             const agent = await ar.json() as { ownerWalletId?: string; address?: string };
-            setOwnerWalletId(agent.ownerWalletId ?? "");
-            setAgentAddress(agent.address ?? "");
+            if (agent.ownerWalletId) setOwnerWalletId(agent.ownerWalletId);
+            if (agent.address)       setAgentAddress(agent.address);
           }
-        } catch { /* ownerWalletId stays "" — modal will show binding prompt */ }
+        } catch { /* use session-seeded values */ }
 
         setReady(true);
       })

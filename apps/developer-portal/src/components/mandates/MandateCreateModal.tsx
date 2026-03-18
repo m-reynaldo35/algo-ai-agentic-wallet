@@ -195,13 +195,6 @@ export default function MandateCreateModal({ agentId, ownerWalletId, agentAddres
             </button>
           </div>
 
-          {/* Unbound-agent guard */}
-          {!ownerWalletId && (
-            <div className="mb-4 rounded-md bg-amber-950/50 border border-amber-800 px-3 py-2.5 text-xs text-amber-300">
-              This agent has no bound wallet yet. Go to the agent dashboard and register an auth method before creating mandates.
-            </div>
-          )}
-
           {/* Form fields */}
           <div className="space-y-4">
             {/* Owner (readonly) — show the agent's blockchain address */}
@@ -326,8 +319,7 @@ export default function MandateCreateModal({ agentId, ownerWalletId, agentAddres
                 {!sessionId && (
                   <button
                     onClick={() => setShowQR(true)}
-                    disabled={!ownerWalletId}
-                    className="flex-1 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+                    className="flex-1 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-colors"
                   >
                     Continue to Wallet Sign
                   </button>
@@ -335,7 +327,7 @@ export default function MandateCreateModal({ agentId, ownerWalletId, agentAddres
                 {sessionId && (
                   <button
                     onClick={handleLiquidSubmit}
-                    disabled={submitting || !ownerWalletId}
+                    disabled={submitting}
                     className="flex-1 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
                   >
                     {submitting ? "Creating…" : "Create Mandate"}
@@ -345,7 +337,7 @@ export default function MandateCreateModal({ agentId, ownerWalletId, agentAddres
             ) : (
               <button
                 onClick={handleWebAuthn}
-                disabled={submitting || !ownerWalletId}
+                disabled={submitting}
                 className="flex-1 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
               >
                 {submitting ? "Signing…" : "Sign with Passkey"}
