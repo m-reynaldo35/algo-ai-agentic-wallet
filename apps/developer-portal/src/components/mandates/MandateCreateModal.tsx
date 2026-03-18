@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import LiquidAuthQRModal from "./LiquidAuthQRModal";
 
 interface Props {
@@ -45,13 +45,25 @@ function serializeAssertion(assertion: PublicKeyCredential) {
   };
 }
 
-export default function MandateCreateModal({ agentId, ownerWalletId, agentAddress, onCreated, onClose }: Props) {
+export default function MandateCreateModal({ agentId, ownerWalletId, agentAddress: agentAddressProp, onCreated, onClose }: Props) {
   // Default to WebAuthn if the agent is passkey-only (no Algorand address as owner)
   const [authMethod,   setAuthMethod]   = useState<AuthMethod>(
     ownerWalletId.startsWith("webauthn:") ? "webauthn" : "liquid",
   );
   const [sessionId,    setSessionId]    = useState<string | null>(null);
   const [showQR,       setShowQR]       = useState(false);
+
+  // Fetch the agent's Algorand address directly — simple and reliable
+  const [agentAddress, setAgentAddress] = useState(agentAddressProp ?? "");
+  useEffect(() => {
+    if (agentAddress) return; // already have it from prop
+    fetch(`/api/agents/${agentId}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data: { address?: string } | null) => {
+        if (data?.address) setAgentAddress(data.address);
+      })
+      .catch(() => {});
+  }, [agentId, agentAddress]);
 
   // Form fields
   const [maxPerTx,     setMaxPerTx]     = useState("");
