@@ -275,8 +275,8 @@ function Step3({
       <div>
         <h2 className="text-base font-semibold text-white mb-1">Fund your agent</h2>
         <p className="text-sm text-zinc-400">
-          Send ALGO and USDC to your agent&apos;s address from your Pera wallet.
-          Both go to the same address.
+          First send <span className="text-white font-medium">0.5 ALGO</span> — this activates
+          your agent and opts it into USDC automatically. Then deposit USDC to start spending.
         </p>
       </div>
 
@@ -308,7 +308,7 @@ function Step3({
 
       {/* Two QR codes side by side */}
       <div className="grid grid-cols-2 gap-3">
-        {/* ALGO */}
+        {/* ALGO — always active */}
         <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-3 space-y-2">
           <div className="flex items-center justify-between">
             <p className="text-xs font-medium text-white">ALGO <span className="text-zinc-500 font-normal">(gas)</span></p>
@@ -331,7 +331,6 @@ function Step3({
               {copiedAlgo ? "✓" : "Copy"}
             </button>
           </div>
-          {/* Balance progress */}
           <div className="space-y-1">
             <div className="h-1 bg-zinc-700 rounded-full overflow-hidden">
               <div
@@ -345,35 +344,54 @@ function Step3({
           </div>
         </div>
 
-        {/* USDC */}
-        <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-3 space-y-2">
+        {/* USDC — locked until agent is activated (opted in) */}
+        <div className={`rounded-lg p-3 space-y-2 border transition-colors ${
+          activated
+            ? "bg-zinc-800/60 border-zinc-700"
+            : "bg-zinc-900/40 border-zinc-800 opacity-60"
+        }`}>
           <div className="flex items-center justify-between">
-            <p className="text-xs font-medium text-white">USDC <span className="text-zinc-500 font-normal">(spending)</span></p>
-            <span className="text-xs text-zinc-500">any amount</span>
+            <p className={`text-xs font-medium ${activated ? "text-white" : "text-zinc-500"}`}>
+              USDC <span className="text-zinc-600 font-normal">(spending)</span>
+            </p>
+            <span className="text-xs text-zinc-600">any amount</span>
           </div>
-          <div className="bg-white rounded p-1 inline-block">
-            <canvas ref={usdcCanvasRef} style={{ width: 120, height: 120, display: "block" }} />
-          </div>
-          <div className="flex gap-1.5">
-            <a
-              href={usdcUri}
-              className="flex-1 text-center px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded transition-colors"
-            >
-              Open in Pera
-            </a>
-            <button
-              onClick={() => copyAddress("usdc")}
-              className="px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded transition-colors"
-            >
-              {copiedUsdc ? "✓" : "Copy"}
-            </button>
-          </div>
-          <p className="text-xs text-zinc-600">
-            {balance !== null && balance.microUsdc > 0
-              ? `${(balance.microUsdc / 1_000_000).toFixed(2)} USDC deposited`
-              : "Optional — add any time"
-            }
-          </p>
+          {activated ? (
+            <>
+              <div className="bg-white rounded p-1 inline-block">
+                <canvas ref={usdcCanvasRef} style={{ width: 120, height: 120, display: "block" }} />
+              </div>
+              <div className="flex gap-1.5">
+                <a
+                  href={usdcUri}
+                  className="flex-1 text-center px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded transition-colors"
+                >
+                  Open in Pera
+                </a>
+                <button
+                  onClick={() => copyAddress("usdc")}
+                  className="px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded transition-colors"
+                >
+                  {copiedUsdc ? "✓" : "Copy"}
+                </button>
+              </div>
+              <p className="text-xs text-zinc-600">
+                {balance !== null && balance.microUsdc > 0
+                  ? `${(balance.microUsdc / 1_000_000).toFixed(2)} USDC deposited`
+                  : "Optional — add any time"
+                }
+              </p>
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-[120px] gap-2">
+              <svg className="w-5 h-5 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+              <p className="text-xs text-zinc-600 text-center leading-relaxed">
+                Send ALGO first — USDC opt-in happens automatically on activation
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
