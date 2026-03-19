@@ -105,6 +105,8 @@ export async function proxy(req: NextRequest) {
   return NextResponse.redirect(loginUrl);
 }
 
+export default proxy;
+
 export const config = {
   matcher: [
     // Match all routes except static files and _next internals
