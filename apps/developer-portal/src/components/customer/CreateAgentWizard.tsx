@@ -198,7 +198,7 @@ function Step2({
   );
 }
 
-// ── Step 3 — Fund agent (ALGO + USDC combined) ─────────────────────────────
+// ── Step 3 — Fund agent: Phase 1 = ALGO, Phase 2 = USDC ──────────────────
 
 function Step3({
   agentId,
@@ -209,34 +209,30 @@ function Step3({
   address:  string;
   onDone:   () => void;
 }) {
-  const algoCanvasRef           = useRef<HTMLCanvasElement>(null);
-  const usdcCanvasRef           = useRef<HTMLCanvasElement>(null);
-  const [copiedAlgo, setCopiedAlgo] = useState(false);
-  const [copiedUsdc, setCopiedUsdc] = useState(false);
+  const canvasRef               = useRef<HTMLCanvasElement>(null);
+  const [copied, setCopied]     = useState(false);
   const [balance, setBalance]   = useState<Balance | null>(null);
   const [activated, setActivated] = useState(false);
   const [checking, setChecking] = useState(false);
 
-  const algoUri   = `algorand://${address}?amount=${MIN_ALGO_MICRO}`;
-  const usdcUri   = `algorand://${address}?asset=${USDC_ASSET_ID}`;
+  // Phase: "algo" until activated, then "usdc"
+  const phase   = activated ? "usdc" : "algo";
+  const activeUri = phase === "algo"
+    ? `algorand://${address}?amount=${MIN_ALGO_MICRO}`
+    : `algorand://${address}?asset=${USDC_ASSET_ID}`;
   const truncated = `${address.slice(0, 10)}…${address.slice(-8)}`;
-  const algoFunded = (balance?.microAlgo ?? 0) >= MIN_ALGO_MICRO;
+  const algoFunded   = (balance?.microAlgo ?? 0) >= MIN_ALGO_MICRO;
   const algoProgress = Math.min(100, Math.round(((balance?.microAlgo ?? 0) / MIN_ALGO_MICRO) * 100));
 
+  // Re-render QR whenever the URI changes (phase switch or address)
   useEffect(() => {
-    if (algoCanvasRef.current) {
-      QRCode.toCanvas(algoCanvasRef.current, algoUri, {
-        width: 120, margin: 2,
+    if (canvasRef.current) {
+      QRCode.toCanvas(canvasRef.current, activeUri, {
+        width: 160, margin: 2,
         color: { dark: "#000000", light: "#ffffff" },
       });
     }
-    if (usdcCanvasRef.current) {
-      QRCode.toCanvas(usdcCanvasRef.current, usdcUri, {
-        width: 120, margin: 2,
-        color: { dark: "#000000", light: "#ffffff" },
-      });
-    }
-  }, [algoUri, usdcUri]);
+  }, [activeUri]);
 
   const fetchBalance = useCallback(async () => {
     try {
@@ -263,141 +259,118 @@ function Step3({
     return () => { clearInterval(balId); clearInterval(actId); };
   }, [fetchBalance, checkActivated]);
 
-  function copyAddress(which: "algo" | "usdc") {
+  function copyAddress() {
     navigator.clipboard.writeText(address).then(() => {
-      if (which === "algo") { setCopiedAlgo(true); setTimeout(() => setCopiedAlgo(false), 1500); }
-      else                  { setCopiedUsdc(true); setTimeout(() => setCopiedUsdc(false), 1500); }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
     });
   }
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-base font-semibold text-white mb-1">Fund your agent</h2>
-        <p className="text-sm text-zinc-400">
-          First send <span className="text-white font-medium">0.5 ALGO</span> — this activates
-          your agent and opts it into USDC automatically. Then deposit USDC to start spending.
-        </p>
-      </div>
 
-      {activated && (
-        <div className="flex items-center gap-2 bg-emerald-900/20 border border-emerald-800/50 rounded-md px-3 py-2">
-          <svg className="w-4 h-4 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-          </svg>
-          <span className="text-emerald-400 text-xs font-medium">{agentId} is active — opted into USDC and ready</span>
-        </div>
-      )}
-
-      {/* Address bar shared by both */}
-      <div className="bg-zinc-800/60 border border-zinc-700 rounded-md px-3 py-2.5 flex items-center justify-between gap-2">
-        <div>
-          <p className="text-xs text-zinc-500 mb-0.5">Agent address</p>
-          <span className="font-mono text-zinc-200 text-xs">{truncated}</span>
-        </div>
-        <button
-          onClick={() => navigator.clipboard.writeText(address)}
-          className="text-zinc-500 hover:text-emerald-400 transition-colors shrink-0"
-          title="Copy address"
-        >
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-          </svg>
-        </button>
-      </div>
-
-      {/* Two QR codes side by side */}
-      <div className="grid grid-cols-2 gap-3">
-        {/* ALGO — always active */}
-        <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-medium text-white">ALGO <span className="text-zinc-500 font-normal">(gas)</span></p>
-            <span className="text-xs text-zinc-500">min 0.5</span>
-          </div>
-          <div className="bg-white rounded p-1 inline-block">
-            <canvas ref={algoCanvasRef} style={{ width: 120, height: 120, display: "block" }} />
-          </div>
-          <div className="flex gap-1.5">
-            <a
-              href={algoUri}
-              className="flex-1 text-center px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded transition-colors"
-            >
-              Open in Pera
-            </a>
-            <button
-              onClick={() => copyAddress("algo")}
-              className="px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded transition-colors"
-            >
-              {copiedAlgo ? "✓" : "Copy"}
-            </button>
-          </div>
-          <div className="space-y-1">
-            <div className="h-1 bg-zinc-700 rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all duration-500 ${algoFunded ? "bg-emerald-500" : "bg-zinc-500"}`}
-                style={{ width: `${algoProgress}%` }}
-              />
-            </div>
-            <p className="text-xs text-zinc-600">
-              {balance === null ? "Checking…" : `${((balance.microAlgo) / 1_000_000).toFixed(3)} / 0.5 ALGO`}
-            </p>
-          </div>
-        </div>
-
-        {/* USDC — locked until agent is activated (opted in) */}
-        <div className={`rounded-lg p-3 space-y-2 border transition-colors ${
+      {/* Phase indicator */}
+      <div className="flex items-center gap-3">
+        <div className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border ${
           activated
-            ? "bg-zinc-800/60 border-zinc-700"
-            : "bg-zinc-900/40 border-zinc-800 opacity-60"
+            ? "bg-emerald-900/30 border-emerald-700/50 text-emerald-400"
+            : "bg-zinc-800 border-zinc-700 text-white"
         }`}>
-          <div className="flex items-center justify-between">
-            <p className={`text-xs font-medium ${activated ? "text-white" : "text-zinc-500"}`}>
-              USDC <span className="text-zinc-600 font-normal">(spending)</span>
+          {activated
+            ? <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg> ALGO sent</>
+            : "1 — Send ALGO"
+          }
+        </div>
+        <svg className="w-3 h-3 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        <div className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border ${
+          activated
+            ? "bg-zinc-800 border-zinc-700 text-white"
+            : "border-zinc-800 text-zinc-600"
+        }`}>
+          2 — Deposit USDC
+        </div>
+      </div>
+
+      {/* Heading */}
+      <div>
+        {activated ? (
+          <>
+            <div className="flex items-center gap-2 mb-2">
+              <svg className="w-4 h-4 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+              <span className="text-emerald-400 text-xs font-medium">{agentId} is active — opted into USDC</span>
+            </div>
+            <h2 className="text-base font-semibold text-white mb-1">Deposit USDC</h2>
+            <p className="text-sm text-zinc-400">
+              Your agent is ready to receive USDC. Deposit any amount to start spending.
             </p>
-            <span className="text-xs text-zinc-600">any amount</span>
+          </>
+        ) : (
+          <>
+            <h2 className="text-base font-semibold text-white mb-1">Send ALGO to activate</h2>
+            <p className="text-sm text-zinc-400">
+              Send at least <span className="text-white font-medium">0.5 ALGO</span> to your agent&apos;s address.
+              This activates the wallet and opts it into USDC automatically.
+            </p>
+          </>
+        )}
+      </div>
+
+      {/* Single QR — switches URI on activation */}
+      <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-4 flex gap-4 items-center">
+        <div className="bg-white rounded-lg p-1.5 shrink-0">
+          <canvas ref={canvasRef} style={{ width: 160, height: 160, display: "block" }} />
+        </div>
+        <div className="flex-1 min-w-0 space-y-3">
+          <div>
+            <p className="text-xs text-zinc-500 mb-1">{activated ? "Deposit USDC to" : "Send ALGO to"}</p>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-zinc-200 text-xs truncate">{truncated}</span>
+              <button onClick={copyAddress} className="shrink-0 text-zinc-500 hover:text-emerald-400 transition-colors">
+                {copied
+                  ? <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                  : <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                }
+              </button>
+            </div>
           </div>
-          {activated ? (
-            <>
-              <div className="bg-white rounded p-1 inline-block">
-                <canvas ref={usdcCanvasRef} style={{ width: 120, height: 120, display: "block" }} />
-              </div>
-              <div className="flex gap-1.5">
-                <a
-                  href={usdcUri}
-                  className="flex-1 text-center px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded transition-colors"
-                >
-                  Open in Pera
-                </a>
-                <button
-                  onClick={() => copyAddress("usdc")}
-                  className="px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded transition-colors"
-                >
-                  {copiedUsdc ? "✓" : "Copy"}
-                </button>
+
+          <a
+            href={activeUri}
+            className="flex items-center justify-center gap-1.5 w-full px-3 py-2 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded-lg transition-colors font-medium"
+          >
+            Open in Pera
+          </a>
+
+          {/* ALGO progress bar (phase 1 only) */}
+          {!activated && (
+            <div className="space-y-1">
+              <div className="h-1 bg-zinc-700 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${algoFunded ? "bg-emerald-500" : "bg-zinc-500"}`}
+                  style={{ width: `${algoProgress}%` }}
+                />
               </div>
               <p className="text-xs text-zinc-600">
-                {balance !== null && balance.microUsdc > 0
-                  ? `${(balance.microUsdc / 1_000_000).toFixed(2)} USDC deposited`
-                  : "Optional — add any time"
-                }
-              </p>
-            </>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-[120px] gap-2">
-              <svg className="w-5 h-5 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-              </svg>
-              <p className="text-xs text-zinc-600 text-center leading-relaxed">
-                Send ALGO first — USDC opt-in happens automatically on activation
+                {balance === null ? "Checking balance…" : `${(balance.microAlgo / 1_000_000).toFixed(3)} / 0.5 ALGO received`}
               </p>
             </div>
           )}
+
+          {/* USDC balance (phase 2) */}
+          {activated && (
+            <p className="text-xs text-zinc-500">
+              {balance !== null && balance.microUsdc > 0
+                ? `${(balance.microUsdc / 1_000_000).toFixed(2)} USDC deposited`
+                : "No USDC yet — deposit any amount"
+              }
+            </p>
+          )}
         </div>
       </div>
-
-      <p className="text-xs text-zinc-600">
-        {activated ? "ALGO received — your agent is active." : "Polling every 5 seconds…"}
-      </p>
 
       <button
         onClick={onDone}
@@ -409,7 +382,7 @@ function Step3({
 
       {activated && (
         <p className="text-center text-xs text-zinc-500">
-          You can deposit USDC now or later from your dashboard.
+          You can top up USDC any time from your dashboard.
         </p>
       )}
     </div>
