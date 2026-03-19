@@ -17,6 +17,7 @@ import { verifyCustomerSession, CUSTOMER_SESSION_COOKIE } from "@/lib/customerSe
 const PUBLIC_PATHS = new Set([
   "/",              // landing page — always public
   "/login",
+  "/get-started",   // prerequisites guide — no auth required
   "/privacy",
   "/terms",
   "/api/auth/login",
