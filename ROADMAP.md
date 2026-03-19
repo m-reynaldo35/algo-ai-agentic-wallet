@@ -379,7 +379,7 @@ Revenue is stable USDC. AI agents and humans both work seamlessly.
 - [x] `x402-client`: read `X-Agent-Gas-Status` and `X-Agent-Gas-Remaining` headers (`parseGasInfo()`)
 - [x] `x402-cli`: add `gas --agent` command showing status + remaining transactions
 - [x] `DOCS_FOR_AGENTS.md`: update activation flow, gas headers, `parseGasInfo` example
-- [ ] `/docs` page: update onboarding guide (portal redeploy needed)
+- [x] `/docs` page: update onboarding guide (portal redeploy needed)
 
 ---
 

@@ -37,11 +37,13 @@ export default function DocsPage() {
           <p className="text-xs text-zinc-500 uppercase tracking-widest mb-3">On this page</p>
           <ol className="space-y-1 text-sm text-zinc-400">
             {[
+              ["Who is this for?", "#who"],
               ["Overview", "#overview"],
               ["Testnet vs Mainnet", "#networks"],
-              ["Agent Registration", "#registration"],
+              ["Agent Onboarding", "#registration"],
               ["Install & Quick Start", "#quickstart"],
               ["402 Handshake Flow", "#handshake"],
+              ["Gas Headers", "#gas"],
               ["API Reference", "#api"],
               ["SDK Methods", "#sdk"],
               ["Mandates", "#mandates"],
@@ -58,6 +60,70 @@ export default function DocsPage() {
         </nav>
 
         <div className="space-y-16">
+
+          {/* Who is this for? */}
+          <Section title="Who is this for?" id="who">
+            <div className="grid sm:grid-cols-3 gap-4">
+              {[
+                {
+                  label: "Algorand wallet holders",
+                  color: "emerald",
+                  items: [
+                    "Have Pera or Defly installed",
+                    "Sign in with your wallet",
+                    "Create an agent via the dashboard",
+                    "Fund it with ALGO + USDC from Pera",
+                  ],
+                  cta: { label: "Sign in →", href: "/app/login" },
+                },
+                {
+                  label: "Developers / AI agents",
+                  color: "violet",
+                  items: [
+                    "Use the REST API directly",
+                    "POST /api/agents/create → get mnemonic",
+                    "Send 0.5 ALGO to activate",
+                    "Use SDK or MCP in your code",
+                  ],
+                  cta: { label: "Jump to quickstart →", href: "#quickstart" },
+                },
+                {
+                  label: "New to Algorand?",
+                  color: "amber",
+                  items: [
+                    "Install Pera Wallet",
+                    "Buy ALGO on Coinbase / Binance",
+                    "Get USDC on Algorand",
+                    "Then come back and sign in",
+                  ],
+                  cta: { label: "Setup guide →", href: "/get-started" },
+                },
+              ].map(({ label, color, items, cta }) => (
+                <div key={label} className={`bg-zinc-900 border border-zinc-800 rounded-xl p-5`}>
+                  <p className={`text-sm font-semibold mb-3 ${
+                    color === "emerald" ? "text-emerald-400"
+                    : color === "violet" ? "text-violet-400"
+                    : "text-amber-400"
+                  }`}>{label}</p>
+                  <ul className="space-y-1.5 mb-4">
+                    {items.map(item => (
+                      <li key={item} className="flex items-start gap-2 text-xs text-zinc-400">
+                        <svg className="w-3 h-3 text-zinc-600 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                  <a href={cta.href} className={`text-xs font-medium hover:underline ${
+                    color === "emerald" ? "text-emerald-400"
+                    : color === "violet" ? "text-violet-400"
+                    : "text-amber-400"
+                  }`}>{cta.label}</a>
+                </div>
+              ))}
+            </div>
+          </Section>
 
           {/* Overview */}
           <Section title="Overview" id="overview">
@@ -110,35 +176,63 @@ export default function DocsPage() {
           </Section>
 
           {/* Registration */}
-          <Section title="Agent Registration" id="registration">
+          <Section title="Agent Onboarding" id="registration">
             <p className="text-zinc-400 leading-relaxed mb-6">
-              Before making x402 payments, your agent must be registered. Registration rekeyed the wallet to Rocca (our FIDO2/seedless signer) on-chain — your private key is never sent to the server and is retained by you for signing payment proofs.
+              Agents are activated by an on-chain ALGO deposit — no treasury spend, no manual opt-in. You create the agent, save the signing key, send ALGO to the address, and the server detects the deposit and automatically opts the wallet into USDC and rekeyed it to Rocca.
             </p>
-            <p className="text-zinc-400 text-sm mb-4">
-              <strong className="text-white">Prerequisites:</strong> wallet holds ≥ 0.1 ALGO, opted into USDC ASA, holds ≥ 0.01 USDC.
-            </p>
+
+            <p className="text-white text-sm font-medium mb-2">Step 1 — Create the agent</p>
             <CodeBlock
               language="typescript"
-              code={`const response = await fetch("https://api.ai-agentic-wallet.com/api/agents/register-existing", {
+              code={`const res = await fetch("https://api.ai-agentic-wallet.com/api/agents/create", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
     "X-Portal-Key": YOUR_PORTAL_API_KEY,
   },
   body: JSON.stringify({
-    agentId:  "my-agent-001",           // unique ID, alphanumeric + hyphens
-    mnemonic: "word1 word2 ... word25", // 25-word Algorand mnemonic
-    platform: "anthropic",              // optional: "openai" | "anthropic" | "custom"
+    agentId:      "my-agent-001",  // unique ID, alphanumeric + hyphens
+    ownerAddress: "PERA_ADDR...",  // optional — links agent to your wallet identity
+    platform:     "anthropic",    // optional: "openai" | "anthropic" | "custom"
   }),
 });
 
-const { agentId, address, authAddr, registrationTxnId } = await response.json();
-// address    → your agent's Algorand address
-// authAddr   → Rocca signer (auth-addr on-chain)
-// Your original mnemonic signs x402 payment proofs going forward`}
+const { agentId, address, mnemonic } = await res.json();
+// address  → your agent's Algorand address (fund this)
+// mnemonic → 25-word signing key — save to ALGO_MNEMONIC in your .env`}
             />
-            <p className="text-zinc-500 text-sm mt-4">
-              No ALGO? Use the <strong className="text-zinc-300">USDC-native onboarding</strong> flow — pay a single USDC registration fee and the protocol atomically funds your agent's ALGO reserve. See <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">POST /api/agents/onboarding-quote</code> to get started.
+
+            <p className="text-white text-sm font-medium mt-6 mb-2">Step 2 — Save the signing key</p>
+            <p className="text-zinc-400 text-sm mb-3">
+              The server discards the mnemonic immediately. Copy it into your application&apos;s environment:
+            </p>
+            <CodeBlock language="bash" code={`ALGO_MNEMONIC="word1 word2 ... word25"  # in your .env file`} />
+
+            <p className="text-white text-sm font-medium mt-6 mb-2">Step 3 — Send 0.5 ALGO to activate</p>
+            <p className="text-zinc-400 text-sm mb-3">
+              Send at least <strong className="text-white">0.5 ALGO</strong> to the <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">address</code> returned above.
+              The server polls the Algorand indexer every 10 seconds. On detection it opts the wallet into USDC and rekeyed it to Rocca — the agent status changes to <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">active</code>.
+            </p>
+            <CodeBlock
+              language="typescript"
+              code={`// Poll until active (typically 10–30 seconds after deposit)
+let agent;
+do {
+  await new Promise(r => setTimeout(r, 5000));
+  const r = await fetch(\`https://api.ai-agentic-wallet.com/api/agents/\${agentId}\`, {
+    headers: { "X-Portal-Key": YOUR_PORTAL_API_KEY },
+  });
+  agent = await r.json();
+} while (agent.status !== "active");
+
+console.log("Agent active:", agent.address);`}
+            />
+
+            <p className="text-white text-sm font-medium mt-6 mb-2">Step 4 — Deposit USDC</p>
+            <p className="text-zinc-400 text-sm">
+              Send USDC (ASA <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">31566704</code> mainnet /{" "}
+              <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">10458941</code> testnet) to the same agent address.
+              The agent is already opted in — it can receive USDC immediately after activation.
             </p>
           </Section>
 
@@ -187,6 +281,57 @@ if (result.success) {
               <p>  └─ <span className="text-emerald-400">POST</span> /api/execute &larr; Forward to settlement pipeline</p>
               <p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↳ <span className="text-emerald-400">200 SettlementResult</span> &larr; On-chain confirmation</p>
             </div>
+          </Section>
+
+          {/* Gas Headers */}
+          <Section title="Gas Headers" id="gas">
+            <p className="text-zinc-400 leading-relaxed mb-4">
+              Every payment response includes gas status headers so your agent can monitor its own ALGO balance and alert before it runs dry.
+            </p>
+            <CodeBlock
+              language="bash"
+              code={`X-Agent-Gas-Status:    ok | low | critical
+X-Agent-Gas-Remaining: 847   # estimated transactions remaining`}
+            />
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-sm border border-zinc-800 rounded-lg overflow-hidden">
+                <thead className="bg-zinc-900 text-zinc-400">
+                  <tr>
+                    <th className="text-left px-4 py-3">Status</th>
+                    <th className="text-left px-4 py-3">Meaning</th>
+                    <th className="text-left px-4 py-3">Threshold</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800">
+                  {[
+                    ["ok",       "Sufficient ALGO for many more transactions", "≥ 200,000 µALGO above MBR"],
+                    ["low",      "Refuel soon — limited transactions remaining", "< 200,000 µALGO above MBR"],
+                    ["critical", "Refuel immediately — may fail soon", "< 50,000 µALGO above MBR"],
+                  ].map(([status, meaning, threshold]) => (
+                    <tr key={status} className="bg-zinc-950">
+                      <td className={`px-4 py-3 font-mono text-sm font-medium ${
+                        status === "ok" ? "text-emerald-400" : status === "low" ? "text-amber-400" : "text-red-400"
+                      }`}>{status}</td>
+                      <td className="px-4 py-3 text-zinc-300 text-xs">{meaning}</td>
+                      <td className="px-4 py-3 text-zinc-500 text-xs font-mono">{threshold}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-zinc-500 text-sm mt-4">Use <code className="text-emerald-400 bg-zinc-800 px-1.5 py-0.5 rounded text-xs">parseGasInfo()</code> from the SDK to read these headers automatically:</p>
+            <CodeBlock
+              language="typescript"
+              code={`import { requestWithPayment, parseGasInfo } from "@algo-wallet/x402-client";
+
+const response = await requestWithPayment(url, options);
+const gas = parseGasInfo(response);
+
+if (gas?.status === "critical") {
+  console.warn(\`Gas critical — only \${gas.remaining} transactions remaining\`);
+  // trigger a refuel flow or alert your operator
+}`}
+            />
           </Section>
 
           {/* API Reference */}
@@ -268,6 +413,13 @@ if (result.success) {
                 params={[]}
                 description="Forwards a previously obtained SandboxExport to /api/execute."
               />
+              <MethodDoc
+                name="parseGasInfo(response)"
+                params={[
+                  ["response", "Response", "Required", "Fetch Response object from a payment call"],
+                ]}
+                description="Reads X-Agent-Gas-Status and X-Agent-Gas-Remaining headers. Returns { status, remaining } or null if headers are absent."
+              />
             </div>
           </Section>
 
@@ -278,7 +430,7 @@ if (result.success) {
             </p>
             <div className="grid sm:grid-cols-2 gap-4 mb-4">
               {[
-                ["Create mandate", "POST /api/agents/:id/mandate/create", "Requires human auth (FIDO2 or Liquid Auth QR)"],
+                ["Create mandate", "POST /api/agents/:id/mandate/create", "Requires human auth (Pera Connect or WebAuthn passkey)"],
                 ["Revoke mandate", "POST /api/agents/:id/mandate/:mandateId/revoke", "Immediately stops autonomous signing"],
                 ["List mandates", "GET /api/agents/:id/mandates", "Returns active mandates and usage stats"],
                 ["Issue approval token", "POST /api/agents/:id/mandate/approval-token", "Short-lived token for one-off approvals"],
@@ -291,7 +443,7 @@ if (result.success) {
               ))}
             </div>
             <p className="text-zinc-500 text-sm">
-              Two auth options for mandate governance: <strong className="text-zinc-300">WebAuthn</strong> (Touch ID / Face ID / YubiKey) or <strong className="text-zinc-300">Liquid Auth QR</strong> (scan with Pera or Defly wallet). Both produce equivalent authorisation — use whichever fits your workflow.
+              Two auth options for mandate governance: <strong className="text-zinc-300">Pera Connect</strong> (scan WalletConnect QR with Pera or Defly) or <strong className="text-zinc-300">WebAuthn</strong> (Touch ID / Face ID / YubiKey passkey). Both produce equivalent authorisation — use whichever fits your workflow.
             </p>
           </Section>
 
@@ -421,6 +573,7 @@ try {
                     ["x402 mandate list --agent <id> --all", "Include revoked mandates"],
                     ["x402 history --agent <id>", "Transaction history (last 20)"],
                     ["x402 history --agent <id> --limit 50", "Transaction history (custom limit)"],
+                    ["x402 gas --agent <id>", "Gas status — ALGO balance, tx remaining, low/critical flag"],
                   ].map(([cmd, desc]) => (
                     <tr key={cmd} className="bg-zinc-950">
                       <td className="px-4 py-3 font-mono text-emerald-400 text-xs whitespace-nowrap">{cmd}</td>

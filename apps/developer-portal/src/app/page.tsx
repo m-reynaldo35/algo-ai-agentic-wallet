@@ -40,18 +40,18 @@ const MCP_CONFIG = `// claude_desktop_config.json
 const HOW_IT_WORKS = [
   {
     step: "1",
-    title: "Create your agent wallet",
-    body:  "Generate a fresh Algorand keypair in seconds. Save the mnemonic — the server discards it immediately.",
+    title: "Sign in with your Algorand wallet",
+    body:  "Connect Pera or Defly via WalletConnect. Your wallet is your identity — no email, no password.",
   },
   {
     step: "2",
-    title: "Fund with USDC",
-    body:  "Send USDC to your agent's address from any Algorand wallet. The agent is automatically opted in and registered on-chain.",
+    title: "Create an agent and fund it",
+    body:  "Name your agent, save its signing key, then send 0.5 ALGO + USDC from your Pera wallet. The agent activates automatically.",
   },
   {
     step: "3",
-    title: "Agent pays autonomously",
-    body:  "Your code calls the SDK. The x402 handshake, signing, and on-chain settlement happen in milliseconds — no human approval.",
+    title: "Set a mandate, let it pay",
+    body:  "Define spending limits once. Your AI agent pays for APIs and data autonomously — every payment on-chain, every transaction in your dashboard.",
   },
 ];
 
@@ -70,12 +70,12 @@ function Nav() {
       <span className="font-semibold text-white tracking-tight">algo-wallet</span>
       <div className="flex items-center gap-4 text-sm">
         <a href="/docs" className="text-zinc-400 hover:text-white transition-colors">Docs</a>
-        <Link href="/app/login" className="text-zinc-400 hover:text-white transition-colors">Sign in</Link>
+        <Link href="/get-started" className="text-zinc-400 hover:text-white transition-colors">Get started</Link>
         <Link
-          href="/app/create"
+          href="/app/login"
           className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1.5 rounded-md transition-colors font-medium"
         >
-          Get started
+          Sign in
         </Link>
       </div>
     </nav>
@@ -102,10 +102,10 @@ function Hero() {
 
       <div className="flex flex-col sm:flex-row gap-3 justify-center">
         <Link
-          href="/app/create"
+          href="/app/login"
           className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-6 py-3 rounded-lg transition-colors text-sm"
         >
-          Create Your Agent →
+          Sign in with Pera →
         </Link>
         <a
           href="/docs"
@@ -114,6 +114,12 @@ function Hero() {
           Read the docs
         </a>
       </div>
+      <p className="text-zinc-600 text-xs mt-5">
+        Requires an Algorand wallet with ALGO + USDC.{" "}
+        <Link href="/get-started" className="text-zinc-500 hover:text-zinc-300 underline underline-offset-2 transition-colors">
+          Don&apos;t have one? Setup guide →
+        </Link>
+      </p>
     </section>
   );
 }
@@ -211,10 +217,10 @@ function DeveloperQuickstart() {
           </div>
 
           <Link
-            href="/app/create"
+            href="/app/login"
             className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
           >
-            Create Your Agent →
+            Create your agent →
           </Link>
         </div>
 

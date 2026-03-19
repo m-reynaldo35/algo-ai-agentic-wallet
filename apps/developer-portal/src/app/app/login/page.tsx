@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { PeraWalletConnect as PeraWalletConnectType } from "@perawallet/connect";
@@ -177,7 +178,12 @@ function LoginForm() {
           )}
         </div>
 
-        <p className="text-center text-zinc-700 text-xs mt-8">x402 Protocol · Algorand Settlement Layer</p>
+        <p className="text-center text-zinc-600 text-xs mt-8">
+          Don&apos;t have an Algorand wallet?{" "}
+          <Link href="/get-started" className="text-zinc-400 hover:text-white underline underline-offset-2 transition-colors">
+            Setup guide →
+          </Link>
+        </p>
       </div>
     </div>
   );
