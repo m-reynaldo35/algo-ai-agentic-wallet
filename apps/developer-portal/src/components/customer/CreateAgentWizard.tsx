@@ -322,7 +322,7 @@ function Step3({
       {/* Single QR — switches URI on activation */}
       <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-4 flex gap-4 items-center">
         <div className="bg-white rounded-lg p-1.5 shrink-0">
-          <canvas ref={canvasRef} style={{ width: 160, height: 160, display: "block" }} />
+          <canvas key={phase} ref={canvasRef} style={{ width: 160, height: 160, display: "block" }} />
         </div>
         <div className="flex-1 min-w-0 space-y-3">
           <div>
