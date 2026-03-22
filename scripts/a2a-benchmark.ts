@@ -204,10 +204,10 @@ async function makePayment(id: number): Promise<PaymentResult> {
 
   const tProof = Date.now();
 
-  // Step 2: Submit settlement
+  // Step 2: Submit settlement (retry once on 503 circuit-open — clears within 60s)
   let execBody: QueuedJob | DirectSettlement;
   try {
-    const execRes = await fetch(`${API_URL}/api/execute`, {
+    const doExec = () => fetch(`${API_URL}/api/execute`, {
       method:  "POST",
       headers: {
         "Content-Type":  "application/json",
@@ -215,6 +215,16 @@ async function makePayment(id: number): Promise<PaymentResult> {
       },
       body: JSON.stringify({ sandboxExport: weatherBody.export, agentId: AGENT_ID }),
     });
+
+    let execRes = await doExec();
+    if (execRes.status === 503) {
+      const body503 = await execRes.json().catch(() => ({})) as { error?: string };
+      if (body503.error === "SIGNER_CIRCUIT_OPEN") {
+        await new Promise(r => setTimeout(r, 5_000));
+        execRes = await doExec();
+      }
+    }
+
     execBody = await execRes.json() as QueuedJob | DirectSettlement;
 
     if (!execRes.ok) {
@@ -355,40 +365,9 @@ async function main(): Promise<void> {
   await checkBalance();
 
   const res = await fetch(`${API_URL}/health`);
-  const health = await res.json() as {
-    status:  string;
-    network: string;
-    circuit: { open: boolean; failureCount: number } | undefined;
-  };
+  const health = await res.json() as { status: string; network: string };
   if (health.status !== "ok") { console.error("[ABORT] Server unhealthy"); process.exit(1); }
-  console.log(`  Server: ${health.status} (${health.network})`);
-
-  // ── Circuit breaker pre-flight ──────────────────────────────────────
-  // If the circuit is open from a previous run, wait for it to expire
-  // (max 70 s — just over the 60 s cooldown TTL) before firing payments.
-  // This prevents the first payment of a new run from hitting a stale open state.
-  if (health.circuit?.open) {
-    console.log(`  [circuit] OPEN (${health.circuit.failureCount} failures). Waiting for cooldown...`);
-    let cleared = false;
-    for (let waited = 0; waited < 70; waited += 5) {
-      await new Promise(r => setTimeout(r, 5_000));
-      const r2 = await fetch(`${API_URL}/health`);
-      const h2 = await r2.json() as { circuit?: { open: boolean } };
-      if (!h2.circuit?.open) {
-        console.log(`  [circuit] CLOSED after ${waited + 5}s — proceeding.\n`);
-        cleared = true;
-        break;
-      }
-      console.log(`  [circuit] still open, waited ${waited + 5}s...`);
-    }
-    if (!cleared) {
-      console.error("[ABORT] Circuit breaker still open after 70s. Investigate signing service.");
-      process.exit(1);
-    }
-  } else {
-    console.log("  [circuit] CLOSED\n");
-  }
-
+  console.log(`  Server: ${health.status} (${health.network})\n`);
   console.log("  Starting benchmark...\n");
 
   const tStart       = Date.now();
