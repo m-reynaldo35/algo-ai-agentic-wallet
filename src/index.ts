@@ -584,6 +584,12 @@ app.post("/api/batch-action", x402Paywall, async (req, res) => {
 // Returns real weather data from Open-Meteo after the agent pays the x402 toll.
 // Client flow: POST /api/weather (no X-PAYMENT → 402) → build proof → retry with
 // X-PAYMENT → receive weather + unsigned sandbox → POST /api/execute → USDC moves.
+// 60-second in-process cache for weather data per city.
+// Prevents Open-Meteo rate-limits under burst load — weather doesn't
+// change meaningfully second-to-second.
+const _weatherCache = new Map<string, { data: unknown; expiresAt: number }>();
+const WEATHER_CACHE_TTL_MS = 60_000;
+
 app.post("/api/weather", x402Paywall, async (req, res) => {
   try {
     const { city = "Lagos", senderAddress } = req.body;
@@ -593,39 +599,50 @@ app.post("/api/weather", x402Paywall, async (req, res) => {
       return;
     }
 
-    // Geocode city name → lat/lon
-    const geoRes = await fetch(
-      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`,
-    );
-    const geoData = await geoRes.json() as {
-      results?: Array<{ latitude: number; longitude: number; name: string; country: string }>;
-    };
-    const loc = geoData.results?.[0];
-    if (!loc) {
-      res.status(404).json({ error: `City not found: ${city}` });
-      return;
-    }
+    const cacheKey = city.toLowerCase().trim();
+    const cached = _weatherCache.get(cacheKey);
+    let weatherPayload: { city: string; country: string; temperature_c: number; wind_speed_kmh: number; weather_code: number; timestamp: string } | undefined;
 
-    // Fetch current conditions from Open-Meteo (free, no API key)
-    const weatherRes = await fetch(
-      `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current=temperature_2m,wind_speed_10m,weather_code&timezone=auto`,
-    );
-    const weatherData = await weatherRes.json() as {
-      current: { temperature_2m: number; wind_speed_10m: number; weather_code: number; time: string };
-    };
+    if (cached && cached.expiresAt > Date.now()) {
+      weatherPayload = cached.data as typeof weatherPayload;
+    } else {
+      // Geocode city name → lat/lon
+      const geoRes = await fetch(
+        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`,
+      );
+      const geoData = await geoRes.json() as {
+        results?: Array<{ latitude: number; longitude: number; name: string; country: string }>;
+      };
+      const loc = geoData.results?.[0];
+      if (!loc) {
+        res.status(404).json({ error: `City not found: ${city}` });
+        return;
+      }
+
+      // Fetch current conditions from Open-Meteo (free, no API key)
+      const weatherRes = await fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current=temperature_2m,wind_speed_10m,weather_code&timezone=auto`,
+      );
+      const weatherData = await weatherRes.json() as {
+        current: { temperature_2m: number; wind_speed_10m: number; weather_code: number; time: string };
+      };
+
+      weatherPayload = {
+        city:           loc.name,
+        country:        loc.country,
+        temperature_c:  weatherData.current.temperature_2m,
+        wind_speed_kmh: weatherData.current.wind_speed_10m,
+        weather_code:   weatherData.current.weather_code,
+        timestamp:      weatherData.current.time,
+      };
+      _weatherCache.set(cacheKey, { data: weatherPayload, expiresAt: Date.now() + WEATHER_CACHE_TTL_MS });
+    }
 
     // Build USDC payment sandbox — caller settles via POST /api/execute
     const sandboxExport = await constructAtomicGroup(senderAddress, config.x402.priceMicroUsdc);
 
     res.json({
-      weather: {
-        city:            loc.name,
-        country:         loc.country,
-        temperature_c:   weatherData.current.temperature_2m,
-        wind_speed_kmh:  weatherData.current.wind_speed_10m,
-        weather_code:    weatherData.current.weather_code,
-        timestamp:       weatherData.current.time,
-      },
+      weather: weatherPayload,
       status:          "awaiting_settlement",
       export:          sandboxExport,
       toll_micro_usdc: config.x402.priceMicroUsdc,
