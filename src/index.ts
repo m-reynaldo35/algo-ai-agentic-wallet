@@ -2900,11 +2900,16 @@ startRecurringScheduler();
 startActivationPoller();
 
 // Settlement worker — dequeues signed transactions and broadcasts to Algorand.
-// Runs embedded in the API process. For higher throughput, run additional
-// standalone workers via: npm run worker
+// Default: 1 worker (~6 jobs/min). Raise WORKER_COUNT for higher throughput
+// (e.g. WORKER_COUNT=5 handles ~30 jobs/min under burst load).
+// Workers are independent — each pops its own job from the shared Redis queue.
 const workerAbort = new AbortController();
-runWorker(workerAbort.signal).catch((err: unknown) =>
-  console.error("[Boot] Settlement worker crashed:", err instanceof Error ? err.message : err),
-);
+const WORKER_COUNT = Math.max(1, parseInt(process.env.WORKER_COUNT ?? "1", 10));
+console.log(`[Boot] Starting ${WORKER_COUNT} settlement worker(s)...`);
+for (let i = 0; i < WORKER_COUNT; i++) {
+  runWorker(workerAbort.signal).catch((err: unknown) =>
+    console.error(`[Boot] Settlement worker ${i + 1} crashed:`, err instanceof Error ? err.message : err),
+  );
+}
 process.on("SIGTERM", () => { workerAbort.abort(); stopActivationPoller(); });
 process.on("SIGINT",  () => { workerAbort.abort(); stopActivationPoller(); });

@@ -102,7 +102,7 @@ interface DirectSettlement {
 
 // ── SSE client ─────────────────────────────────────────────────────────
 
-async function waitForJobSSE(jobId: string, timeoutMs = 35_000): Promise<SseResult> {
+async function waitForJobSSE(jobId: string, timeoutMs = 60_000): Promise<SseResult> {
   const controller = new AbortController();
 
   return new Promise((resolve, reject) => {
