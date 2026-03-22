@@ -190,9 +190,10 @@ app.get("/api/info", (_req, res) => {
 
 // ── Health ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
-  const [node, haltRecord] = await Promise.all([
+  const [node, haltRecord, circuitState] = await Promise.all([
     getNodeStatus(),
     isHalted(),
+    isCircuitOpen(),
   ]);
 
   // Redis ping
@@ -237,6 +238,10 @@ app.get("/health", async (_req, res) => {
       indexerOk,
     },
     redis: redisOk,
+    circuit: {
+      open:         circuitState.open,
+      failureCount: circuitState.failureCount,
+    },
   });
 });
 

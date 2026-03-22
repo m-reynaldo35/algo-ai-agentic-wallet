@@ -355,9 +355,40 @@ async function main(): Promise<void> {
   await checkBalance();
 
   const res = await fetch(`${API_URL}/health`);
-  const health = await res.json() as { status: string; network: string };
+  const health = await res.json() as {
+    status:  string;
+    network: string;
+    circuit: { open: boolean; failureCount: number } | undefined;
+  };
   if (health.status !== "ok") { console.error("[ABORT] Server unhealthy"); process.exit(1); }
-  console.log(`  Server: ${health.status} (${health.network})\n`);
+  console.log(`  Server: ${health.status} (${health.network})`);
+
+  // ── Circuit breaker pre-flight ──────────────────────────────────────
+  // If the circuit is open from a previous run, wait for it to expire
+  // (max 70 s — just over the 60 s cooldown TTL) before firing payments.
+  // This prevents the first payment of a new run from hitting a stale open state.
+  if (health.circuit?.open) {
+    console.log(`  [circuit] OPEN (${health.circuit.failureCount} failures). Waiting for cooldown...`);
+    let cleared = false;
+    for (let waited = 0; waited < 70; waited += 5) {
+      await new Promise(r => setTimeout(r, 5_000));
+      const r2 = await fetch(`${API_URL}/health`);
+      const h2 = await r2.json() as { circuit?: { open: boolean } };
+      if (!h2.circuit?.open) {
+        console.log(`  [circuit] CLOSED after ${waited + 5}s — proceeding.\n`);
+        cleared = true;
+        break;
+      }
+      console.log(`  [circuit] still open, waited ${waited + 5}s...`);
+    }
+    if (!cleared) {
+      console.error("[ABORT] Circuit breaker still open after 70s. Investigate signing service.");
+      process.exit(1);
+    }
+  } else {
+    console.log("  [circuit] CLOSED\n");
+  }
+
   console.log("  Starting benchmark...\n");
 
   const tStart       = Date.now();
