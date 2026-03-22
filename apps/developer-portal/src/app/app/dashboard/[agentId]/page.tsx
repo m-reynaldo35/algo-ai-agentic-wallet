@@ -168,6 +168,24 @@ export default function AgentDetailPage() {
       {/* ── Main content ── */}
       <div className="flex flex-1 min-w-0">
         <div className="flex-1 min-w-0 px-6 lg:px-8 py-8 space-y-5">
+          {/* Mobile agent switcher — hidden on lg+ where sidebar is visible */}
+          {session.agents.length > 0 && (
+            <div className="lg:hidden">
+              <label className="text-[10px] text-zinc-600 uppercase tracking-widest block mb-1.5">My Agents</label>
+              <select
+                value={agentId}
+                onChange={(e) => router.push(`/app/dashboard/${e.target.value}`)}
+                className="w-full bg-zinc-900 border border-zinc-700 text-zinc-300 font-mono text-xs rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                {session.agents.map((a) => (
+                  <option key={a.agentId} value={a.agentId} disabled={a.status === "pending"}>
+                    {a.agentId}{a.status === "pending" ? " (pending)" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* Header: agent name + New Agent button */}
           <div className="flex items-center justify-between">
             <h1 className="font-mono text-sm text-zinc-300">{agentId}</h1>

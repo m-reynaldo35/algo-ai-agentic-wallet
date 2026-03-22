@@ -9,13 +9,14 @@ import Sidebar from "./Sidebar";
  */
 export default function PortalShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isAuthPage = pathname === "/login";
+  const isAuthPage = pathname === "/login" || pathname === "/sign-in";
   const isCustomerApp = pathname.startsWith("/app");
   const isLandingPage = pathname === "/";
-  const isLegalPage = pathname === "/privacy" || pathname === "/terms";
+  const isLegalPage = pathname === "/privacy" || pathname === "/terms" || pathname === "/security";
   const isDocsPage = pathname === "/docs" || pathname.startsWith("/docs/");
+  const isPublicPage = pathname === "/get-started";
 
-  if (isAuthPage || isCustomerApp || isLandingPage || isLegalPage || isDocsPage) {
+  if (isAuthPage || isCustomerApp || isLandingPage || isLegalPage || isDocsPage || isPublicPage) {
     return <>{children}</>;
   }
 

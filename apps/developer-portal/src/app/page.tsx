@@ -72,7 +72,7 @@ function Nav() {
         <a href="/docs" className="text-zinc-400 hover:text-white transition-colors">Docs</a>
         <Link href="/get-started" className="text-zinc-400 hover:text-white transition-colors">Get started</Link>
         <Link
-          href="/app/login"
+          href="/sign-in"
           className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1.5 rounded-md transition-colors font-medium"
         >
           Sign in
@@ -102,7 +102,7 @@ function Hero() {
 
       <div className="flex flex-col sm:flex-row gap-3 justify-center">
         <Link
-          href="/app/login"
+          href="/sign-in"
           className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-6 py-3 rounded-lg transition-colors text-sm"
         >
           Sign in with Pera →

@@ -11,6 +11,12 @@ const EXPLORER_BASE =
 
 const PAGE_SIZE = 25;
 
+interface SessionData {
+  ownerAddress: string;
+  agentId?: string;
+  agents?: { agentId: string; status?: string }[];
+}
+
 interface Settlement {
   txId?: string;
   txnId?: string;
@@ -66,10 +72,19 @@ export default function CustomerHistoryPage() {
   // Load session
   useEffect(() => {
     fetch("/api/customer/session")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data: { agentId?: string } | null) => {
-        if (!data?.agentId) { router.replace("/app/login"); return; }
-        setAgentId(data.agentId);
+      .then((r) => {
+        if (!r.ok) { router.replace("/app/login"); return Promise.resolve(null); }
+        return r.json() as Promise<SessionData>;
+      })
+      .then((data) => {
+        if (!data) return;
+        // Session has ownerAddress + agents[]; pick first active agent
+        const id =
+          data.agentId ??
+          data.agents?.find((a) => a.status !== "pending")?.agentId ??
+          data.agents?.[0]?.agentId;
+        if (!id) { setLoading(false); return; } // no agents yet — show empty state
+        setAgentId(id);
       })
       .catch(() => router.replace("/app/login"));
   }, [router]);
@@ -119,7 +134,11 @@ export default function CustomerHistoryPage() {
     return true;
   });
 
-  if (!agentId) return null;
+  if (loading) return (
+    <div className="flex items-center justify-center min-h-[60vh]">
+      <div className="w-8 h-8 border-2 border-zinc-700 border-t-emerald-400 rounded-full animate-spin" />
+    </div>
+  );
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-6">

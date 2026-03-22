@@ -16,13 +16,14 @@ import { verifyCustomerSession, CUSTOMER_SESSION_COOKIE } from "@/lib/customerSe
 
 const PUBLIC_PATHS = new Set([
   "/",              // landing page — always public
-  "/login",
+  "/sign-in",       // unified sign-in page
+  "/login",         // legacy redirect → /sign-in
+  "/app/login",     // legacy redirect → /sign-in
   "/get-started",   // prerequisites guide — no auth required
   "/privacy",
   "/terms",
   "/api/auth/login",
   "/api/auth/logout",
-  "/app/login",
   "/app/create",          // new agent creation wizard (no session required)
   "/api/customer/auth/login",
   "/api/customer/auth/logout",
@@ -80,7 +81,7 @@ export async function proxy(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const loginUrl = req.nextUrl.clone();
-    loginUrl.pathname = "/app/login";
+    loginUrl.pathname = "/sign-in";
     loginUrl.searchParams.set("from", pathname);
     return NextResponse.redirect(loginUrl);
   }
@@ -100,7 +101,7 @@ export async function proxy(req: NextRequest) {
   }
 
   const loginUrl = req.nextUrl.clone();
-  loginUrl.pathname = "/login";
+  loginUrl.pathname = "/sign-in";
   loginUrl.searchParams.set("from", pathname);
   return NextResponse.redirect(loginUrl);
 }
