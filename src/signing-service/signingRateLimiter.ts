@@ -17,7 +17,7 @@ import { Redis } from "@upstash/redis";
  * globally consistent — Redis is required for production correctness.
  */
 
-const AGENT_MAX        = parseInt(process.env.SIGNING_RATE_AGENT_MAX  ?? "10",  10);
+const AGENT_MAX        = parseInt(process.env.SIGNING_RATE_AGENT_MAX  ?? "200", 10);
 const AGENT_WINDOW     = `${process.env.SIGNING_RATE_AGENT_WINDOW_S   ?? "60"} s` as `${number} s`;
 const GLOBAL_MAX       = parseInt(process.env.SIGNING_RATE_GLOBAL_MAX ?? "500", 10);
 const GLOBAL_WINDOW    = `${process.env.SIGNING_RATE_GLOBAL_WINDOW_S  ?? "60"} s` as `${number} s`;

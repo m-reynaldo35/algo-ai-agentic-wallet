@@ -433,9 +433,13 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
       // Any successful submission resets the failure counter immediately.
       recordSuccess().catch((e) => logger.warn({ err: e }, "[execute] recordSuccess failed"));
     } else if (result.failedStage === "sign" || result.failedStage === "broadcast") {
-      // Only signing/RPC failures feed the circuit breaker.
-      // Auth and validation failures indicate client errors, not RPC instability.
-      recordFailure(`stage=${result.failedStage}: ${result.error ?? "unknown"}`).catch((e) => logger.warn({ err: e }, "[execute] recordFailure failed"));
+      // Only RPC/infrastructure failures feed the circuit breaker.
+      // Rate-limit rejections (429) from the signing service are policy decisions,
+      // not infrastructure failures — do not open the circuit for them.
+      const isRateLimit = /rate.limit|429/i.test(result.error ?? "");
+      if (!isRateLimit) {
+        recordFailure(`stage=${result.failedStage}: ${result.error ?? "unknown"}`).catch((e) => logger.warn({ err: e }, "[execute] recordFailure failed"));
+      }
     }
 
     if (!result.success) {
