@@ -153,19 +153,31 @@ async function resolveLimiter(req: Request): Promise<{ limiter: Ratelimit; ident
 // ── Middleware ────────────────────────────────────────────────────
 
 /**
- * When RATE_LIMIT_SKIP_X402=true, requests carrying an X-PAYMENT header
- * bypass IP rate limiting entirely.
+ * RATE_LIMIT_SKIP_X402=true  — skip for requests carrying X-PAYMENT header
+ *   (paid requests; x402Paywall validates the proof regardless)
  *
- * Rationale: x402-paid requests are self-limiting via the toll — every
- * request costs the agent real USDC. The x402Paywall middleware will
- * validate the payment proof regardless, so fake X-PAYMENT headers still
- * fail at authentication. Applying IP limits to paid requests penalises
- * legitimate high-frequency AI agents without providing meaningful security.
+ * RATE_LIMIT_BYPASS_PATHS    — comma-separated path prefixes that bypass
+ *   rate limiting entirely. Defaults to the x402 flow paths:
+ *     /api/weather   — protected by x402Paywall (probe gets 402, not 429)
+ *     /api/execute   — protected by executionLimiter + velocity + mandate
+ *     /api/jobs      — read-only job status; no sensitive operations
+ *
+ * Rationale: the x402 toll is the natural rate limiter for AI agents.
+ * Probe requests (no X-PAYMENT yet) must reach x402Paywall to receive
+ * the 402 challenge; rate-limiting them breaks the entire payment flow.
  */
 const SKIP_X402 = process.env.RATE_LIMIT_SKIP_X402 === "true";
+const BYPASS_PATHS = (
+  process.env.RATE_LIMIT_BYPASS_PATHS ?? "/api/weather,/api/execute,/api/jobs"
+).split(",").map((p) => p.trim()).filter(Boolean);
 
 export async function rateLimiter(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (SKIP_X402 && req.header("X-PAYMENT")) {
+    next();
+    return;
+  }
+
+  if (BYPASS_PATHS.some((prefix) => req.path.startsWith(prefix))) {
     next();
     return;
   }
