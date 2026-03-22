@@ -217,10 +217,27 @@ async function makePayment(id: number): Promise<PaymentResult> {
     });
 
     let execRes = await doExec();
-    if (execRes.status === 503) {
-      const body503 = await execRes.json().catch(() => ({})) as { error?: string };
-      if (body503.error === "SIGNER_CIRCUIT_OPEN") {
-        await new Promise(r => setTimeout(r, 5_000));
+
+    // Retry transient signing failures with backoff:
+    //   502 = signing service briefly unavailable (cold start / hiccup)
+    //   503 SIGNER_CIRCUIT_OPEN = circuit open; poll until it clears (max 65s)
+    if (execRes.status === 502 || execRes.status === 503) {
+      const errBody = await execRes.json().catch(() => ({})) as { error?: string };
+      const isCircuitOpen = execRes.status === 503 && errBody.error === "SIGNER_CIRCUIT_OPEN";
+
+      if (isCircuitOpen) {
+        // Wait for the circuit cooldown to expire (up to 65s, polling every 5s)
+        let cleared = false;
+        for (let waited = 0; waited < 65; waited += 5) {
+          await new Promise(r => setTimeout(r, 5_000));
+          const probe = await fetch(`${API_URL}/health`);
+          const h = await probe.json() as { circuit?: { open: boolean } };
+          if (!h.circuit?.open) { cleared = true; break; }
+        }
+        if (cleared) execRes = await doExec();
+      } else if (execRes.status === 502) {
+        // Brief wait for signing service to recover
+        await new Promise(r => setTimeout(r, 3_000));
         execRes = await doExec();
       }
     }
