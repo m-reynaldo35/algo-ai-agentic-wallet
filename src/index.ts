@@ -2859,6 +2859,54 @@ process.on("uncaughtException", (err) => {
   process.exit(1);
 });
 
+// ── Benchmark endpoints ──────────────────────────────────────────────────────
+
+/**
+ * GET /api/benchmark
+ * Public — returns the most recent A2A benchmark result stored in Redis.
+ * Updated automatically at the end of every benchmark run.
+ */
+app.get("/api/benchmark", async (_req, res) => {
+  const redis = getRedis();
+  if (!redis) {
+    res.status(503).json({ error: "Redis unavailable" });
+    return;
+  }
+  try {
+    const raw = await redis.get("x402:benchmark:latest") as Record<string, unknown> | string | null;
+    if (!raw) {
+      res.status(404).json({ error: "No benchmark results recorded yet" });
+      return;
+    }
+    const result = typeof raw === "string" ? JSON.parse(raw) : raw;
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to read benchmark results" });
+  }
+});
+
+/**
+ * POST /api/admin/benchmark/record
+ * Portal-auth — called by a2a-benchmark.ts at end of run to persist results.
+ */
+app.post("/api/admin/benchmark/record", requirePortalAuth, async (req, res) => {
+  const redis = getRedis();
+  if (!redis) {
+    res.status(503).json({ error: "Redis unavailable" });
+    return;
+  }
+  try {
+    const payload = {
+      ...req.body,
+      recordedAt: new Date().toISOString(),
+    };
+    await redis.set("x402:benchmark:latest", JSON.stringify(payload));
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to record benchmark results" });
+  }
+});
+
 // ── Boot ────────────────────────────────────────────────────────
 // Deployed on Railway — persistent process, always binds a port.
 

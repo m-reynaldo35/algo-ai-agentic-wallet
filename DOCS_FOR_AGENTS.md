@@ -5,6 +5,28 @@
 
 ---
 
+## Verified Performance (Algorand Mainnet)
+
+| Metric | Value |
+|---|---|
+| **Success rate** | 100/100 payments confirmed |
+| **Throughput** | 126.6 tx/min |
+| **x402 handshake p50** | 549ms |
+| **End-to-end p50** | 10.7s (includes Algorand block confirmation) |
+| **End-to-end p95** | 15.4s |
+| **Peak concurrency** | 46 simultaneous in-flight settlements |
+| **Settlement** | On-chain atomic — no partial settlement possible |
+
+Live benchmark results: `GET https://api.ai-agentic-wallet.com/api/benchmark`
+Full methodology: [BENCHMARK.md](./BENCHMARK.md)
+
+Sample on-chain receipts:
+- [`S7QJRCIS…`](https://explorer.perawallet.app/tx/S7QJRCIS7PXUXWHIQPU2IL7MYW2BUEC753TTAZYKITKI2QJXYWRQ)
+- [`DOBY7VLE…`](https://explorer.perawallet.app/tx/DOBY7VLEVQWVMOFU6PNC7A53BZZGXEYBK3O54JQYHOS3VY4D4KZA)
+- [`VMKZHNKR…`](https://explorer.perawallet.app/tx/VMKZHNKRE7MKPUHO5MFE5FVS4AMFQQOHWYYAPWAY2RBLMLSL7WEA)
+
+---
+
 ## Core Rule
 
 **Every action request goes through a two-step 402 handshake. Never skip the bounce.**

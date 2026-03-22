@@ -443,6 +443,40 @@ async function main(): Promise<void> {
       console.log(`    #${r.id + 1}: ${EXPLORER_BASE}/${r.txnId}`),
     );
   }
+
+  // POST results to /api/admin/benchmark/record so /api/benchmark stays current
+  if (PORTAL_SECRET) {
+    const okResults  = results.filter(r => r.status === "confirmed");
+    const handshakes = okResults.map(r => r.tProof   - r.tFire).sort((a, b) => a - b);
+    const settles    = okResults.map(r => r.tConfirm - r.tEnqueue).sort((a, b) => a - b);
+    const e2es       = okResults.map(r => r.tConfirm - r.tFire).sort((a, b) => a - b);
+    const payload = {
+      network:       "algorand-mainnet",
+      runDate:       new Date().toISOString(),
+      durationMs:    Date.now() - tStart,
+      total:         results.length,
+      confirmed:     okResults.length,
+      failed:        results.length - okResults.length,
+      successRate:   okResults.length / results.length,
+      throughputTpm: parseFloat((okResults.length / ((Date.now() - tStart) / 1000) * 60).toFixed(1)),
+      peakConcurrency: peakConc,
+      usdcSpent:     (okResults.length * TOLL_MICRO_USDC / 1_000_000).toFixed(2),
+      latency: {
+        handshake: { p50: pct(handshakes, 50), p95: pct(handshakes, 95), p99: pct(handshakes, 99) },
+        settlement: { p50: pct(settles, 50),   p95: pct(settles, 95),   p99: pct(settles, 99) },
+        e2e:        { p50: pct(e2es, 50),       p95: pct(e2es, 95),       p99: pct(e2es, 99) },
+      },
+      sampleTxns: confirmed.map(r => ({ id: r.id + 1, txnId: r.txnId, explorerUrl: `${EXPLORER_BASE}/${r.txnId}` })),
+    };
+    try {
+      const r = await fetch(`${API_URL}/api/admin/benchmark/record`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${PORTAL_SECRET}` },
+        body:    JSON.stringify(payload),
+      });
+      if (r.ok) console.log("\n  Results saved to /api/benchmark");
+    } catch { /* non-fatal */ }
+  }
 }
 
 main().catch(err => {

@@ -89,6 +89,25 @@
     "install": "npm install @m-reynaldo35/x402-client"
   },
 
+  "performance": {
+    "benchmark_endpoint": "https://api.ai-agentic-wallet.com/api/benchmark",
+    "last_run": "2026-03-22T00:00:00.000Z",
+    "success_rate": "100/100",
+    "throughput_tpm": 126.6,
+    "peak_concurrency": 46,
+    "latency": {
+      "x402_handshake": { "p50_ms": 549,   "p95_ms": 1273,  "p99_ms": 1693  },
+      "settlement":      { "p50_ms": 9712,  "p95_ms": 14193, "p99_ms": 15694 },
+      "end_to_end":      { "p50_ms": 10737, "p95_ms": 15359, "p99_ms": 16899 }
+    },
+    "methodology": "100 real USDC payments on Algorand mainnet, Poisson arrivals λ=1.5/s with 25% burst clusters (3–6 concurrent), tracked via SSE to on-chain confirmation",
+    "sample_txns": [
+      "https://explorer.perawallet.app/tx/S7QJRCIS7PXUXWHIQPU2IL7MYW2BUEC753TTAZYKITKI2QJXYWRQ",
+      "https://explorer.perawallet.app/tx/DOBY7VLEVQWVMOFU6PNC7A53BZZGXEYBK3O54JQYHOS3VY4D4KZA",
+      "https://explorer.perawallet.app/tx/VMKZHNKRE7MKPUHO5MFE5FVS4AMFQQOHWYYAPWAY2RBLMLSL7WEA"
+    ]
+  },
+
   "registry_listings": {
     "openclaw": "https://api.ai-agentic-wallet.com/openclaw-registry.json",
     "moltbook": "https://api.ai-agentic-wallet.com/moltbook-agent.json",
