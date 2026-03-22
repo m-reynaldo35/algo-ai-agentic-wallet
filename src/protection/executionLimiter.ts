@@ -3,9 +3,24 @@
  *
  * Three protection layers applied to /api/execute before the signing pipeline:
  *
- *   Layer 1 — Burst guard            burst:agent:{address}   5 tx / 10 s
- *   Layer 2 — Per-agent sliding      rate:agent:{address}   20 tx / 60 s
- *   Layer 3 — Global signer sliding  rate:global:signer    200 tx / 60 s
+ *   Layer 1 — Burst guard            burst:agent:{address}   disabled by default
+ *   Layer 2 — Per-agent sliding      rate:agent:{address}    disabled by default
+ *   Layer 3 — Global signer sliding  rate:global:signer    200 tx / 60 s  (always on)
+ *
+ * Design rationale:
+ *   Layers 1 and 2 are disabled by default because the x402 toll is the natural
+ *   rate limiter — every execution costs the agent real USDC. A legitimate agent
+ *   cannot abuse the system without spending money; a compromised agent is bounded
+ *   by its wallet balance and mandate limits (which require Liquid Auth to change).
+ *   Artificial per-agent caps hurt legitimate high-frequency AI agents without
+ *   providing meaningful additional protection.
+ *
+ *   Layer 3 (global) remains active to protect Rocca signing infrastructure and
+ *   ensure queue fairness across all agents regardless of wallet size.
+ *
+ *   Re-enable Layers 1/2 via env vars if operating without mandates:
+ *     EXEC_BURST_ENABLED=true   EXEC_BURST_MAX=10   EXEC_BURST_WIN_S=10
+ *     EXEC_AGENT_ENABLED=true   EXEC_AGENT_MAX=60   EXEC_AGENT_WIN_S=60
  *
  * Implementation uses raw Upstash Redis sorted sets — no external rate-limit
  * library. Each window is a ZSET keyed by request timestamp (ms), pruned with
@@ -37,11 +52,13 @@ export interface LimitResult {
 
 // ── Policy constants (override via env vars) ───────────────────────
 
-const BURST_MAX     = parseInt(process.env.EXEC_BURST_MAX     ?? "5",   10);
+const BURST_ENABLED = process.env.EXEC_BURST_ENABLED === "true";
+const BURST_MAX     = parseInt(process.env.EXEC_BURST_MAX     ?? "10",  10);
 const BURST_WIN_S   = parseInt(process.env.EXEC_BURST_WIN_S   ?? "10",  10);
 const BURST_WIN_MS  = BURST_WIN_S * 1_000;
 
-const AGENT_MAX     = parseInt(process.env.EXEC_AGENT_MAX     ?? "20",  10);
+const AGENT_ENABLED = process.env.EXEC_AGENT_ENABLED === "true";
+const AGENT_MAX     = parseInt(process.env.EXEC_AGENT_MAX     ?? "60",  10);
 const AGENT_WIN_S   = parseInt(process.env.EXEC_AGENT_WIN_S   ?? "60",  10);
 const AGENT_WIN_MS  = AGENT_WIN_S * 1_000;
 
@@ -119,29 +136,34 @@ export async function checkExecutionLimits(
   }
 
   try {
-    // ── Layer 1: Burst guard (drain loop protection) ─────────────
-    // Short window, tight limit. Catches runaway agents before they
-    // can exhaust the per-minute allowance.
-    const burstKey = `x402:rate:burst:${publicAddress}`;
-    const burst = await checkWindow(redis, burstKey, BURST_WIN_MS, BURST_MAX);
-    if (!burst.allowed) {
-      return {
-        allowed:      false,
-        violation:    "AGENT_BURST_LIMIT",
-        retryAfterMs: BURST_WIN_MS,
-      };
+    // ── Layer 1: Burst guard (opt-in, disabled by default) ────────
+    // The x402 toll is the natural burst limiter. Enable via
+    // EXEC_BURST_ENABLED=true if operating without mandates.
+    if (BURST_ENABLED) {
+      const burstKey = `x402:rate:burst:${publicAddress}`;
+      const burst = await checkWindow(redis, burstKey, BURST_WIN_MS, BURST_MAX);
+      if (!burst.allowed) {
+        return {
+          allowed:      false,
+          violation:    "AGENT_BURST_LIMIT",
+          retryAfterMs: BURST_WIN_MS,
+        };
+      }
     }
 
-    // ── Layer 2: Per-agent sliding window ─────────────────────────
-    // Sustained rate cap per agent over a 60-second rolling window.
-    const agentKey = `x402:rate:agent:${publicAddress}`;
-    const agent = await checkWindow(redis, agentKey, AGENT_WIN_MS, AGENT_MAX);
-    if (!agent.allowed) {
-      return {
-        allowed:      false,
-        violation:    "AGENT_RATE_LIMIT_EXCEEDED",
-        retryAfterMs: AGENT_WIN_MS,
-      };
+    // ── Layer 2: Per-agent sliding window (opt-in, disabled by default) ──
+    // The toll + mandate velocity caps cover this. Enable via
+    // EXEC_AGENT_ENABLED=true if operating without mandates.
+    if (AGENT_ENABLED) {
+      const agentKey = `x402:rate:agent:${publicAddress}`;
+      const agent = await checkWindow(redis, agentKey, AGENT_WIN_MS, AGENT_MAX);
+      if (!agent.allowed) {
+        return {
+          allowed:      false,
+          violation:    "AGENT_RATE_LIMIT_EXCEEDED",
+          retryAfterMs: AGENT_WIN_MS,
+        };
+      }
     }
 
     // ── Layer 3: Global signer window ─────────────────────────────
