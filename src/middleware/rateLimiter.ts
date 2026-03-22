@@ -152,7 +152,24 @@ async function resolveLimiter(req: Request): Promise<{ limiter: Ratelimit; ident
 
 // ── Middleware ────────────────────────────────────────────────────
 
+/**
+ * When RATE_LIMIT_SKIP_X402=true, requests carrying an X-PAYMENT header
+ * bypass IP rate limiting entirely.
+ *
+ * Rationale: x402-paid requests are self-limiting via the toll — every
+ * request costs the agent real USDC. The x402Paywall middleware will
+ * validate the payment proof regardless, so fake X-PAYMENT headers still
+ * fail at authentication. Applying IP limits to paid requests penalises
+ * legitimate high-frequency AI agents without providing meaningful security.
+ */
+const SKIP_X402 = process.env.RATE_LIMIT_SKIP_X402 === "true";
+
 export async function rateLimiter(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (SKIP_X402 && req.header("X-PAYMENT")) {
+    next();
+    return;
+  }
+
   const resolved = await resolveLimiter(req);
 
   // If Redis is not configured, pass through (local dev)
