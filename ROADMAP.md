@@ -28,7 +28,7 @@ Claude discovers tool → pays → gets data → answers user
 
 ---
 
-## Current State (after Sprint M)
+## Current State (after Sprint N + UX unification)
 
 - Railway backend live: `https://api.ai-agentic-wallet.com`
 - Vercel frontend live: `https://ai-agentic-wallet.com`
@@ -44,9 +44,10 @@ Claude discovers tool → pays → gets data → answers user
 - **Gas warning headers**: `X-Agent-Gas-Status` + `X-Agent-Gas-Remaining` on every payment response
 - **Refuel UI**: WalletCard shows gas warnings (low/critical) + Refuel modal with deep links
 - **Guardian**: agent gas critical alerts firing via Telegram (30-min cooldown per agent)
-- Pera Connect (WalletConnect) replacing Liquid Auth — admin login, customer login, mandate ops
-- `ADMIN_WALLET_ADDRESSES=5ABLML...Y32Y` set on Railway + Vercel
+- **Unified sign-in** (`/sign-in`): single Pera Connect page smart-routes admin → `/dashboard`, customers → `/app/dashboard`; `/login` + `/app/login` are redirect aliases
+- `ADMIN_WALLET_ADDRESSES` set — admin wallet confirmed working, wrong wallet gets 403
 - Customer dashboard: mandates inline, revoked counts, wallet QR sidebar, agent status card
+- Multi-agent portfolio: one wallet → N agents, pending agents shown with amber dot
 - Admin portal: all pages built (dashboard, treasury, agents, security, logs, settings)
 - `tsc --noEmit` passes clean on backend + portal + x402-client + x402-cli
 
@@ -88,7 +89,7 @@ Claude discovers tool → pays → gets data → answers user
 - [x] Deploy guardian to Railway as a separate worker service
 - [x] Set `CHECK_INTERVAL_S=10`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` in Railway guardian vars
 - [x] Verify Telegram alerts fire end-to-end: `npm run guardian:test`
-- [ ] Verify treasury USDC sweep fires correctly
+- [x] Verify treasury USDC sweep fires correctly — txn 5K6ZFCPVONQCKGVA6TIP3HVJPG4NO2OPUMHZ2T5RJSXM6FNLKTDQ ✓
 
 ---
 
@@ -120,7 +121,7 @@ Claude discovers tool → pays → gets data → answers user
 - [x] Guardian `railway.guardian.json` fixed — restart policy `ALWAYS`
 - [x] Runbook written — `docs/runbook.md`
 - [x] Railway service restart policy set to `always` on main API
-- [ ] Railway deploy notifications wired (Slack or email on fail)
+- [x] Railway deploy notifications wired — email on deployment failure ✓
 - [x] Cold wallet opted into USDC and ready to receive sweeps (UI3LOTUJ...)
 
 ---
@@ -284,7 +285,7 @@ No MongoDB. No signal server. No TURN. WalletConnect relay is hosted by WalletCo
 
 - [x] `src/app/app/login/page.tsx` rewritten — `PeraConnectButton` replaces `LiquidAuthQRModal` trigger
 - [x] Issues `pera-challenge` with `intent: "register"`, signs, verifies, posts `peraSessionId` to customer login
-- [ ] Test: customer wallet scan → sign → `/app/dashboard`
+- [x] Test: customer wallet scan → sign → `/app/dashboard` ✓
 
 ### L.4 — Frontend: Mandate Operations ✓
 
@@ -294,19 +295,26 @@ No MongoDB. No signal server. No TURN. WalletConnect relay is hosted by WalletCo
       - Calls `onVerified(verifiedSessionId)` with pera session ID
 - [x] `MandateCreateModal.tsx` — `liquidAuthSessionId` → `peraSessionId`
 - [x] `MandateRevokeModal.tsx` — `liquidAuthSessionId` → `peraSessionId`
-- [ ] Test mandate create: connect Pera → sign → mandate active
-- [ ] Test mandate revoke: connect Pera → sign → mandate revoked
+- [x] Test mandate create: connect Pera → sign → mandate active ✓
+- [x] Test mandate revoke: connect Pera → sign → mandate revoked ✓
 
-### L.5 — Cleanup & Verification *(next session — needs real device)*
+### L.5 — Cleanup & Verification ✓
 
 - [x] Remove old `/api/admin/auth/liquid-sign` and `/api/agents/:agentId/auth/liquid-sign` routes
 - [x] `tsc --noEmit` clean on backend + portal
-- [ ] Admin login: connect Pera (`5ABLML...Y32Y`) → sign → `/dashboard`
-- [ ] Admin login: wrong wallet → 403 confirmed
-- [ ] Agent create: treasury sponsors fund+optin+rekey → skip ALGO step → USDC deposit screen
-- [ ] Customer login: agent wallet Pera scan → `/app/dashboard`
-- [ ] Mandate create + revoke: end-to-end with real Pera scan
-- [ ] WebAuthn path regression check
+- [x] Admin login: connect Pera → sign → `/dashboard` ✓
+- [x] Admin login: wrong wallet → 403 confirmed ✓
+- [x] Customer login: wallet scan → `/app/dashboard` ✓
+- [x] Mandate create + revoke: end-to-end with real Pera scan ✓
+- [x] WebAuthn removed — defunct passkey option eliminated from all login pages
+
+### L.6 — Unified Sign-In ✓
+
+- [x] `/sign-in` — single Pera Connect page, smart-routes admin → `/dashboard`, customers → `/app/dashboard`
+- [x] `/login` → server-side redirect to `/sign-in` (preserves `from` param)
+- [x] `/app/login` → server-side redirect to `/sign-in` (preserves `from` param)
+- [x] `proxy.ts` — all unauthenticated redirects point to `/sign-in`; sidebar suppressed on `/sign-in`
+- [x] Landing page nav + hero CTA updated to `/sign-in`
 
 ---
 
@@ -340,7 +348,7 @@ Revenue is stable USDC. AI agents and humans both work seamlessly.
 - [x] Delete `gasStation.ts` polling loop
 - [x] Remove gas station Redis keys: `x402:gas:*`
 - [x] Remove gas station env vars: `GAS_STATION_*`, `TOPUP_COOLDOWN_S`
-- [ ] Remove gas station Railway worker service (manual — delete service in Railway dashboard)
+- [x] Remove gas station Railway worker service ✓
 - [x] Update `.env.example`
 
 ### M3 — Gas Warning Headers
@@ -426,14 +434,15 @@ Wallet (identity root)
 - [x] `/app/create/page.tsx` — redirects to `/app/dashboard` (server-side `redirect()`)
       Users with old bookmarks land in portfolio and create from there
 
-### N.5 — End-to-End Verification *(needs real device — Pera)*
+### N.5 — End-to-End Verification ✓
 
-- [ ] Wallet scan → sign → portfolio dashboard (no agent ID input anywhere)
-- [ ] "New Agent" button → inline wizard → agent appears in list with amber "awaiting ALGO"
-- [ ] Fund agent address → agent transitions amber → emerald in portfolio list
-- [ ] Click active agent card → `/app/dashboard/{agentId}` → back arrow → portfolio
-- [ ] Second agent created in same session → both visible in list
-- [ ] Legacy agentId-only JWT session still redirects to `/app/dashboard/{agentId}`
+- [x] Wallet scan → sign → portfolio dashboard (no agent ID input anywhere) ✓
+- [x] "New Agent" button → inline wizard → agent appears in list with amber "awaiting ALGO" ✓
+- [x] Fund agent address → agent transitions amber → emerald in portfolio list ✓
+- [x] Click active agent card → `/app/dashboard/{agentId}` → back arrow → portfolio ✓
+- [x] Multiple agents created in same session → all visible in list, linked to master wallet ✓
+- [x] Issue mandate + revoke mandate end-to-end ✓
+- [x] USDC deposit flow working ✓
 
 ---
 
@@ -441,25 +450,25 @@ Wallet (identity root)
 
 All items below must be `[x]` before going live.
 
-- [ ] Sprint 1 complete — new wallets generated, all secrets rotated, guardian deployed
-- [ ] `ADMIN_WALLET_ADDRESSES` set — admin portal locked to your Algorand wallet
+- [x] Sprint 1 complete — new wallets generated, all secrets rotated, guardian deployed, USDC sweep verified ✓
+- [x] `ADMIN_WALLET_ADDRESSES` set — admin portal locked to your Algorand wallet ✓
 - [x] Sprint 2 complete — agent creation wizard live
 - [x] Sprint 3 complete — landing page live
-- [ ] Sprint L complete — Pera Connect QR sign-in working (admin login, customer login, mandate ops)
-- [ ] Sprint N complete — multi-agent portfolio: one wallet → N agents, inline wizard, no re-login
+- [x] Sprint L complete — unified sign-in, Pera Connect QR working (admin, customer, mandates) ✓
+- [x] Sprint N complete — multi-agent portfolio: one wallet → N agents, inline wizard, no re-login ✓
 - [x] Sprint 5 complete — burst, sustained, velocity, failover, Redis failure tests pass
-- [ ] Sprint 6 complete — security audit clean, Telegram alerts verified
+- [x] Sprint 6 complete — security audit clean, Telegram alerts verified, deploy notifications wired ✓
 - [x] Sprint M complete — payment rail redesign (ALGO activation, gas warnings, atomic refuel, gas station removed)
-- [ ] Sprint 10 complete — DNS + TLS verified on both domains
+- [x] Sprint 10 complete — DNS + TLS verified on both domains ✓
 - [x] Sprint 11 complete — docs standalone, security hardening
 - [x] Sprint 12 complete — customer dashboard complete
 - [x] Sprint 13 complete — admin portal operational
-- [ ] Treasury and signer wallets holding correct balances on mainnet
+- [x] Treasury and signer wallets holding correct balances on mainnet — signer 1187 ALGO, treasury C66AFZ3... USDC opted-in ✓
 - [x] Cold wallet opted into USDC and verified (UI3LOTUJ...)
-- [ ] Telegram alerts verified working on real phone
-- [ ] `api.ai-agentic-wallet.com` → Railway, `ai-agentic-wallet.com` → Vercel
-- [ ] CORS locked to production domains
-- [ ] mTLS active
+- [x] Telegram alerts verified working on real phone ✓
+- [x] `api.ai-agentic-wallet.com` → Railway, `ai-agentic-wallet.com` → Vercel ✓
+- [x] CORS locked to production domains ✓
+- [x] mTLS active ✓
 - [ ] `/health` returns fully green across all subsystems
 
 ---
@@ -473,38 +482,193 @@ All items below must be `[x]` before going live.
 
 ---
 
-## Sprint 16 — End-to-End Payment Test
+## Sprint 16 — End-to-End Payment Test ✅ *(completed with findings)*
 
-**Why first:** Everything in Phase 2 depends on agents being able to pay autonomously.
-Sprint M must be complete before Sprint 16 — agent activation and gas model must be
-the new ALGO-funded design.
+**Result:** Real $0.01 USDC payment confirmed on Algorand mainnet (round 59,427,810).
+Txn: `SJU6VBOOWLQ5X7YM2F22LGOVSC6QNIPRT5K4ACGTVJJ5RZDONIBQ`
+Weather data delivered for Lagos, Nigeria: 28.6°C, 9.1 km/h, code 3.
 
-### 16.1 Agent Setup
-- [ ] Create agent via new ALGO-triggered activation flow (Sprint M)
-- [ ] Fund agent with 0.5 ALGO (activation) + USDC (spending)
-- [ ] Confirm agent active, opted into USDC, gas status OK
-- [ ] Opt treasury into USDC (ASA 31566704) — required to receive USDC sweeps
-- [ ] Set `ALGO_TREASURY_MNEMONIC` in Railway env vars → gas station activates automatically
-- [ ] Verify in Railway logs: `[GasStation] Starting — interval 30s, trigger < 500000 µALGO`
-- [ ] Confirm first top-up fires: agent wallet `S2P45K7N...` receives 0.70 ALGO from treasury
+- [x] `POST /api/weather` endpoint added to `src/index.ts` behind `x402Paywall` — proxies Open-Meteo (free, no API key), returns temperature/wind/weather_code/timestamp + USDC payment sandbox
+- [x] `scripts/buy-weather.ts` — end-to-end test: health check → 402 absorbed via `requestWithPayment` → weather data + sandbox returned → `/api/execute` → job polled to confirmed
+- [x] `weather-test-agent` registered and rekeyed to production signer (`6RZV6XEP6...`)
+- [x] Async job queue polling added to buy-weather.ts (server returns `{queued:true, jobId}`)
+- [x] USDC transferred on-chain, Pera Explorer link logged
 
-### 16.2 Weather Endpoint (Entry #1 in future registry)
-- [ ] Add `GET /api/weather?city=Lagos` behind `x402Paywall` — proxies Open-Meteo (free, no API key)
-- [ ] Price: 1000 micro-USDC ($0.001) per call
-- [ ] Returns: temperature, wind speed, weather code, timestamp
+**Critical issues found — tracked in Sprint 16A below.**
 
-### 16.3 End-to-End Payment Test Script
-- [ ] Write `scripts/buy-weather.ts` using `@algo-wallet/x402-client`:
-      - Points at agent wallet `S2P45K7N...`
-      - Calls `POST https://api.ai-agentic-wallet.com/api/weather?city=Lagos`
-      - Absorbs 402 → pays 0.001 USDC → receives weather data
-      - Logs: payment txn ID, weather response, mandate usage
-- [ ] Confirm mandate enforcement fires (per-tx cap respected)
-- [ ] Confirm payment appears in agent transaction history on dashboard
-- [ ] Confirm on-chain USDC transfer visible on Pera Explorer
+### What worked
+- Open-Meteo geocoding + weather fetch: zero friction
+- 402 bounce + proof absorption: worked as designed
+- Async job queue + polling: job confirmed in ~3s
+- Auth-addr Rule 3 validation: correctly caught signer mismatch (security layer working)
+- Railway deploy cycle: new endpoint live in ~2 min
 
-**Success criteria:** Agent autonomously pays $0.001 USDC for real weather data with no human
-approval of the individual transaction. Mandate set by human covers it.
+### What was broken or missing
+- x402 payment is not atomic: data delivered before USDC confirmed on-chain (see 16A.1)
+- Two different signer keys: local `.env` `ALGO_SIGNER_MNEMONIC` derives to `2FBKPEID...` (Cohort A), Railway uses `6RZV6XEP6...`; speed-test-agent was rekeyed to the wrong one, Sprint 5 results not reliable as production indicators (see 16A.2)
+- X-PAYMENT proof contains a USDC txn signed by the agent's original key — invalid for rekeyed accounts if ever submitted; middleware only checks the ed25519 signature over groupId, not txn validity (see 16A.3)
+- SDK `requestSandboxExport` hardcoded to `/api/agent-action` — any new x402 endpoint requires importing interceptor internals (see 16A.4)
+- `railway variables` truncates long secrets in display — spent a full debugging cycle on a 40-char vs 64-char `PORTAL_API_SECRET` mismatch (see 16A.5)
+- `setup-sprint16-agent.ts` left as a one-off throwaway with hardcoded addresses (see 16A.6)
+
+---
+
+## Sprint 16A — x402 Protocol Correctness & Operational Hardening
+
+**Why:** Sprint 16 confirmed the payment rail works mechanically but exposed six structural
+problems. These must be fixed before Phase 2 sellers join — the protocol design affects every
+endpoint we build and every SDK integration downstream.
+
+---
+
+### 16A.1 — Fix Payment Atomicity (Critical)
+
+**Problem:** `POST /api/weather` returns weather data the moment `x402Paywall` verifies the
+payment *proof*. The actual USDC transfer only happens if the client then calls `/api/execute`.
+A client could take the weather data and never settle. Data delivery is not causally linked to
+confirmed payment.
+
+**Root cause:** `x402Paywall` verifies an ed25519 signature over a groupId — it's a proof of
+intent, not proof of payment. The actual USDC movement goes through `/api/execute`, which is a
+separate, optional call.
+
+**Fix — Receipt-gated model:**
+- Client calls `/api/execute` first to pay → receives `txnId` (confirmed on-chain)
+- Client calls `POST /api/weather` with header `X-PAYMENT-RECEIPT: <txnId>`
+- `x402Paywall` (or a new `x402Receipt` middleware) verifies: txnId exists on Algorand,
+  amount matches price, receiver matches treasury, txn not already redeemed (replay guard)
+- Only then delivers the resource
+
+**Alternative (simpler, synchronous):**
+- Weather endpoint calls `/api/execute` internally and waits for confirmation before returning
+  weather data. Slower (adds ~4s) but fully atomic and requires no client-side changes.
+
+- [ ] Decide on model: receipt-gated vs internal synchronous settlement
+- [ ] Implement chosen model in `x402Paywall` or a new `x402Receipt` middleware
+- [ ] Update `buy-weather.ts` to use the new flow
+- [ ] Update `POST /api/weather` to follow atomic delivery pattern
+- [ ] Update spec comment in `src/middleware/x402.ts` to reflect actual behaviour
+- [ ] Add integration test: verify data is NOT returned if payment step is skipped
+
+---
+
+### 16A.2 — Unify Signer Keys: Dev = Prod
+
+**Problem:** Two different signer keys exist in the same codebase:
+
+| Context | `ALGO_SIGNER_MNEMONIC` derives to | Role |
+|---|---|---|
+| Local `.env` | `2FBKPEID...` | Cohort A / dev signer |
+| Railway production | `6RZV6XEP6...` | Production signer |
+
+Agents registered locally (speed-test-agent) are rekeyed to the dev signer, making them
+incompatible with the production server. Sprint 5 stress test results may not reflect
+current production behaviour since the environment has drifted.
+
+- [ ] Either: update local `.env` `ALGO_SIGNER_MNEMONIC` to the production key (requires
+      re-registering all local test agents) — preferred for fidelity
+- [ ] Or: document the two-key setup explicitly; add a warning on boot if local signer ≠
+      Railway signer and `NODE_ENV=production`
+- [ ] Re-register speed-test-agent against the production signer (rekey on-chain from Cohort A → prod)
+- [ ] Re-run Sprint 5 stress test against the current production configuration to get trustworthy
+      baseline numbers — previous results were on a different signer setup
+- [ ] Add boot assertion: `if (derivedSignerAddr !== config.algorand.signerAddress) throw Error("Signer key/address mismatch")`
+
+---
+
+### 16A.3 — Fix X-PAYMENT Proof for Rekeyed Agents
+
+**Problem:** `requestWithPayment` in the client interceptor builds a USDC transfer signed by
+`privateKey` — the agent's original key. For rekeyed agents, this signature is invalid on
+Algorand (requires the auth-addr's key). `x402Paywall` only checks the ed25519 signature over
+the groupId, not whether the embedded transaction would pass Algorand validation. So the proof
+passes middleware verification, but if the signed transaction were ever submitted on-chain it
+would be rejected.
+
+This is a latent correctness bug: the X-PAYMENT header contains a transaction that cannot be
+broadcast for any custodially-managed (rekeyed) agent.
+
+- [ ] Option A: Remove the signed USDC transaction from the X-PAYMENT proof entirely for
+      custodial agents. The proof becomes: `{ groupId, senderAddr, signature }` only — no txn.
+      Update `buildPaymentProof` in interceptor to skip transaction construction when agent is rekeyed.
+- [ ] Option B: Have the server sign the USDC transaction on behalf of the agent in the
+      X-PAYMENT verification step, making X-PAYMENT a valid submittable payload.
+- [ ] Update `x402Paywall` to document clearly: "verifies proof of identity, not proof of
+      submittable payment" until Option A/B is resolved
+- [ ] Add a comment in `buildPaymentProof` warning that signed txn is invalid for rekeyed accounts
+
+---
+
+### 16A.4 — Make SDK Client URL-Generic
+
+**Problem:** `AlgoAgentClient.requestSandboxExport()` is hardcoded to `/api/agent-action`.
+Any new x402-gated endpoint (weather, news, FX, crypto price) requires importing
+`requestWithPayment` directly from the interceptor — a lower-level internal not part of the
+public API contract.
+
+- [ ] Add to `AlgoAgentClient`:
+      ```typescript
+      async fetch(path: string, init?: RequestInit): Promise<Response>
+      ```
+      Calls `requestWithPayment` with `${this.baseUrl}${path}`, using `this.privateKey` and
+      `this.senderAddress`. Returns the raw `Response` — caller parses the body.
+- [ ] Export `requestWithPayment` as a documented public API (it already is, but add JSDoc)
+- [ ] Update `buy-weather.ts` to use `client.fetch("/api/weather", {...})` instead of importing
+      the interceptor directly
+- [ ] Add example to `DOCS_FOR_AGENTS.md`: calling a custom x402 endpoint
+
+---
+
+### 16A.5 — Add `verify-env.ts` Sanity Check Script
+
+**Problem:** `railway variables` truncates long values in its display output (showed 40 chars
+of a 64-char `PORTAL_API_SECRET`). Spent a full debugging cycle on a non-existent auth failure.
+No tooling exists to diff local `.env` against Railway production config.
+
+- [ ] Write `scripts/verify-env.ts`:
+      - Uses `railway run node -e` to echo each critical env var from production
+      - Compares: `PORTAL_API_SECRET`, `ALGO_SIGNER_ADDRESS`, `ALGO_SIGNER_MNEMONIC` (derived address only), `X402_PAY_TO_ADDRESS`, `UPSTASH_REDIS_REST_URL`
+      - Outputs: `✓ match` / `✗ MISMATCH (local: X, railway: Y)` for each
+      - Run before every sprint that touches auth or signing
+- [ ] Add to `package.json` scripts: `"verify-env": "npx tsx scripts/verify-env.ts"`
+- [ ] Document: "Run `npm run verify-env` before debugging auth or signing failures"
+
+---
+
+### 16A.6 — Harden Agent Registration Flow
+
+**Problem:** `setup-sprint16-agent.ts` has hardcoded addresses, hardcoded mnemonics, and is a
+one-off throwaway script. The real problem it solved (registering a test agent against the
+production signer) should be a proper reusable utility.
+
+- [ ] Delete or archive `scripts/setup-sprint16-agent.ts` (hardcoded values, not reusable)
+- [ ] Write `scripts/register-agent.ts` — generic CLI:
+      ```bash
+      npx tsx scripts/register-agent.ts \
+        --agent-id my-agent \
+        --fund-algo 0.6 \          # ALGO to send from funding wallet
+        --fund-usdc 50000 \        # µUSDC to send from funding wallet
+        --funding-mnemonic-env FUNDING_MNEMONIC
+      ```
+      Generates fresh keypair, funds it, registers via API, prints new AGENT_ID + ALGO_MNEMONIC
+- [ ] Ensure register-agent.ts works for both dev (local signer) and prod (Railway signer)
+      by reading ALGO_SIGNER_ADDRESS from env, not hardcoding
+
+---
+
+### 16A.7 — Fix buy-weather.ts Banner Formatting
+
+**Problem:** The banner columns are misaligned for several fields due to fixed-width padding
+not accounting for URL length variance.
+
+- [ ] Fix column alignment in the banner — use consistent padding or drop fixed-width format
+- [ ] Add `CITY` env var to `.env.example` with a note
+
+---
+
+**Completion criteria for 16A:** `buy-weather.ts` runs end-to-end with USDC moving atomically
+*as a precondition* to data delivery, local and production signers are aligned, and `npm run
+verify-env` passes clean.
 
 ---
 
@@ -703,6 +867,285 @@ with enough variety that agents have real choices. Target: 10 listed APIs across
 
 ---
 
+# PHASE 3 — Algorand DeFi Automation *(optional, high value)*
+
+> **Why this matters:** The Bazaar (Phase 2) depends on third-party sellers joining — a
+> 12–18 month ecosystem play with real execution risk. Phase 3 requires no external
+> participants. The wallet infrastructure (signing, mandates, guardian, atomic groups) is
+> already the right foundation. These sprints add a DeFi intelligence layer on top of it.
+> An agent autonomously managing a Tinyman/Folks Finance position is a more compelling
+> near-term demo than a marketplace with five listings.
+>
+> **Prerequisite:** Sprint 16A complete (signer keys unified, payment atomicity fixed).
+> **These sprints are independent of each other** — pick the platform that makes most
+> sense to prioritise and build that integration first.
+
+---
+
+## Sprint D1 — Price Feed & DEX Primitives
+
+**Why first:** Every DeFi strategy — arbitrage, portfolio rebalancing, position monitoring —
+needs a reliable real-time price layer. This sprint builds the shared foundation all
+subsequent DeFi sprints depend on.
+
+### D1.1 — Vestige / Pool Price Integration
+- [ ] `src/defi/prices.ts` — `getAssetPrice(assetId)` via Vestige free API
+      Returns: mid price in USDC, 24h change %, liquidity depth
+- [ ] `src/defi/pools.ts` — `getTinymanPoolState(assetA, assetB)` via Tinyman V2 API
+      Returns: reserve amounts, current price, fee tier, pool address
+- [ ] Poll prices on a configurable interval (default 30s), cache in Redis with TTL
+- [ ] Expose via `GET /api/defi/price?asset=ALGO` — agent-readable price endpoint
+- [ ] Unit tests: mock Vestige + Tinyman responses, verify price parsing
+
+### D1.2 — Tinyman Swap Transaction Builder
+- [ ] `src/defi/tinyman.ts` — `buildTinymanSwap(params)`:
+      - `assetIn`, `assetOut`, `amountIn`, `slippageBips`
+      - Fetches current pool state, calculates `amountOutMin`
+      - Returns unsigned atomic group: [asset opt-in if needed, swap app call, fee txn]
+- [ ] Integrates with existing `constructAtomicGroup` pattern — same sandbox export shape
+- [ ] Slippage guard: abort if price impact > configurable threshold (default 1%)
+- [ ] Swap simulation: `simulateTinymanSwap()` — returns expected output before committing
+
+### D1.3 — Dashboard: DeFi Price Widget
+- [ ] Add live ALGO/USDC price card to `/app/dashboard` — pulls from `/api/defi/price`
+- [ ] Small 24h sparkline using existing chart components
+- [ ] No auth required for price data — public endpoint
+
+---
+
+## Sprint D2 — Lofty Real Estate Agent
+
+**Why:** Lofty is the most accessible Algorand DeFi integration. Property tokens are
+standard ASAs. Daily rental income arrives in USDC/ALGO automatically. An agent that
+autonomously optimises a Lofty portfolio (rebalancing across properties by yield, compounding
+rental income) is a concrete, explainable use case with no market-timing risk.
+
+### D2.1 — Lofty API Integration
+- [ ] `src/defi/lofty.ts` — Lofty API client:
+      - `getProperties()` — list all available properties with yield %, token price, available supply
+      - `getPortfolio(agentAddress)` — agent's current property token holdings + accrued rental income
+      - `buildPropertyPurchase(propertyId, tokenAmount)` — unsigned ASA transfer to Lofty marketplace
+      - `buildRentalHarvest(agentAddress)` — collect pending rental income
+- [ ] Map Lofty property ASA IDs — maintain a seeded registry of known property token IDs
+- [ ] Rate: poll agent Lofty portfolio every 60s when active
+
+### D2.2 — Lofty Strategy Engine
+- [ ] `src/defi/strategies/loftyRebalance.ts`:
+      - Input: agent mandate + strategy config (min yield threshold, max allocation per property, compound: bool)
+      - Logic: identify properties below yield threshold → sell; identify higher-yield properties → buy
+      - Respects per-tx mandate cap — no single rebalance exceeds cap
+      - Output: ordered list of unsigned swap instructions
+- [ ] `src/defi/strategies/loftyCompound.ts`:
+      - Harvests accrued rental income automatically
+      - Reinvests into highest-yield available property within mandate
+      - Runs on configurable schedule (default: daily)
+
+### D2.3 — Agent Strategy Config (Dashboard)
+- [ ] New section on `/app/dashboard/{agentId}`: "DeFi Strategy"
+- [ ] Lofty strategy toggle: enable/disable
+- [ ] Config fields: min acceptable yield %, max % of wallet in single property, compound toggle
+- [ ] Strategy activity log: shows each rebalance action + outcome inline
+
+### D2.4 — End-to-End Test
+- [ ] Fund test agent with $10 USDC
+- [ ] Configure Lofty rebalance strategy
+- [ ] Verify agent purchases a property token autonomously within mandate
+- [ ] Verify rental income compounded correctly after 24h
+- [ ] All transactions visible in dashboard history with Pera Explorer links
+
+---
+
+## Sprint D3 — Tinyman / Pact Arbitrage Agent
+
+**Why:** Multiple AMM DEXes on Algorand (Tinyman, Pact, Humble, Cometa) trade the same
+assets at slightly different prices. An agent that detects and atomically exploits these
+discrepancies earns profit from pure market inefficiency — no prediction required.
+Atomicity (built into Algorand + our existing transaction pipeline) means no execution risk:
+if the arbitrage isn't profitable after slippage, the whole group reverts.
+
+### D3.1 — Multi-DEX Price Scanner
+- [ ] `src/defi/arbitrage/scanner.ts` — polls Tinyman + Pact + Humble pool states every 5s
+- [ ] `detectArbitrageOpportunity(assetA, assetB, minProfitBips)`:
+      - Compares effective price across all DEX pairs
+      - Accounts for swap fees (0.3% Tinyman, 0.25% Pact) and Algorand tx fees
+      - Returns opportunity if net profit after fees exceeds `minProfitBips` (default: 20 bips = 0.2%)
+- [ ] Logs detected opportunities to Redis with timestamp + estimated profit
+
+### D3.2 — Atomic Arbitrage Transaction Builder
+- [ ] `src/defi/arbitrage/builder.ts` — `buildArbitragePair(opportunity)`:
+      - Constructs 2-leg atomic group: buy on DEX A → sell on DEX B
+      - Both swaps in one Algorand atomic group — guaranteed profitable or fully reverted
+      - Includes fee txn (x402 toll to treasury)
+      - Slippage guard per leg: abort if either leg degrades past threshold
+- [ ] Simulation before execution: verify profit still valid at current pool state
+- [ ] Max position size: never exceed per-tx mandate cap
+
+### D3.3 — Arbitrage Agent Strategy Config
+- [ ] Dashboard config: min profit threshold (bips), max position size (USDC), active pairs
+- [ ] Real-time opportunity log: shows detected + executed opportunities with P&L
+- [ ] Daily P&L summary card on `/app/dashboard/{agentId}`
+- [ ] Auto-pause if 3 consecutive failed executions (protection against scanner lag)
+
+### D3.4 — End-to-End Test
+- [ ] Run scanner against mainnet, verify opportunity detection fires correctly
+- [ ] Execute one real arbitrage with test agent ($5 max position)
+- [ ] Verify both legs confirmed atomically on Pera Explorer
+- [ ] Verify mandate cap respected — oversized opportunity rejected cleanly
+
+---
+
+## Sprint D4 — Folks Finance Position Manager
+
+**Why:** Folks Finance is Algorand's largest lending protocol. Borrowers can be liquidated
+when their collateral value drops. Liquidation bots earn a bonus (typically 5–10%) for
+closing undercollateralised positions. This is the most mechanical DeFi opportunity —
+no market prediction, just monitoring on-chain state and acting within seconds.
+Separately, agents can manage their own lending positions to maximise yield while
+staying safe from liquidation.
+
+### D4.1 — Folks Finance On-Chain Reader
+- [ ] `src/defi/folks/reader.ts` — reads Folks Finance V2 contract state:
+      - `getAllPositions()` — active borrower positions with collateral ratio, borrow amount, liquidation threshold
+      - `getAgentPosition(agentAddress)` — this agent's own loans (if any)
+      - `getLiquidationBonus(poolId)` — current liquidation incentive per market
+- [ ] Poll all positions every 15s, cache in Redis
+- [ ] Alert via existing Telegram guardian if agent's own LTV > 70% (configurable threshold)
+
+### D4.2 — Liquidation Bot
+- [ ] `src/defi/folks/liquidator.ts` — `buildLiquidationTxn(position)`:
+      - Constructs Folks Finance liquidation app call for undercollateralised position
+      - Calculates max repayable amount within mandate cap
+      - Atomic group: USDC repayment → receive collateral asset → optional swap back to USDC
+- [ ] `src/defi/strategies/liquidationMonitor.ts`:
+      - Watches all positions from D4.1 reader
+      - Fires liquidation when health factor drops below 1.0
+      - Respects mandate per-tx cap — doesn't over-commit
+      - Logs every liquidation attempt (success + fail) with txnId
+
+### D4.3 — Yield Optimiser (own position)
+- [ ] `src/defi/strategies/folksYield.ts` — manages agent's own Folks Finance deposit:
+      - Deposits idle USDC into Folks Finance supply pool to earn interest
+      - Withdraws when balance needed for other mandate activity
+      - Target: never leave more than mandate daily cap idle — rest earns yield
+- [ ] Dashboard: shows current APY, accrued interest, utilisation rate
+
+### D4.4 — End-to-End Test
+- [ ] Run liquidation monitor against mainnet — verify undercollateralised positions detected
+- [ ] Execute one liquidation with test agent (small position)
+- [ ] Verify bonus received, all steps atomic on Pera Explorer
+- [ ] Test yield deposit: idle USDC deployed to Folks Finance supply, interest accruing
+
+---
+
+## Sprint D5 — Alpha Arcade Prediction Agent
+
+**Why:** Alpha Arcade is the third-largest prediction market globally by daily transactions
+(behind Polymarket and Kalshi). $50M+ total volume, launched Super Bowl 2025. All on
+Algorand mainnet. Uses USDC (ASA 31566704 — same as our treasury). A mandate-gated agent
+that participates in prediction markets is a direct wallet use case — the mandate daily cap
+becomes a hard loss limit, making this the safest possible way to deploy a prediction strategy.
+
+**Key reference:** `phara23/alpha-mcp` (GitHub) + `@alpha-arcade/mcp` (npm) — open-source
+MCP server that wraps the full Alpha Arcade API. Use as the primary integration reference.
+GoPlausible's `algorand-mcp` also integrates Alpha Arcade alongside Tinyman and x402 — worth
+reviewing for approach and edge cases.
+
+**Note on GoPlausible MCP:** GoPlausible has built a 125-tool Algorand MCP server that already
+integrates x402, Alpha Arcade, and Tinyman. This is a potential competitor to our aggregator
+MCP (Sprint 20). Their approach (OS keychain wallet, no custody) is fundamentally different
+from ours (custodial, mandate-governed). Worth monitoring — our mandate governance and
+on-chain audit trail are the differentiators.
+
+### Mainnet Contract Details (confirmed)
+
+| Parameter | Value |
+|---|---|
+| Matcher Application ID | `3078581851` |
+| USDC Asset ID | `31566704` (same as our treasury) |
+| ALPHA Token (governance/reward) | ASA `2726252423` |
+| REST API | `https://platform.alphaarcade.com/api` |
+| WebSocket API | `wss://wss.platform.alphaarcade.com` |
+| API Key (optional) | From alphaarcade.com Partners tab — unlocks richer data + liquidity rewards |
+
+### Alpha Arcade Tool Reference (from alpha-mcp)
+
+**Read-only (no key required):**
+- `get_live_markets` — all active prediction markets
+- `get_market(marketId)` — specific market: odds, close time, volume, description
+- `get_orderbook(marketId)` — current bid/ask orderbook
+- `get_full_orderbook(marketId)` — complete on-chain orderbook depth
+- `get_open_orders(walletAddress)` — agent's open orders
+- `get_positions(walletAddress)` — agent's current YES/NO token holdings + unrealised P&L
+
+**Trading (requires ALPHA_MNEMONIC / our signer):**
+- `create_limit_order(marketId, side, price, quantity)` — sits on orderbook
+- `create_market_order(marketId, side, quantity)` — immediate fill at best available price
+- `cancel_order(orderId)` — cancel open order
+- `amend_order(orderId, newPrice, newQty)` — modify open order
+- `split_shares(marketId, usdcAmount)` — split USDC into YES + NO tokens at 1:1 ratio
+- `merge_shares(marketId, shareAmount)` — merge YES + NO back into USDC
+- `claim(marketId)` — collect winnings after market settles
+
+**Streaming (WebSocket):**
+- `stream_orderbook(marketId)` — real-time orderbook updates
+- `stream_live_markets` — real-time market list
+- `stream_wallet_orders(walletAddress)` — real-time order status for agent wallet
+
+**Unit standards (all values in microunits):**
+- Price: 500,000 = $0.50 | 1,000,000 = $1.00
+- Quantity: 1,000,000 = 1 share
+- Slippage: 50,000 = $0.05
+
+### D5.1 — Alpha Arcade API Client
+- [ ] `src/defi/alphaarcade/client.ts` — wraps `platform.alphaarcade.com/api`:
+      - `getLiveMarkets()` → active markets with odds, volume, close time
+      - `getOrderbook(marketId)` → bid/ask depth
+      - `getPositions(agentAddress)` → open positions + unrealised P&L
+      - `getOpenOrders(agentAddress)` → pending orders
+- [ ] `src/defi/alphaarcade/builder.ts` — unsigned transaction constructors:
+      - `buildLimitOrder(marketId, side, price, qty)` → app call to `3078581851`
+      - `buildMarketOrder(marketId, side, qty)` → immediate fill app call
+      - `buildSplitShares(marketId, usdcAmount)` → USDC → YES + NO tokens
+      - `buildClaim(marketId)` → collect settled market winnings
+- [ ] Optional: set `ALPHA_API_KEY` in Railway env for richer data + liquidity rewards
+- [ ] Add Alpha Arcade app ID `3078581851` to SIGNING_ARCHITECTURE.md known app IDs
+
+### D5.2 — Prediction Strategy Config
+- [ ] Dashboard strategy config for `/app/dashboard/{agentId}`:
+      - Enable/disable Alpha Arcade trading
+      - Max bet size per market (USDC) — hard-limited by mandate per-tx cap
+      - Daily loss limit — hard-limited by mandate daily cap
+      - Strategy mode: **Manual** (agent only acts on explicit dashboard signal) or
+        **Momentum** (agent follows orderbook imbalance above configurable threshold)
+- [ ] Manual signal mode: human sends a signal from dashboard ("bet YES on market X at $0.10")
+      — agent executes within mandate, logs result
+- [ ] Position dashboard: open markets, YES/NO balances, unrealised P&L, settled + claimed history
+- [ ] Auto-claim: agent automatically calls `claim` on settled markets the agent holds tokens in
+
+### D5.3 — End-to-End Test
+- [ ] Fund test agent with $5 USDC
+- [ ] Configure: $0.25 max bet, $1.00 daily cap, manual mode
+- [ ] Send manual signal from dashboard → agent places limit order on a live market
+- [ ] Verify: order visible in orderbook, transaction on Pera Explorer
+- [ ] Let market settle → verify `claim` fires automatically, USDC returned to agent wallet
+- [ ] Verify all steps in dashboard transaction history with txnIds
+
+---
+
+## Phase 3 Milestone — Autonomous Algorand DeFi
+
+The DeFi layer is live when an agent can run the following without any human transaction approvals:
+
+- [ ] Agent holds ALGO + USDC, earns yield on idle USDC via Folks Finance
+- [ ] Agent monitors Tinyman/Pact price feeds, executes arbitrage when opportunity > 0.2% profit
+- [ ] Agent rebalances Lofty property portfolio weekly based on yield performance
+- [ ] Agent auto-liquidates undercollateralised Folks Finance positions for bonus
+- [ ] All transactions within mandate caps — human set rules once, agent operates indefinitely
+- [ ] All activity visible in dashboard history with on-chain txnIds
+- [ ] Guardian alerts fire on Telegram if position health deteriorates
+
+---
+
 ## Phase 2 Milestone — The Full Loop
 
 The ecosystem is live when all of the following work in a single uninterrupted flow:
@@ -765,3 +1208,13 @@ The ecosystem is live when all of the following work in a single uninterrupted f
 - [x] Velocity cap: fires correctly, idempotent on retry
 - [x] Nodely failover: activates in ~44s, auto-recovery
 - [x] Redis failure: boot-time FATAL — fail-closed (502)
+- ⚠ NOTE: Sprint 5 ran with local Cohort A signer (`2FBKPEID...`), not the current Railway
+  production signer (`6RZV6XEP6...`). Results are mechanically valid but not a confirmed
+  test of the current production signing configuration. Re-run planned in Sprint 16A.2.
+
+## End-to-End Payment Test (Sprint 16)
+- [x] `POST /api/weather` — x402-gated, Open-Meteo geocoding + current conditions
+- [x] `scripts/buy-weather.ts` — full 402 bounce + proof + sandbox + job poll flow
+- [x] Txn confirmed mainnet round 59,427,810: `SJU6VBOOWLQ5X7YM2F22LGOVSC6QNIPRT5K4ACGTVJJ5RZDONIBQ`
+- [x] `weather-test-agent` — registered and rekeyed to prod signer, 20,000 µUSDC funded
+- ⚠ Six structural issues found — tracked in Sprint 16A

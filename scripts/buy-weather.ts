@@ -123,7 +123,31 @@ async function fetchWeather(): Promise<WeatherResponse> {
 
 // ── Step 4: Settlement ─────────────────────────────────────────
 
-interface SettlementResult {
+interface QueuedJob {
+  success: boolean;
+  queued:  boolean;
+  jobId:   string;
+  status:  string;
+  pollUrl: string;
+  agentId: string;
+  sandboxId: string;
+}
+
+interface JobStatus {
+  jobId:     string;
+  status:    "queued" | "processing" | "confirmed" | "failed";
+  agentId:   string;
+  sandboxId: string;
+  txnId?:    string;
+  confirmedRound?: number;
+  groupId?:  string;
+  txnCount?: number;
+  settledAt?: string;
+  error?:    string;
+  failedStage?: string;
+}
+
+interface DirectSettlement {
   settlement?: {
     txnId:          string;
     confirmedRound: number;
@@ -136,7 +160,24 @@ interface SettlementResult {
   error?: string;
 }
 
-async function settle(sandboxExport: Record<string, unknown>): Promise<SettlementResult> {
+async function pollJob(jobId: string, maxWaitMs = 30_000): Promise<JobStatus> {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 1500));
+    const res = await fetch(`${API_URL}/api/jobs/${jobId}`, {
+      headers: { "Authorization": `Bearer ${PORTAL_SECRET}` },
+    });
+    const job = await res.json() as JobStatus;
+    process.stdout.write(".");
+    if (job.status === "confirmed" || job.status === "failed") {
+      process.stdout.write("\n");
+      return job;
+    }
+  }
+  throw new Error(`Job ${jobId} did not complete within ${maxWaitMs}ms`);
+}
+
+async function settle(sandboxExport: Record<string, unknown>): Promise<JobStatus> {
   console.log(`[BUY-WEATHER] Step 3/4: Settlement → POST /api/execute`);
   console.log(`[BUY-WEATHER]   agentId: ${AGENT_ID}`);
   console.log(`[BUY-WEATHER]   Forwarding sandbox to signer pipeline...`);
@@ -150,7 +191,41 @@ async function settle(sandboxExport: Record<string, unknown>): Promise<Settlemen
     body: JSON.stringify({ sandboxExport, agentId: AGENT_ID }),
   });
 
-  return res.json() as Promise<SettlementResult>;
+  const body = await res.json() as QueuedJob | DirectSettlement;
+
+  // Queued async job — poll until confirmed
+  if ((body as QueuedJob).queued) {
+    const queued = body as QueuedJob;
+    console.log(`[BUY-WEATHER]   Job queued: ${queued.jobId}`);
+    process.stdout.write(`[BUY-WEATHER]   Waiting for confirmation`);
+    return pollJob(queued.jobId);
+  }
+
+  // Direct settlement (synchronous path)
+  const direct = body as DirectSettlement;
+  if (direct.settlement?.txnId) {
+    return {
+      jobId: "",
+      status: "confirmed",
+      agentId: direct.agentId ?? "",
+      sandboxId: "",
+      txnId: direct.settlement.txnId,
+      confirmedRound: direct.settlement.confirmedRound,
+      groupId: direct.settlement.groupId,
+      txnCount: direct.settlement.txnCount,
+      settledAt: direct.settlement.settledAt,
+    };
+  }
+
+  // Failure
+  return {
+    jobId: "",
+    status: "failed",
+    agentId: direct.agentId ?? "",
+    sandboxId: "",
+    error: direct.error,
+    failedStage: direct.failedStage,
+  };
 }
 
 // ── Main ───────────────────────────────────────────────────────
@@ -164,8 +239,8 @@ async function main(): Promise<void> {
     const result = await settle(sandbox);
 
     console.log();
-    if (result.settlement?.txnId) {
-      const explorerUrl = `${EXPLORER_BASE}/${result.settlement.txnId}`;
+    if (result.status === "confirmed" && result.txnId) {
+      const explorerUrl = `${EXPLORER_BASE}/${result.txnId}`;
 
       console.log(`[BUY-WEATHER] Step 4/4: COMPLETE`);
       console.log(`[BUY-WEATHER] ════════════════════════════════════════════════════`);
@@ -180,9 +255,9 @@ async function main(): Promise<void> {
       console.log();
       console.log(`[BUY-WEATHER]   💳 Payment`);
       console.log(`[BUY-WEATHER]      Toll        : ${toll_micro_usdc} micro-USDC ($${(toll_micro_usdc / 1_000_000).toFixed(4)})`);
-      console.log(`[BUY-WEATHER]      Txn ID      : ${result.settlement.txnId}`);
-      console.log(`[BUY-WEATHER]      Round       : ${result.settlement.confirmedRound}`);
-      console.log(`[BUY-WEATHER]      Settled At  : ${result.settlement.settledAt}`);
+      console.log(`[BUY-WEATHER]      Txn ID      : ${result.txnId}`);
+      console.log(`[BUY-WEATHER]      Round       : ${result.confirmedRound ?? "—"}`);
+      console.log(`[BUY-WEATHER]      Settled At  : ${result.settledAt ?? "—"}`);
       console.log(`[BUY-WEATHER]      Agent       : ${result.agentId}`);
       console.log();
       console.log(`[BUY-WEATHER]   Verify on-chain:`);

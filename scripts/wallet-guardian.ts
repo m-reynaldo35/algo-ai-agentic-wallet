@@ -431,7 +431,7 @@ async function checkSigner(algod: algosdk.Algodv2, signerAddr: string): Promise<
       // Find entries nearest to the target comparison point (nowMs - windowMs)
       const targetMin = nowMs - windowMs - toleranceMs;
       const targetMax = nowMs - windowMs + toleranceMs;
-      const candidates = await redis.zrangebyscore(DRAIN_HISTORY_KEY, targetMin, targetMax) as string[];
+      const candidates = await redis.zrange(DRAIN_HISTORY_KEY, targetMin, targetMax, { byScore: true }) as string[];
 
       if (candidates.length > 0) {
         // Take the oldest candidate in the tolerance window — most conservative comparison
