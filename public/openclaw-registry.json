@@ -6,11 +6,23 @@
   "description": "AI-to-AI financial routing and settlement on Algorand with cryptographic enforcement at the AVM consensus level.",
   "toll_requirement": true,
   "toll": {
-    "amount_micro": 100000,
+    "amount_micro": 10000,
+    "amount_human": "0.01",
     "currency": "USDC",
     "asset_id": 31566704,
     "network": "algorand-mainnet",
-    "receiver": "E46PHV7THPP4MAIE6YX4FALPZTPDDN56SRHZBDRVCO6NZYOGNXYTQ6FHQE"
+    "receiver": "C66AFZ3V5XN4ZHCXW6QQT4O6XDHMKSXITIWN4CRTMJUAKFCCH5QE4C2U74"
+  },
+  "benchmark": {
+    "last_run": "2026-03-22",
+    "success_rate": "100/100",
+    "throughput_tpm": 126.6,
+    "e2e_p50_ms": 10737,
+    "e2e_p95_ms": 15359,
+    "handshake_p50_ms": 549,
+    "peak_concurrency": 46,
+    "live_stats": "https://api.ai-agentic-wallet.com/api/benchmark",
+    "sample_txn": "https://explorer.perawallet.app/tx/S7QJRCIS7PXUXWHIQPU2IL7MYW2BUEC753TTAZYKITKI2QJXYWRQ"
   },
   "auth_method": "X-PAYMENT-Ed25519",
   "auth_spec": {

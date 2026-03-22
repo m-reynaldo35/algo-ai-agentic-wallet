@@ -51,6 +51,8 @@ export default function DocsPage() {
               ["Types", "#types"],
               ["Error Handling", "#errors"],
               ["CLI Reference", "#cli"],
+              ["Claude MCP Integration", "#mcp"],
+              ["Performance", "#performance"],
             ].map(([label, href]) => (
               <li key={href}>
                 <a href={href} className="hover:text-white transition-colors">{label}</a>
@@ -596,6 +598,102 @@ x402 balance --agent my-agent-001
 x402 mandate list --agent my-agent-001 --all
 x402 history --agent my-agent-001 --limit 50`}
             />
+          </Section>
+
+          <Section title="Claude MCP Integration" id="mcp">
+            <p className="text-zinc-400 mb-4 text-sm leading-relaxed">
+              The <code className="text-violet-400 bg-zinc-800 px-1.5 py-0.5 rounded text-sm">@algo-wallet/x402-mcp</code> MCP
+              server lets Claude Desktop and Claude Code agents pay for API calls autonomously — no payment code required.
+              Claude calls the <code className="text-zinc-300 bg-zinc-800 px-1 rounded text-xs">pay_with_x402</code> tool and
+              receives weather data, analytics, or any x402-gated resource in return.
+            </p>
+            <CodeBlock language="bash" code="npx @algo-wallet/x402-mcp" />
+            <p className="text-zinc-400 text-sm mt-6 mb-3 font-medium">Add to Claude Desktop config:</p>
+            <CodeBlock
+              language="json"
+              code={`// ~/Library/Application Support/Claude/claude_desktop_config.json
+{
+  "mcpServers": {
+    "x402-wallet": {
+      "command": "npx",
+      "args": ["-y", "@algo-wallet/x402-mcp"],
+      "env": {
+        "ALGO_MNEMONIC": "your 25-word agent mnemonic",
+        "X402_AGENT_ID": "your-agent-id",
+        "X402_API_URL":  "https://api.ai-agentic-wallet.com"
+      }
+    }
+  }
+}`}
+            />
+            <p className="text-zinc-400 text-sm mt-6 mb-3 font-medium">Add to Claude Code (global):</p>
+            <CodeBlock
+              language="bash"
+              code={`claude mcp add x402-wallet npx @algo-wallet/x402-mcp \\
+  --env ALGO_MNEMONIC="your 25-word mnemonic" \\
+  --env X402_AGENT_ID="your-agent-id"`}
+            />
+            <div className="overflow-x-auto mt-6">
+              <table className="w-full text-sm border border-zinc-800 rounded-lg overflow-hidden">
+                <thead className="bg-zinc-900 text-zinc-400">
+                  <tr>
+                    <th className="text-left px-4 py-3">Env var</th>
+                    <th className="text-left px-4 py-3">Required</th>
+                    <th className="text-left px-4 py-3">Description</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800">
+                  {[
+                    ["ALGO_MNEMONIC",  "Yes", "25-word mnemonic of your registered agent wallet"],
+                    ["X402_AGENT_ID",  "Yes", "Agent ID registered with the wallet router"],
+                    ["X402_API_URL",   "No",  "API base URL (default: https://api.ai-agentic-wallet.com)"],
+                    ["X402_PORTAL_KEY","No",  "Portal API key if your server requires portal auth"],
+                  ].map(([env, req, desc]) => (
+                    <tr key={env} className="bg-zinc-950">
+                      <td className="px-4 py-3 font-mono text-violet-400 text-xs whitespace-nowrap">{env}</td>
+                      <td className="px-4 py-3 text-zinc-400 text-xs">{req}</td>
+                      <td className="px-4 py-3 text-zinc-400 text-xs">{desc}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Section>
+
+          <Section title="Performance" id="performance">
+            <p className="text-zinc-400 mb-5 text-sm leading-relaxed">
+              Benchmarked on Algorand mainnet with 100 real USDC payments, Poisson arrivals (λ=1.5/s) and 25% burst
+              clusters. Live results: <a href="https://api.ai-agentic-wallet.com/api/benchmark" target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline">api.ai-agentic-wallet.com/api/benchmark</a>
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border border-zinc-800 rounded-lg overflow-hidden">
+                <thead className="bg-zinc-900 text-zinc-400">
+                  <tr>
+                    <th className="text-left px-4 py-3">Metric</th>
+                    <th className="text-left px-4 py-3">p50</th>
+                    <th className="text-left px-4 py-3">p95</th>
+                    <th className="text-left px-4 py-3">p99</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800">
+                  {[
+                    ["x402 handshake",  "549ms",   "1,273ms",  "1,693ms"],
+                    ["Settlement",      "9,712ms",  "14,193ms", "15,694ms"],
+                    ["End-to-end",      "10,737ms", "15,359ms", "16,899ms"],
+                  ].map(([metric, p50, p95, p99]) => (
+                    <tr key={metric} className="bg-zinc-950">
+                      <td className="px-4 py-3 text-zinc-300 text-xs font-medium">{metric}</td>
+                      <td className="px-4 py-3 text-emerald-400 text-xs font-mono">{p50}</td>
+                      <td className="px-4 py-3 text-zinc-400 text-xs font-mono">{p95}</td>
+                      <td className="px-4 py-3 text-zinc-400 text-xs font-mono">{p99}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-zinc-500 text-xs mt-4">
+              100/100 confirmed · 126.6 tx/min · peak 46 concurrent · $1.00 USDC settled · 2026-03-22
+            </p>
           </Section>
 
         </div>

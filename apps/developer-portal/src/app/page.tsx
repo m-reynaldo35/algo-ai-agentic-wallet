@@ -55,6 +55,13 @@ const HOW_IT_WORKS = [
   },
 ];
 
+const BENCHMARK_STATS = [
+  { label: "Success rate",       value: "100/100",  sub: "payments confirmed"       },
+  { label: "Throughput",         value: "126.6",    sub: "tx/min sustained"          },
+  { label: "Handshake p50",      value: "549ms",    sub: "x402 proof round-trip"     },
+  { label: "End-to-end p50",     value: "10.7s",    sub: "fire → on-chain confirmed" },
+];
+
 const USE_CASES = [
   { icon: "📈", label: "Trading bots",          desc: "Execute autonomous USDC micropayments on Algorand." },
   { icon: "🔍", label: "Data agents",            desc: "Pay-per-query for premium data feeds and APIs." },
@@ -120,6 +127,37 @@ function Hero() {
           Don&apos;t have one? Setup guide →
         </Link>
       </p>
+    </section>
+  );
+}
+
+function BenchmarkBar() {
+  return (
+    <section className="py-10 px-6 max-w-5xl mx-auto">
+      <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl px-8 py-6">
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-6">
+          <div className="text-center sm:text-left">
+            <p className="text-xs text-emerald-400 font-mono uppercase tracking-widest mb-1">Verified on Algorand mainnet · 2026-03-22</p>
+            <p className="text-zinc-400 text-sm">100 real USDC payments, zero failures</p>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 sm:gap-10">
+            {BENCHMARK_STATS.map(({ label, value, sub }) => (
+              <div key={label} className="text-center">
+                <p className="text-2xl font-bold text-white tabular-nums">{value}</p>
+                <p className="text-zinc-500 text-xs mt-0.5">{sub}</p>
+              </div>
+            ))}
+          </div>
+          <a
+            href="https://api.ai-agentic-wallet.com/api/benchmark"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors whitespace-nowrap"
+          >
+            Live stats →
+          </a>
+        </div>
+      </div>
     </section>
   );
 }
@@ -291,7 +329,7 @@ function Footer() {
   return (
     <footer className="border-t border-zinc-800/60 py-10 px-6 mt-8">
       <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-zinc-600">
-        <span>© 2025 algo-wallet. Built on Algorand.</span>
+        <span>© 2026 algo-wallet. Built on Algorand.</span>
         <div className="flex items-center gap-6">
           <a href="/docs" className="hover:text-zinc-400 transition-colors">Documentation</a>
           <Link href="/privacy" className="hover:text-zinc-400 transition-colors">Privacy</Link>
@@ -317,6 +355,7 @@ export default function LandingPage() {
     <div className="min-h-screen bg-black text-white">
       <Nav />
       <Hero />
+      <BenchmarkBar />
       <HowItWorks />
       <UseCases />
       <Pricing />

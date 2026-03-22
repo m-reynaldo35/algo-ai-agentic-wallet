@@ -12,17 +12,29 @@
   ],
   "pricing": {
     "currency": "USDC",
-    "amount_micro": 100000,
-    "amount_human": "0.10",
+    "amount_micro": 10000,
+    "amount_human": "0.01",
     "network": "algorand-mainnet",
     "asset_id": 31566704,
     "toll_model": "per-request"
   },
+  "benchmark": {
+    "last_run": "2026-03-22",
+    "success_rate": "100/100",
+    "throughput_tpm": 126.6,
+    "e2e_p50_ms": 10737,
+    "e2e_p95_ms": 15359,
+    "handshake_p50_ms": 549,
+    "peak_concurrency": 46,
+    "live_stats": "https://api.ai-agentic-wallet.com/api/benchmark"
+  },
   "endpoints": {
     "agent_action": "https://api.ai-agentic-wallet.com/api/agent-action",
+    "batch_action": "https://api.ai-agentic-wallet.com/api/batch-action",
     "execute": "https://api.ai-agentic-wallet.com/api/execute",
     "health": "https://api.ai-agentic-wallet.com/health",
-    "telemetry": "https://api.ai-agentic-wallet.com/api/telemetry"
+    "telemetry": "https://api.ai-agentic-wallet.com/api/telemetry",
+    "info": "https://api.ai-agentic-wallet.com/api/info"
   },
   "webhook_url": "https://api.ai-agentic-wallet.com/api/execute",
   "auth": {
