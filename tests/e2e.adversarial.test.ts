@@ -183,8 +183,8 @@ describe("Replay Guard — enforceReplayProtection", async () => {
     assert.match(result.error!, /expired|exceed/i);
   });
 
-  it("7. Future timestamp (clock skew >5s) → invalid", async () => {
-    const futureTs = Math.floor(Date.now() / 1000) + 30; // 30 seconds in future
+  it("7. Future timestamp (clock skew >30s) → invalid", async () => {
+    const futureTs = Math.floor(Date.now() / 1000) + 31; // 31s exceeds 30s tolerance
     const result = await enforceReplayProtection(futureTs, "nonce-test-7");
     assert.equal(result.valid, false);
     assert.match(result.error!, /future/i);
