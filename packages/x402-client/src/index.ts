@@ -1,6 +1,7 @@
 // ── Public API ─────────────────────────────────────────────────
 export { AlgoAgentClient } from "./client.js";
-export { requestWithPayment, X402Error } from "./interceptor.js";
+export { requestWithPayment, parseGasInfo, X402Error } from "./interceptor.js";
+export type { AgentGasInfo, AgentGasStatus } from "./interceptor.js";
 
 // ── Types (re-exported for downstream autocomplete) ────────────
 export type {

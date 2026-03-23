@@ -14,6 +14,7 @@
  */
 
 import { createHash } from "node:crypto";
+import algosdk from "algosdk";
 import { config } from "../config.js";
 
 // ── Section 1: Redis credentials ──────────────────────────────────
@@ -143,6 +144,43 @@ export function assertSignerEnvironment(): void {
   }
 
   throw new Error("Signer key load blocked: not running in production environment.");
+}
+
+// ── Section 8b: Signer address / mnemonic consistency check ───────
+
+/**
+ * Verify that ALGO_SIGNER_MNEMONIC derives to the address declared in
+ * ALGO_SIGNER_ADDRESS. A mismatch means agents are rekeyed to a different
+ * address than the one this service will sign for — all payments will fail.
+ *
+ * Skipped when either var is absent (partial configuration is allowed in dev).
+ * Must run before getSignerAccount() decodes the mnemonic into memory.
+ */
+export function assertSignerAddressMatch(): void {
+  const mnemonic         = process.env.ALGO_SIGNER_MNEMONIC;
+  const expectedAddress  = process.env.ALGO_SIGNER_ADDRESS;
+
+  if (!mnemonic || !expectedAddress) return;
+
+  let derivedAddress: string;
+  try {
+    const account = algosdk.mnemonicToSecretKey(mnemonic);
+    derivedAddress = account.addr.toString();
+  } catch {
+    throw new Error(
+      "BOOT FAILURE: ALGO_SIGNER_MNEMONIC is set but could not be decoded. " +
+      "Ensure it is a valid 25-word Algorand mnemonic.",
+    );
+  }
+
+  if (derivedAddress !== expectedAddress) {
+    throw new Error(
+      `BOOT FAILURE: ALGO_SIGNER_MNEMONIC derives to ${derivedAddress} ` +
+      `but ALGO_SIGNER_ADDRESS is set to ${expectedAddress}. ` +
+      `These must match. Update ALGO_SIGNER_ADDRESS or correct the mnemonic. ` +
+      `Do NOT copy the production mnemonic to local .env — update only ALGO_SIGNER_ADDRESS.`,
+    );
+  }
 }
 
 // ── Section 7: Signer Redis isolation guard ────────────────────────

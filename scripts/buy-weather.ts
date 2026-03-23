@@ -44,16 +44,22 @@ const SENDER  = account.addr.toString();
 
 // ── Banner ─────────────────────────────────────────────────────
 
+const W = 68; // total box width including borders
+function row(label: string, value: string): string {
+  const content = `  ${label.padEnd(10)}${value}`;
+  return `║${content.padEnd(W - 2)}║`;
+}
+
 console.log(`
-╔══════════════════════════════════════════════════════════════════╗
-║  BUY-WEATHER — Sprint 16 x402 End-to-End Test                   ║
-╠══════════════════════════════════════════════════════════════════╣
-║  Target:   ${API_URL.padEnd(50)}║
-║  Agent:    ${SENDER.slice(0, 12)}...${SENDER.slice(-6)}                           ║
-║  City:     ${CITY.padEnd(50)}║
-║  Network:  Algorand mainnet                                     ║
-║  Toll:     ${String(10_000).padEnd(50)}micro-USDC ($0.01)       ║
-╚══════════════════════════════════════════════════════════════════╝
+╔${"═".repeat(W - 2)}╗
+║${"  BUY-WEATHER — Sprint 16 x402 End-to-End Test".padEnd(W - 2)}║
+╠${"═".repeat(W - 2)}╣
+${row("Target:", API_URL)}
+${row("Agent:", `${SENDER.slice(0, 12)}...${SENDER.slice(-6)}`)}
+${row("City:", CITY)}
+${row("Network:", "Algorand mainnet")}
+${row("Toll:", "10,000 micro-USDC ($0.01)")}
+╚${"═".repeat(W - 2)}╝
 `);
 
 // ── Step 1: Health Check ───────────────────────────────────────

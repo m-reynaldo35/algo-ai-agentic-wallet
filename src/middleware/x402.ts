@@ -24,7 +24,13 @@ import { enforceReplayProtection } from "./replayGuard.js";
 // ── x402 Payment Proof Schema ──────────────────────────────────
 interface X402PaymentProof {
   groupId: string;
-  transactions: string[];
+  /**
+   * Optional: signed transaction bytes for group integrity verification.
+   * Omitted by custodially-managed (rekeyed) agents — their auth-addr is
+   * the Rocca signer so signed transaction bytes would be invalid on-chain.
+   * When absent, identity is proven solely via `signature` over `groupId`.
+   */
+  transactions?: string[];
   senderAddr: string;
   signature: string;
   /** Unix epoch seconds — enforced within 60s time bound */
@@ -98,16 +104,19 @@ function parsePaymentHeader(raw: string): X402PaymentProof | null {
 
   try {
     const decoded = JSON.parse(Buffer.from(raw, "base64").toString("utf-8"));
+    // transactions is optional — absent for custodially-managed (rekeyed) agents
+    const txns = decoded.transactions;
+    const txnsValid = txns === undefined || txns === null || (
+      Array.isArray(txns) &&
+      txns.length <= 16 && // Algorand atomic group max
+      txns.every((t: unknown) => typeof t === "string" && t.length > 0 && t.length < 20_000)
+    );
+
     if (
       typeof decoded.groupId === "string" &&
       decoded.groupId.length >= 32 &&
       decoded.groupId.length <= 128 &&
-      Array.isArray(decoded.transactions) &&
-      decoded.transactions.length > 0 &&
-      decoded.transactions.length <= 16 && // Algorand atomic group max
-      decoded.transactions.every(
-        (t: unknown) => typeof t === "string" && t.length > 0 && t.length < 20_000,
-      ) &&
+      txnsValid &&
       typeof decoded.senderAddr === "string" &&
       ALGO_ADDR_RE.test(decoded.senderAddr) &&
       typeof decoded.signature === "string" &&
@@ -140,8 +149,12 @@ function verifySignature(proof: X402PaymentProof): boolean {
 
 /**
  * Verify that every signed transaction in the group references the claimed groupId.
+ * Skipped when transactions are absent (custodially-managed agents omit them —
+ * identity is proven solely via the ed25519 signature over groupId).
  */
 function verifyGroupIntegrity(proof: X402PaymentProof): boolean {
+  if (!proof.transactions || proof.transactions.length === 0) return true;
+
   try {
     const claimedGroupId = Buffer.from(proof.groupId, "base64");
 
@@ -174,7 +187,7 @@ export async function x402Paywall(req: Request, res: Response, next: NextFunctio
   // Step 2: Structural validation
   const proof = parsePaymentHeader(paymentHeader);
   if (!proof) {
-    reject402(res, req.path, "Malformed X-PAYMENT payload. Expected Base64-encoded JSON with {groupId, transactions, senderAddr, signature}.");
+    reject402(res, req.path, "Malformed X-PAYMENT payload. Expected Base64-encoded JSON with {groupId, senderAddr, signature} (transactions optional).");
     return;
   }
 

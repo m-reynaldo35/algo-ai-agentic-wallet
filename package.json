@@ -24,7 +24,8 @@
     "gen-wallet": "tsx scripts/gen-wallet.ts",
     "optin-usdc": "tsx scripts/optin-usdc.ts",
     "reset-test-data": "tsx scripts/reset-test-data.ts",
-    "verify-launch": "tsx scripts/verify-launch.ts"
+    "verify-launch": "tsx scripts/verify-launch.ts",
+    "verify-env": "tsx scripts/verify-env.ts"
   },
   "dependencies": {
     "@algo-wallet/x402-client": "file:./packages/x402-client",

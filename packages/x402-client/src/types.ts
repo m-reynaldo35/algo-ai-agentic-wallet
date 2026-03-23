@@ -130,7 +130,15 @@ export interface PayJson {
 
 export interface X402PaymentProof {
   groupId: string;
-  transactions: string[];
+  /**
+   * Base64-encoded signed transaction bytes for group integrity verification.
+   * Optional: omitted for custodially-managed (rekeyed) agents.
+   *
+   * For rekeyed agents the auth-addr is the Rocca signer, not the agent's
+   * original key. The signed transaction bytes would be invalid on-chain.
+   * The server verifies identity via `signature` over `groupId` instead.
+   */
+  transactions?: string[];
   senderAddr: string;
   signature: string;
   /** Unix epoch seconds — enforced within 60s time bound */

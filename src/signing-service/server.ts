@@ -40,7 +40,7 @@ import https from "node:https";
 import algosdk from "algosdk";
 import helmet from "helmet";
 import { validateAuthToken, assertProductionAuthReady, type AuthToken } from "../auth/liquidAuth.js";
-import { assertAndFreezeTreasury, assertSignerEnvironment, assertMtlsEnv, assertSignerRedis } from "../protection/envGuard.js";
+import { assertAndFreezeTreasury, assertSignerEnvironment, assertSignerAddressMatch, assertMtlsEnv, assertSignerRedis } from "../protection/envGuard.js";
 import { MTLS_ENABLED, loadServerMtlsConfig, logMtlsStatus } from "../protection/mtlsConfig.js";
 import { config } from "../config.js";
 import { getAgent, isHalted, assignCohort } from "../services/agentRegistry.js";
@@ -626,12 +626,18 @@ const port             = MTLS_ENABLED ? signingPort : railwayPort;
 //    This prevents PR preview deployments that inherit env vars from ever
 //    decoding the signer key into memory.
 //
-// 3. getSignerAccount()
+// 3. assertSignerAddressMatch()
+//    Derives the address from ALGO_SIGNER_MNEMONIC and compares against
+//    ALGO_SIGNER_ADDRESS. A mismatch means agents are rekeyed to a different
+//    address — all payments fail silently without this check.
+//
+// 4. getSignerAccount()
 //    Decodes ALGO_SIGNER_MNEMONIC into an Ed25519 secret key.
-//    Only reached if both guards above pass.
+//    Only reached if all guards above pass.
 
 assertAndFreezeTreasury();
 assertSignerEnvironment();
+assertSignerAddressMatch();   // Fail fast if ALGO_SIGNER_MNEMONIC ≠ ALGO_SIGNER_ADDRESS
 assertSignerRedis();          // Module 7: warn if no isolated Redis DB
 assertMtlsEnv("server");     // Module 9: fail fast if mTLS enabled but certs missing
 getSignerAccount();

@@ -151,12 +151,13 @@ async function buildPaymentProof(
 
   const groupIdBytes = txns[0].group!;
   const groupId = Buffer.from(groupIdBytes).toString("base64");
-  const signedTxn = tollTxn.signTxn(privateKey);
+  // Sign only the groupId bytes — this proves identity without embedding a
+  // transaction that would be invalid on-chain for custodially-managed (rekeyed)
+  // agents (whose auth-addr is the Rocca signer, not the original key).
   const signature = algosdk.signBytes(groupIdBytes, privateKey);
 
   return {
     groupId,
-    transactions: [Buffer.from(signedTxn).toString("base64")],
     senderAddr: senderAddress,
     signature: Buffer.from(signature).toString("base64"),
     timestamp: Math.floor(Date.now() / 1000) - 5, // 5s back-skew handles server clock lag

@@ -249,6 +249,23 @@ export class AlgoAgentClient {
 
   // ── Utilities ────────────────────────────────────────────────
 
+  /**
+   * Make an x402-payment-gated HTTP request to any path on this client's server.
+   * Transparently absorbs any 402 challenge — the caller receives the final response.
+   *
+   * @example
+   * const res = await client.fetch("/api/weather", {
+   *   method: "POST",
+   *   headers: { "Content-Type": "application/json" },
+   *   body: JSON.stringify({ city: "Lagos" }),
+   * });
+   * const data = await res.json();
+   */
+  async fetch(path: string, init?: RequestInit): Promise<Response> {
+    const url = `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+    return requestWithPayment(url, init ?? {}, this.privateKey, this.senderAddress, this.maxRetries);
+  }
+
   /** The Algorand address derived from this client's private key */
   get address(): string {
     return this.senderAddress;
