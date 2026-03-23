@@ -35,10 +35,10 @@ Claude discovers tool → pays → gets data → answers user
 - Redis internal TCP active — p95 enqueue 1.53s, avg ~1.25s
 - Auth-addr cache (5-min TTL) eliminates algod round-trips
 - Nodely failover active (primary → fallback + recovery probe)
-- SDK `@algo-wallet/x402-client@0.2.0` — built, not yet published to npm
-- MCP server `@algo-wallet/x402-mcp@0.1.0` — built, not yet published
+- SDK `@algo-wallet/x402-client@0.2.0` — **published to npm ✅**
+- MCP server `@algo-wallet/x402-mcp@0.1.0` — **published to npm ✅**
 - Python SDK `algo-x402@0.1.0` — built, not yet published
-- CLI `@algo-wallet/x402-cli@0.1.0` — built, not yet published
+- CLI `@algo-wallet/x402-cli@0.1.0` — **published to npm ✅**
 - **Gas station removed** — replaced by ALGO-triggered activation poller
 - **Agent activation**: user sends 0.5 ALGO → server detects + opts-in + rekeys automatically
 - **Gas warning headers**: `X-Agent-Gas-Status` + `X-Agent-Gas-Remaining` on every payment response
@@ -216,16 +216,16 @@ Env vars required:
 - `X402_NETWORK`    — optional: `testnet` (default) or `mainnet`
 
 - [x] `packages/x402-cli/` — Node.js CLI using `commander`
-- [ ] Publish: `@algo-wallet/x402-cli` to npm
+- [x] Publish: `@algo-wallet/x402-cli` to npm
 
 ---
 
 ## Sprint 15 — Publish SDKs *(planned)*
 
-- [ ] Publish MCP server: `npm publish --access public` from `packages/x402-mcp/`
+- [x] Publish MCP server: `npm publish --access public` from `packages/x402-mcp/`
 - [ ] Publish Python SDK: `python -m build && twine upload dist/*` from `packages/algo-x402/`
-- [ ] Update `DOCS_FOR_AGENTS.md` with published package names + install commands
-- [ ] Update `/docs` page with MCP install instructions
+- [x] Update `DOCS_FOR_AGENTS.md` with published package names + install commands
+- [x] Update `/docs` page with MCP install instructions
 
 ---
 
@@ -552,7 +552,7 @@ separate, optional call.
 
 ---
 
-### 16A.2 — Unify Signer Keys: Dev = Prod
+### 16A.2 — Unify Signer Keys: Dev = Prod ✅
 
 **Problem:** Two different signer keys exist in the same codebase:
 
@@ -565,18 +565,17 @@ Agents registered locally (speed-test-agent) are rekeyed to the dev signer, maki
 incompatible with the production server. Sprint 5 stress test results may not reflect
 current production behaviour since the environment has drifted.
 
-- [ ] Either: update local `.env` `ALGO_SIGNER_MNEMONIC` to the production key (requires
-      re-registering all local test agents) — preferred for fidelity
-- [ ] Or: document the two-key setup explicitly; add a warning on boot if local signer ≠
-      Railway signer and `NODE_ENV=production`
+**Decision:** Keep dev and prod signers separate. Fix detection instead of copying prod key locally.
+
+- [x] `assertSignerAddressMatch()` added to `src/protection/envGuard.ts` — derives address
+      from `ALGO_SIGNER_MNEMONIC`, compares against `ALGO_SIGNER_ADDRESS`, throws on mismatch
+      with clear remediation message. Called in signing service boot sequence.
 - [ ] Re-register speed-test-agent against the production signer (rekey on-chain from Cohort A → prod)
-- [ ] Re-run Sprint 5 stress test against the current production configuration to get trustworthy
-      baseline numbers — previous results were on a different signer setup
-- [ ] Add boot assertion: `if (derivedSignerAddr !== config.algorand.signerAddress) throw Error("Signer key/address mismatch")`
+- [ ] Re-run Sprint 5 stress test against current production configuration
 
 ---
 
-### 16A.3 — Fix X-PAYMENT Proof for Rekeyed Agents
+### 16A.3 — Fix X-PAYMENT Proof for Rekeyed Agents ✅
 
 **Problem:** `requestWithPayment` in the client interceptor builds a USDC transfer signed by
 `privateKey` — the agent's original key. For rekeyed agents, this signature is invalid on
@@ -585,84 +584,71 @@ the groupId, not whether the embedded transaction would pass Algorand validation
 passes middleware verification, but if the signed transaction were ever submitted on-chain it
 would be rejected.
 
-This is a latent correctness bug: the X-PAYMENT header contains a transaction that cannot be
-broadcast for any custodially-managed (rekeyed) agent.
+**Fix applied — Option A:**
 
-- [ ] Option A: Remove the signed USDC transaction from the X-PAYMENT proof entirely for
-      custodial agents. The proof becomes: `{ groupId, senderAddr, signature }` only — no txn.
-      Update `buildPaymentProof` in interceptor to skip transaction construction when agent is rekeyed.
-- [ ] Option B: Have the server sign the USDC transaction on behalf of the agent in the
-      X-PAYMENT verification step, making X-PAYMENT a valid submittable payload.
-- [ ] Update `x402Paywall` to document clearly: "verifies proof of identity, not proof of
-      submittable payment" until Option A/B is resolved
-- [ ] Add a comment in `buildPaymentProof` warning that signed txn is invalid for rekeyed accounts
+- [x] `transactions` field removed from `buildPaymentProof` return in `packages/x402-client/src/interceptor.ts`
+      — txn is still built internally to derive the `groupId`, but signed bytes are not included in the proof
+- [x] `X402PaymentProof.transactions` made optional in `packages/x402-client/src/types.ts` with JSDoc explanation
+- [x] `src/middleware/x402.ts` — `parsePaymentHeader` accepts absent/empty transactions;
+      `verifyGroupIntegrity` skips when transactions absent; error message updated
+- [x] Proof format is now `{ groupId, senderAddr, signature, timestamp, nonce }` — clean identity proof,
+      no embedded on-chain-invalid transaction bytes
 
 ---
 
-### 16A.4 — Make SDK Client URL-Generic
+### 16A.4 — Make SDK Client URL-Generic ✅
 
 **Problem:** `AlgoAgentClient.requestSandboxExport()` is hardcoded to `/api/agent-action`.
 Any new x402-gated endpoint (weather, news, FX, crypto price) requires importing
 `requestWithPayment` directly from the interceptor — a lower-level internal not part of the
 public API contract.
 
-- [ ] Add to `AlgoAgentClient`:
-      ```typescript
-      async fetch(path: string, init?: RequestInit): Promise<Response>
-      ```
-      Calls `requestWithPayment` with `${this.baseUrl}${path}`, using `this.privateKey` and
-      `this.senderAddress`. Returns the raw `Response` — caller parses the body.
-- [ ] Export `requestWithPayment` as a documented public API (it already is, but add JSDoc)
+- [x] `AlgoAgentClient.fetch(path, init?)` added to `packages/x402-client/src/client.ts`
+      — absorbs 402 on any x402-gated endpoint, returns raw `Response`
+- [x] `parseGasInfo` and `AgentGasInfo`/`AgentGasStatus` exported from package public index
 - [ ] Update `buy-weather.ts` to use `client.fetch("/api/weather", {...})` instead of importing
       the interceptor directly
 - [ ] Add example to `DOCS_FOR_AGENTS.md`: calling a custom x402 endpoint
 
 ---
 
-### 16A.5 — Add `verify-env.ts` Sanity Check Script
+### 16A.5 — Add `verify-env.ts` Sanity Check Script ✅
 
 **Problem:** `railway variables` truncates long values in its display output (showed 40 chars
 of a 64-char `PORTAL_API_SECRET`). Spent a full debugging cycle on a non-existent auth failure.
 No tooling exists to diff local `.env` against Railway production config.
 
-- [ ] Write `scripts/verify-env.ts`:
-      - Uses `railway run node -e` to echo each critical env var from production
-      - Compares: `PORTAL_API_SECRET`, `ALGO_SIGNER_ADDRESS`, `ALGO_SIGNER_MNEMONIC` (derived address only), `X402_PAY_TO_ADDRESS`, `UPSTASH_REDIS_REST_URL`
-      - Outputs: `✓ match` / `✗ MISMATCH (local: X, railway: Y)` for each
-      - Run before every sprint that touches auth or signing
-- [ ] Add to `package.json` scripts: `"verify-env": "npx tsx scripts/verify-env.ts"`
-- [ ] Document: "Run `npm run verify-env` before debugging auth or signing failures"
+- [x] `scripts/verify-env.ts` — diffs local vs Railway for 6 critical vars:
+      `ALGO_SIGNER_ADDRESS`, `X402_PAY_TO_ADDRESS`, `ROCCA_SIGNER_ADDRESS`,
+      `UPSTASH_REDIS_REST_URL`, `PORTAL_API_SECRET` (length+prefix only),
+      `ALGO_SIGNER_MNEMONIC` (derived address only — never logs raw mnemonic)
+- [x] `"verify-env": "npx tsx scripts/verify-env.ts"` added to `package.json`
+- Run `npm run verify-env` before debugging auth or signing failures
 
 ---
 
-### 16A.6 — Harden Agent Registration Flow
+### 16A.6 — Harden Agent Registration Flow ✅
 
 **Problem:** `setup-sprint16-agent.ts` has hardcoded addresses, hardcoded mnemonics, and is a
 one-off throwaway script. The real problem it solved (registering a test agent against the
 production signer) should be a proper reusable utility.
 
-- [ ] Delete or archive `scripts/setup-sprint16-agent.ts` (hardcoded values, not reusable)
-- [ ] Write `scripts/register-agent.ts` — generic CLI:
-      ```bash
-      npx tsx scripts/register-agent.ts \
-        --agent-id my-agent \
-        --fund-algo 0.6 \          # ALGO to send from funding wallet
-        --fund-usdc 50000 \        # µUSDC to send from funding wallet
-        --funding-mnemonic-env FUNDING_MNEMONIC
-      ```
-      Generates fresh keypair, funds it, registers via API, prints new AGENT_ID + ALGO_MNEMONIC
-- [ ] Ensure register-agent.ts works for both dev (local signer) and prod (Railway signer)
-      by reading ALGO_SIGNER_ADDRESS from env, not hardcoding
+**Decision:** Funding automation is over-engineering for a rarely-used script. Keep it minimal.
+
+- [x] Deleted `scripts/setup-sprint16-agent.ts` (hardcoded addresses/mnemonics)
+- [x] `scripts/register-agent.ts` — generates fresh keypair, prints address + mnemonic,
+      gives manual funding instructions; `--register` flag calls `/api/agents/register-existing`
+      Usage: `npx tsx scripts/register-agent.ts --agent-id my-agent [--register]`
 
 ---
 
-### 16A.7 — Fix buy-weather.ts Banner Formatting
+### 16A.7 — Fix buy-weather.ts Banner Formatting ✅
 
 **Problem:** The banner columns are misaligned for several fields due to fixed-width padding
 not accounting for URL length variance.
 
-- [ ] Fix column alignment in the banner — use consistent padding or drop fixed-width format
-- [ ] Add `CITY` env var to `.env.example` with a note
+- [x] Banner rewritten with `row()` helper — consistent alignment regardless of URL length
+- [x] `CITY`, `AGENT_ID`, `ALGO_MNEMONIC` added to `.env.example` under test scripts section
 
 ---
 
