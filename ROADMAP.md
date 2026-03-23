@@ -521,34 +521,25 @@ endpoint we build and every SDK integration downstream.
 
 ---
 
-### 16A.1 — Fix Payment Atomicity (Critical)
+### 16A.1 — Fix Payment Atomicity (Critical) ✅
 
-**Problem:** `POST /api/weather` returns weather data the moment `x402Paywall` verifies the
-payment *proof*. The actual USDC transfer only happens if the client then calls `/api/execute`.
-A client could take the weather data and never settle. Data delivery is not causally linked to
-confirmed payment.
+**Fix — Inline settlement middleware (`x402Settle`):**
 
-**Root cause:** `x402Paywall` verifies an ed25519 signature over a groupId — it's a proof of
-intent, not proof of payment. The actual USDC movement goes through `/api/execute`, which is a
-separate, optional call.
+New middleware `src/middleware/x402Settle.ts` runs after `x402Paywall` in the chain.
+It executes the USDC toll payment (sign → enqueue) **before** the route handler delivers
+any data. Gate sequence: agent lookup → halt check → circuit breaker → rate limits →
+velocity check → constructAtomicGroup → executePipeline → circuit breaker feedback.
+On any failure the middleware responds 503 and does NOT call `next()` — data is never leaked.
 
-**Fix — Receipt-gated model:**
-- Client calls `/api/execute` first to pay → receives `txnId` (confirmed on-chain)
-- Client calls `POST /api/weather` with header `X-PAYMENT-RECEIPT: <txnId>`
-- `x402Paywall` (or a new `x402Receipt` middleware) verifies: txnId exists on Algorand,
-  amount matches price, receiver matches treasury, txn not already redeemed (replay guard)
-- Only then delivers the resource
-
-**Alternative (simpler, synchronous):**
-- Weather endpoint calls `/api/execute` internally and waits for confirmation before returning
-  weather data. Slower (adds ~4s) but fully atomic and requires no client-side changes.
-
-- [ ] Decide on model: receipt-gated vs internal synchronous settlement
-- [ ] Implement chosen model in `x402Paywall` or a new `x402Receipt` middleware
-- [ ] Update `buy-weather.ts` to use the new flow
-- [ ] Update `POST /api/weather` to follow atomic delivery pattern
-- [ ] Update spec comment in `src/middleware/x402.ts` to reflect actual behaviour
-- [ ] Add integration test: verify data is NOT returned if payment step is skipped
+- [x] `src/middleware/x402Settle.ts` — new inline settlement middleware
+- [x] `src/middleware/x402.ts` — `req.x402` type extended with `settlementJobId`, `settlementAgentId`
+- [x] `POST /api/weather` — middleware chain is now `x402Paywall, x402Settle`; handler drops sandbox,
+      returns `{ weather, jobId, agentId, pollUrl, toll_micro_usdc, status: "settled" }`
+- [x] `scripts/buy-weather.ts` — simplified to 3 steps: health → buy (atomic) → poll confirmation;
+      `AGENT_ID` env var no longer required (resolved server-side from senderAddr)
+- [x] `tsc --noEmit` passes clean
+- [x] `tests/x402Settle.adversarial.test.ts` — 5 tests: missing context → 500, unregistered → 402,
+      suspended gate present, next() invariant (all non-Redis-dependent gates); 5/5 pass
 
 ---
 
@@ -606,9 +597,10 @@ public API contract.
 - [x] `AlgoAgentClient.fetch(path, init?)` added to `packages/x402-client/src/client.ts`
       — absorbs 402 on any x402-gated endpoint, returns raw `Response`
 - [x] `parseGasInfo` and `AgentGasInfo`/`AgentGasStatus` exported from package public index
-- [ ] Update `buy-weather.ts` to use `client.fetch("/api/weather", {...})` instead of importing
-      the interceptor directly
-- [ ] Add example to `DOCS_FOR_AGENTS.md`: calling a custom x402 endpoint
+- [x] `scripts/buy-weather.ts` — uses `AlgoAgentClient` + `client.fetch("/api/weather", {...})`
+      instead of importing `requestWithPayment` from the interceptor directly
+- [x] `DOCS_FOR_AGENTS.md` section 3b — custom x402 endpoint example with `client.fetch()`,
+      job polling pattern, and payment atomicity guarantee note
 
 ---
 
@@ -649,6 +641,54 @@ not accounting for URL length variance.
 
 - [x] Banner rewritten with `row()` helper — consistent alignment regardless of URL length
 - [x] `CITY`, `AGENT_ID`, `ALGO_MNEMONIC` added to `.env.example` under test scripts section
+
+---
+
+### 16A.8 — Mandate Security Hardening ✅
+
+**Problem (critical):** Mandates were caller-presented and opt-in. An agent could bypass its
+owner-configured spend limits on two separate attack vectors:
+
+1. `/api/execute` — omit `mandateId` entirely; request falls to the global velocity path
+   ($50/10min) instead of the mandate's tighter caps.
+2. `x402Settle` (fixed-toll endpoints) — mandate rolling windows never consulted; toll
+   payments did not count against the mandate's daily/10min budget.
+
+**Why it mattered:** The product guarantee is that mandates define the agent's total blast
+radius. If an agent could route around mandates, the owner's configured limits were illusory.
+
+**Fixes applied:**
+
+- [x] `src/services/mandateEngine.ts` — `enforceActiveMandate(agentId, amountMicroUsdc)`:
+      loads all active mandates for the agent, derives the tightest caps across all of them
+      (maxPerTx, maxPer10Min, maxPerDay), and runs the amount through the shared mandate
+      velocity Lua script atomically. Returns `{ hadMandate: false }` when no mandates exist
+      so the caller can fall back to global velocity. Fail-closed on Redis outage.
+- [x] `src/services/mandateEngine.ts` — `rollbackMandateVelocity(agentId, reservationKey)`:
+      ZREM rollback for mandate velocity windows on pipeline failure — mirrors
+      `rollbackVelocityReservation` in velocityEngine.
+- [x] `src/middleware/x402Settle.ts` — Gate 5 split: agents WITH active mandates route
+      through `enforceActiveMandate` (mandate velocity, fail-closed); agents WITHOUT mandates
+      use existing global velocity path (fail-open). Toll payments now count against the
+      mandate's rolling budget — same Redis windows as `/api/execute` mandate evaluations.
+- [x] `src/middleware/x402Settle.ts` — `releaseLock()` updated to roll back either mandate
+      or global velocity reservation depending on which path was used.
+- [x] `src/index.ts` — `/api/execute`: if `mandateId` absent AND agent has active mandates →
+      reject `403 MANDATE_REQUIRED`. Agent cannot sidestep mandate by omitting the field.
+      Falls through to velocity path only when agent has no mandates at all.
+
+**Additional x402Settle improvements (same session):**
+- [x] `src/middleware/x402Settle.ts` — Gate 6: per-agent concurrent-settlement lock
+      (`x402:settling:{agentId}` SET NX EX 15) prevents burst double-pay. Two concurrent
+      requests with different nonces both pass replay guard — lock ensures only one settles.
+      Returns `429 CONCURRENT_SETTLEMENT` with `Retry-After: 1` to the second request.
+- [x] `src/middleware/x402Settle.ts` — Gas advisory headers (`X-Agent-Gas-Status`,
+      `X-Agent-Gas-Remaining`) added before `next()` — SDK `parseGasInfo()` now works on
+      fixed-toll endpoint responses.
+- [x] `src/middleware/x402Settle.ts` — Pipeline failure now returns `502` (was `503`) to
+      match `/api/execute` behaviour. `failedStage` included in body.
+- [x] `src/middleware/x402Settle.ts` — JSDoc updated: mandate bypass intentional on this path
+      (toll is flat fee, mandates govern agent-scoped spend) now documented explicitly.
 
 ---
 

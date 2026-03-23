@@ -18,6 +18,7 @@ import { config } from "./config.js";
 import { getAlgodClient, getNodeStatus } from "./network/nodely.js";
 import { rateLimiter } from "./middleware/rateLimiter.js";
 import { x402Paywall } from "./middleware/x402.js";
+import { x402Settle } from "./middleware/x402Settle.js";
 import { constructAtomicGroup, constructBatchedAtomicGroup } from "./services/transaction.js";
 import type { TradeIntent } from "./services/transaction.js";
 import { executePipeline } from "./executor.js";
@@ -367,6 +368,22 @@ app.post("/api/execute", requirePortalAuth, async (req, res) => {
       usedMandatePath = true;
 
     } else if (proposedMicroUsdc > 0n) {
+      // ── MANDATE_REQUIRED guard ──────────────────────────────
+      // If this agent has active mandates, ALL payments MUST go through
+      // the mandate path. The mandate is the owner's blast-radius control —
+      // allowing an agent to bypass it via the velocity path would defeat
+      // the product's core security guarantee.
+      const activeMandates = await listMandates(agentId);
+      if (activeMandates.length > 0) {
+        res.status(403).json({
+          error:               "MANDATE_REQUIRED",
+          message:             "This agent has active mandates. All payments must reference a valid mandateId.",
+          activeMandateCount:  activeMandates.length,
+          hint:                "Include mandateId in the request body, or revoke all mandates to use the velocity path.",
+        });
+        return;
+      }
+
       // ── Velocity path: atomic check+reserve ────────────────
       // checkAndReserveVelocity atomically checks the rolling windows AND
       // records the reservation in one Redis round-trip (Lua script).
@@ -586,23 +603,22 @@ app.post("/api/batch-action", x402Paywall, async (req, res) => {
 });
 
 // ── Weather data (x402-gated demo endpoint) ─────────────────────
-// Returns real weather data from Open-Meteo after the agent pays the x402 toll.
-// Client flow: POST /api/weather (no X-PAYMENT → 402) → build proof → retry with
-// X-PAYMENT → receive weather + unsigned sandbox → POST /api/execute → USDC moves.
+// Atomic payment-then-deliver flow:
+//   1. POST /api/weather (no X-PAYMENT) → 402 challenge
+//   2. Client builds proof, retries with X-PAYMENT header
+//   3. x402Paywall verifies identity + replay protection
+//   4. x402Settle executes USDC toll inline (sign → enqueue) — data gated on success
+//   5. Handler fetches weather and returns { weather, jobId }
+//   6. Client polls /api/jobs/{jobId} to get the confirmed on-chain txnId
+//
 // 60-second in-process cache for weather data per city.
-// Prevents Open-Meteo rate-limits under burst load — weather doesn't
-// change meaningfully second-to-second.
+// Prevents Open-Meteo rate-limits under burst load.
 const _weatherCache = new Map<string, { data: unknown; expiresAt: number }>();
 const WEATHER_CACHE_TTL_MS = 60_000;
 
-app.post("/api/weather", x402Paywall, async (req, res) => {
+app.post("/api/weather", x402Paywall, x402Settle, async (req, res) => {
   try {
-    const { city = "Lagos", senderAddress } = req.body;
-
-    if (!senderAddress || typeof senderAddress !== "string") {
-      res.status(400).json({ error: "Missing required field: senderAddress" });
-      return;
-    }
+    const { city = "Lagos" } = req.body;
 
     const cacheKey = city.toLowerCase().trim();
     const cached = _weatherCache.get(cacheKey);
@@ -643,18 +659,14 @@ app.post("/api/weather", x402Paywall, async (req, res) => {
       _weatherCache.set(cacheKey, { data: weatherPayload, expiresAt: Date.now() + WEATHER_CACHE_TTL_MS });
     }
 
-    // Build USDC payment sandbox — caller settles via POST /api/execute
-    const sandboxExport = await constructAtomicGroup(senderAddress, config.x402.priceMicroUsdc);
-
+    // Payment already executed by x402Settle — deliver data with settlement reference
     res.json({
-      weather: weatherPayload,
-      status:          "awaiting_settlement",
-      export:          sandboxExport,
+      weather:         weatherPayload,
+      status:          "settled",
+      jobId:           req.x402!.settlementJobId,
+      agentId:         req.x402!.settlementAgentId,
       toll_micro_usdc: config.x402.priceMicroUsdc,
-      instructions: [
-        "POST this export to /api/execute with your agentId to settle the USDC payment.",
-        "Weather data is already delivered above — the toll is due on settlement.",
-      ],
+      pollUrl:         `/api/jobs/${req.x402!.settlementJobId}`,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

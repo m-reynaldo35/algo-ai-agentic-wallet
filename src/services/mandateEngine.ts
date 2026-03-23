@@ -28,7 +28,7 @@ import { timingSafeEqual } from "node:crypto";
 import algosdk             from "algosdk";
 import { getRedis }        from "./redis.js";
 import { emitSecurityEvent } from "./securityAudit.js";
-import { loadRawMandate, computeMandateHmac, getKeyStatus } from "./mandateService.js";
+import { loadRawMandate, computeMandateHmac, getKeyStatus, listMandates } from "./mandateService.js";
 import { config }          from "../config.js";
 import type { Mandate, MandateEvalResult, MandateRejectCode } from "../types/mandate.js";
 
@@ -292,6 +292,141 @@ export async function evaluateMandate(
   });
 
   return { allowed: true };
+}
+
+// ── Active-mandate enforcement (used by x402Settle for fixed-toll paths) ───
+//
+// This is intentionally separate from evaluateMandate():
+//   - evaluateMandate() requires signed transaction bytes, a specific mandateId,
+//     and performs full 12-step evaluation including HMAC and recipient checks.
+//   - enforceActiveMandate() is used when there is no caller-supplied mandateId
+//     (e.g. the fixed-toll x402Settle middleware). It looks up ALL active mandates
+//     for the agent, enforces the TIGHTEST spending caps across them, and deducts
+//     the amount from the shared mandate velocity windows.
+//   - Recipient whitelist is intentionally skipped: the recipient for toll payments
+//     is always the platform treasury — a trusted, system-controlled address.
+
+export type ActiveMandateResult =
+  | { allowed: true;  hadMandate: false }
+  | { allowed: true;  hadMandate: true; reservationKey: string }
+  | { allowed: false; code: MandateRejectCode; message: string };
+
+/**
+ * Enforce active mandate constraints for a fixed-amount payment that has no
+ * caller-supplied mandateId (e.g. the x402 fixed toll).
+ *
+ * - If the agent has NO active mandates: returns { allowed: true, hadMandate: false }
+ *   so the caller can fall back to the global velocity path.
+ * - If the agent HAS active mandates: enforces the tightest maxPerTx / maxPer10Min /
+ *   maxPerDay across all active mandates, atomically deducts from the shared mandate
+ *   velocity windows, and returns a reservationKey for rollback on pipeline failure.
+ * - Fail-closed on Redis outage: returns { allowed: false, code: "MANDATE_NOT_FOUND" }
+ *   to prevent uninspected payments when the mandate store is unreachable.
+ */
+export async function enforceActiveMandate(
+  agentId:         string,
+  amountMicroUsdc: bigint,
+): Promise<ActiveMandateResult> {
+  const redis = getRedis();
+  if (!redis) {
+    // Fail-closed: if Redis is down we cannot load mandates.
+    // Return allowed=false so the caller blocks the payment rather than
+    // silently bypassing mandate constraints.
+    return { allowed: false, code: "MANDATE_NOT_FOUND", message: "Redis unavailable — mandate enforcement blocked (fail-closed)" };
+  }
+
+  const mandates = await listMandates(agentId);
+  if (mandates.length === 0) {
+    return { allowed: true, hadMandate: false };
+  }
+
+  // Derive the tightest constraints across all active mandates.
+  // A zero value means "unconstrained" (the Lua script treats 0 as no ceiling).
+  let tightestMaxPerTx: bigint | null = null;
+  let tightestMax10m   = 0;
+  let tightestMax24h   = 0;
+
+  for (const m of mandates) {
+    if (m.maxPerTx) {
+      const cap = BigInt(m.maxPerTx);
+      if (tightestMaxPerTx === null || cap < tightestMaxPerTx) tightestMaxPerTx = cap;
+    }
+    if (m.maxPer10Min) {
+      const cap = Number(BigInt(m.maxPer10Min));
+      if (tightestMax10m === 0 || cap < tightestMax10m) tightestMax10m = cap;
+    }
+    if (m.maxPerDay) {
+      const cap = Number(BigInt(m.maxPerDay));
+      if (tightestMax24h === 0 || cap < tightestMax24h) tightestMax24h = cap;
+    }
+  }
+
+  // Per-transaction cap check (synchronous — no Redis needed)
+  if (tightestMaxPerTx !== null && amountMicroUsdc > tightestMaxPerTx) {
+    return {
+      allowed: false,
+      code:    "MAX_PER_TX_EXCEEDED",
+      message: `Toll ${amountMicroUsdc} µUSDC exceeds mandate maxPerTx cap of ${tightestMaxPerTx} µUSDC`,
+    };
+  }
+
+  // Velocity check + atomic deduct via the shared mandate velocity windows.
+  // Keys are the same ones evaluateMandate() uses — all mandate evaluations for
+  // the same agent share these windows, so toll payments are counted in the same
+  // rolling budget as /api/execute payments.
+  const nowMs = Date.now();
+  if (amountMicroUsdc > 0n && (tightestMax10m > 0 || tightestMax24h > 0)) {
+    const luaResult = await redis.eval(
+      VELOCITY_LUA,
+      [
+        `${VEL_10M_PREFIX}${agentId}`,
+        `${VEL_24H_PREFIX}${agentId}`,
+      ],
+      [
+        String(nowMs),
+        String(amountMicroUsdc),
+        String(WIN_10M_MS),
+        String(WIN_24H_MS),
+        String(tightestMax10m),
+        String(tightestMax24h),
+        String(TTL_10M_S),
+        String(TTL_24H_S),
+      ],
+    ) as string;
+
+    if (luaResult === "VELOCITY_10M_EXCEEDED") {
+      return { allowed: false, code: "VELOCITY_10M_EXCEEDED", message: "Mandate 10-minute rolling window exceeded" };
+    }
+    if (luaResult === "VELOCITY_24H_EXCEEDED") {
+      return { allowed: false, code: "VELOCITY_24H_EXCEEDED", message: "Mandate 24-hour rolling window exceeded" };
+    }
+  }
+
+  const reservationKey = `${amountMicroUsdc}:${nowMs}`;
+  return { allowed: true, hadMandate: true, reservationKey };
+}
+
+/**
+ * Roll back a mandate velocity reservation made by enforceActiveMandate().
+ * Called when the pipeline fails after velocity was already deducted.
+ * Uses ZREM on the shared mandate velocity windows — same approach as
+ * rollbackVelocityReservation() in velocityEngine.ts.
+ */
+export async function rollbackMandateVelocity(
+  agentId:        string,
+  reservationKey: string,
+): Promise<void> {
+  if (!reservationKey) return;
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await Promise.all([
+      redis.zrem(`${VEL_10M_PREFIX}${agentId}`, reservationKey),
+      redis.zrem(`${VEL_24H_PREFIX}${agentId}`, reservationKey),
+    ]);
+  } catch (err) {
+    console.warn("[MandateEngine] Failed to rollback mandate velocity — window may overcount until expiry:", err);
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
