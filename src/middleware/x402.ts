@@ -233,6 +233,10 @@ declare global {
         verified: boolean;
         senderAddr?: string;
         groupId?: string;
+        /** jobId from the async settlement queue — set by x402Settle middleware */
+        settlementJobId?: string;
+        /** agentId resolved from senderAddr — set by x402Settle middleware */
+        settlementAgentId?: string;
       };
     }
   }
