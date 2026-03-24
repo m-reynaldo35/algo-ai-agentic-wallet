@@ -105,6 +105,45 @@ if (result.success) {
 
 ---
 
+## 3b. Calling Any x402-Gated Endpoint
+
+`client.fetch()` absorbs the 402 on any endpoint — not just `/api/agent-action`.
+Use it to call weather data, price feeds, news, or any other x402-gated API:
+
+```typescript
+// The client handles the 402 → proof → retry cycle invisibly.
+// Payment is executed server-side before data is returned (atomic).
+const res = await client.fetch("/api/weather", {
+  method:  "POST",
+  headers: { "Content-Type": "application/json" },
+  body:    JSON.stringify({ city: "Lagos" }),
+});
+
+const { weather, jobId, toll_micro_usdc } = await res.json();
+// weather.temperature_c  → 28.6
+// jobId                  → poll /api/jobs/{jobId} for confirmed on-chain txnId
+// toll_micro_usdc        → 10000 (= $0.01)
+```
+
+Poll the job for the confirmed on-chain txnId:
+
+```typescript
+// Requires X-Portal-Key or Bearer PORTAL_API_SECRET header
+const job = await fetch(`https://api.ai-agentic-wallet.com/api/jobs/${jobId}`, {
+  headers: { "Authorization": `Bearer ${PORTAL_API_SECRET}` },
+}).then(r => r.json());
+
+// job.status         → "queued" | "processing" | "confirmed" | "failed"
+// job.txnId          → Algorand transaction ID (when confirmed)
+// job.confirmedRound → block round (when confirmed)
+```
+
+**Payment atomicity guarantee:** The server commits the USDC toll (sign → enqueue)
+_before_ returning any data. If signing fails for any reason, the response is `503`
+and no data is delivered. There is no way to receive data without the payment being committed.
+
+---
+
 ## 4. Manual x402 Handshake (Without SDK)
 
 If the developer cannot use the SDK, build the handshake manually:

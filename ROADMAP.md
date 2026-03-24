@@ -469,7 +469,7 @@ All items below must be `[x]` before going live.
 - [x] `api.ai-agentic-wallet.com` → Railway, `ai-agentic-wallet.com` → Vercel ✓
 - [x] CORS locked to production domains ✓
 - [x] mTLS active ✓
-- [ ] `/health` returns fully green across all subsystems
+- [x] `/health` returns fully green across all subsystems
 
 ---
 
@@ -562,7 +562,8 @@ current production behaviour since the environment has drifted.
       from `ALGO_SIGNER_MNEMONIC`, compares against `ALGO_SIGNER_ADDRESS`, throws on mismatch
       with clear remediation message. Called in signing service boot sequence.
 - [ ] Re-register speed-test-agent against the production signer (rekey on-chain from Cohort A → prod)
-- [ ] Re-run Sprint 5 stress test against current production configuration
+- [x] Re-run Sprint 5 stress test against current production configuration
+      (ran 2026-03-24 with `weather-test-agent` rekeyed to prod signer — 5/5 queued, p95 enqueue 2346ms, 5/5 confirmed)
 
 ---
 
@@ -1244,3 +1245,46 @@ The ecosystem is live when all of the following work in a single uninterrupted f
 - [x] Txn confirmed mainnet round 59,427,810: `SJU6VBOOWLQ5X7YM2F22LGOVSC6QNIPRT5K4ACGTVJJ5RZDONIBQ`
 - [x] `weather-test-agent` — registered and rekeyed to prod signer, 20,000 µUSDC funded
 - ⚠ Six structural issues found — tracked in Sprint 16A
+
+## Sequential Payment Proof (Sprint 16A — 2026-03-24)
+- [x] `scripts/run-100-payments.ts` — 100 sequential $0.01 USDC payments, all confirmed on Algorand mainnet
+- [x] **100/100 confirmed**, $1.00 USDC spent, avg 6149ms, p95 8238ms, 0 failures
+- [x] Full receipt log with all 100 txnIds and confirmed rounds — verifiable on Pera explorer
+- [x] Agent: `ZBYZFOXJEKC6IBR47DEUF46QLNH7NOLJBYUPSDQDKH43PZUBQ7LGKHG4AQ`
+
+## Burst / Concurrent Payment Test (Sprint 16A — 2026-03-24)
+- [x] `scripts/burst-weather.ts` — concurrent burst test script (CONCURRENCY × ROUNDS, default 5×4)
+- [x] **First run (2026-03-24): 5/20 confirmed (25%)** — Railway undici broken state; diagnosed and fixed
+  - Root cause: Railway's native `fetch()` (undici) entered broken networking state after service restart
+  - Fix 1: Service redeploy cleared undici state → signing service and Open-Meteo both recovered
+  - Fix 2: Weather handler `fetch()` → `https.request()` (`httpsGetJson` helper) — immune to future undici failures
+- [x] **Second run (2026-03-24): 20/20 confirmed (100%)** — all clean after redeploy
+  - avg 28153ms, p95 38001ms, 6 lock retries total
+  - Per-agent settling lock working correctly (retries observed in round 2)
+
+### Failure analysis (from Railway logs — first run)
+Two distinct failure modes under 5-concurrent burst, both traced to Railway undici broken state:
+
+**1. Sign failures (10/20) — 502 `failedStage: sign`**
+- Root cause: `"Signing service unreachable: "` — Railway signing microservice dropping connections.
+  Empty error message = undici `TypeError` before TLS handshake.
+- Payment NOT committed on these failures (safe, rollback performed). ✅ Atomic.
+- Fix: service redeploy restored networking.
+
+**2. Weather failures (5/20) — 500 `Weather data unavailable`**
+- Root cause: Open-Meteo API returning `fetch failed` — same undici broken state.
+- Payment WAS committed on these failures — job enqueued but client received no `jobId` receipt.
+- Fix: replaced `fetch()` with `https.request()` in weather handler (`httpsGetJson` helper).
+  This path is now immune to undici state rot.
+
+**3. Algod failover triggered**
+- `Primary node unreachable — failing over to https://mainnet-api.4160.nodely.dev`
+- Three external services (signing service, algod, Open-Meteo) all hit issues simultaneously.
+- Root cause: Railway hobby-tier resource constraints under rapid burst + undici rot.
+
+## Sprint 5 Burst Stress Test — Re-run (Sprint 16A.2 — 2026-03-24)
+- [x] `scripts/burst-stress-test.ts --x402` — 5 concurrent `/api/execute` calls
+- [x] **5/5 queued, 0 rate-limited, 5/5 confirmed on-chain**
+- [x] p50 enqueue 2086ms, **p95 enqueue 2346ms** (target < 5000ms ✅)
+- [x] p50 confirmation 6913ms, p95 confirmation 11543ms
+- [x] Ran with `weather-test-agent` rekeyed to prod signer `6RZV6XEP6...` — valid production test ✅

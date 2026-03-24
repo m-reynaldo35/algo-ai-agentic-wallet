@@ -15,7 +15,7 @@ const client = new AlgoAgentClient({
 // Autonomous payment — zero human input
 const result = await client.executeTrade({
   senderAddress: agentAddress,
-  amount:        1_000_000,   // 1.00 USDC
+  amount:        10_000,   // 10,000 µUSDC = $0.01
 });`;
 
 // ── MCP snippet shown in native integration section ────────────────────────
@@ -27,9 +27,10 @@ const MCP_CONFIG = `// claude_desktop_config.json
       "command": "npx",
       "args": ["-y", "@algo-wallet/x402-mcp"],
       "env": {
-        "ALGO_MNEMONIC":  "your 25-word agent mnemonic",
-        "X402_AGENT_ID":  "your-agent-id",
-        "X402_API_URL":   "https://api.ai-agentic-wallet.com"
+        "ALGO_MNEMONIC":    "your 25-word agent mnemonic",
+        "X402_AGENT_ID":    "your-agent-id",
+        "X402_API_URL":     "https://api.ai-agentic-wallet.com",
+        "X402_PORTAL_KEY":  "your-portal-api-key"
       }
     }
   }
@@ -255,7 +256,7 @@ function DeveloperQuickstart() {
           </div>
 
           <Link
-            href="/app/login"
+            href="/sign-in"
             className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
           >
             Create your agent →
@@ -334,8 +335,7 @@ function Footer() {
           <a href="/docs" className="hover:text-zinc-400 transition-colors">Documentation</a>
           <Link href="/privacy" className="hover:text-zinc-400 transition-colors">Privacy</Link>
           <Link href="/terms" className="hover:text-zinc-400 transition-colors">Terms</Link>
-          <Link href="/app/login" className="hover:text-zinc-400 transition-colors">Customer login</Link>
-          <Link href="/login" className="hover:text-zinc-400 transition-colors">Admin</Link>
+          <Link href="/sign-in" className="hover:text-zinc-400 transition-colors">Sign in</Link>
         </div>
       </div>
     </footer>

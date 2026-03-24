@@ -14,9 +14,9 @@ export default function DocsPage() {
       <nav className="flex items-center justify-between px-6 py-4 border-b border-zinc-800/60 max-w-6xl mx-auto">
         <Link href="/" className="font-semibold text-white tracking-tight">algo-wallet</Link>
         <div className="flex items-center gap-4 text-sm">
-          <Link href="/app/login" className="text-zinc-400 hover:text-white transition-colors">Sign in</Link>
+          <Link href="/sign-in" className="text-zinc-400 hover:text-white transition-colors">Sign in</Link>
           <Link
-            href="/app/create"
+            href="/app/dashboard"
             className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1.5 rounded-md transition-colors font-medium"
           >
             Get started
@@ -282,6 +282,7 @@ if (result.success) {
               <p>  │&nbsp;&nbsp;&nbsp;↳ <span className="text-emerald-400">200 SandboxExport</span> &larr; Unsigned group returned</p>
               <p>  └─ <span className="text-emerald-400">POST</span> /api/execute &larr; Forward to settlement pipeline</p>
               <p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↳ <span className="text-emerald-400">200 SettlementResult</span> &larr; On-chain confirmation</p>
+              <p className="mt-3 text-zinc-500 text-xs">Atomic endpoints (e.g. /api/weather) skip the separate /api/execute step — settlement is committed inline before data is returned.</p>
             </div>
           </Section>
 
@@ -324,9 +325,10 @@ X-Agent-Gas-Remaining: 847   # estimated transactions remaining`}
             <p className="text-zinc-500 text-sm mt-4">Use <code className="text-emerald-400 bg-zinc-800 px-1.5 py-0.5 rounded text-xs">parseGasInfo()</code> from the SDK to read these headers automatically:</p>
             <CodeBlock
               language="typescript"
-              code={`import { requestWithPayment, parseGasInfo } from "@algo-wallet/x402-client";
+              code={`import { AlgoAgentClient, parseGasInfo } from "@algo-wallet/x402-client";
 
-const response = await requestWithPayment(url, options);
+const client = new AlgoAgentClient({ baseUrl, privateKey: account.sk });
+const response = await client.fetch("/api/your-endpoint", { method: "POST", body: ... });
 const gas = parseGasInfo(response);
 
 if (gas?.status === "critical") {
@@ -428,11 +430,11 @@ if (gas?.status === "critical") {
           {/* Mandates */}
           <Section title="Mandates" id="mandates">
             <p className="text-zinc-400 leading-relaxed mb-4">
-              Mandates (AP2) allow recurring or autonomous payments without a repeated x402 handshake per request. A human operator authorises a mandate once (via WebAuthn passkey or Algorand wallet QR scan), defining spend limits and expiry. Rocca then evaluates the mandate on every execution and signs automatically if within bounds.
+              Mandates (AP2) allow recurring or autonomous payments without a repeated x402 handshake per request. A human operator authorises a mandate once (via Pera Connect QR scan), defining spend limits and expiry. Rocca then evaluates the mandate on every execution and signs automatically if within bounds.
             </p>
             <div className="grid sm:grid-cols-2 gap-4 mb-4">
               {[
-                ["Create mandate", "POST /api/agents/:id/mandate/create", "Requires human auth (Pera Connect or WebAuthn passkey)"],
+                ["Create mandate", "POST /api/agents/:id/mandate/create", "Requires human auth via Pera Connect QR scan"],
                 ["Revoke mandate", "POST /api/agents/:id/mandate/:mandateId/revoke", "Immediately stops autonomous signing"],
                 ["List mandates", "GET /api/agents/:id/mandates", "Returns active mandates and usage stats"],
                 ["Issue approval token", "POST /api/agents/:id/mandate/approval-token", "Short-lived token for one-off approvals"],
@@ -445,7 +447,7 @@ if (gas?.status === "critical") {
               ))}
             </div>
             <p className="text-zinc-500 text-sm">
-              Two auth options for mandate governance: <strong className="text-zinc-300">Pera Connect</strong> (scan WalletConnect QR with Pera or Defly) or <strong className="text-zinc-300">WebAuthn</strong> (Touch ID / Face ID / YubiKey passkey). Both produce equivalent authorisation — use whichever fits your workflow.
+              Mandate governance uses <strong className="text-zinc-300">Pera Connect</strong> (scan WalletConnect QR with Pera or Defly). Your wallet signature authorises the mandate on-chain — no email or password required.
             </p>
           </Section>
 

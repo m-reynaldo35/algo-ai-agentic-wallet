@@ -5,6 +5,7 @@ console.log("Boot start. PORT=", process.env.PORT);
 // 0 = unlimited (suppresses the warning without masking real leaks, since
 // algosdk's concurrent algod calls are the legitimate source).
 import { setMaxListeners } from "events";
+import https from "https";
 setMaxListeners(0);
 
 import { initSentry } from "./lib/sentry.js";
@@ -611,6 +612,23 @@ app.post("/api/batch-action", x402Paywall, async (req, res) => {
 //   5. Handler fetches weather and returns { weather, jobId }
 //   6. Client polls /api/jobs/{jobId} to get the confirmed on-chain txnId
 //
+/** HTTPS GET that avoids Node's undici/native-fetch (which can enter a broken
+ *  state on Railway after network blips). Uses the stable `https` core module. */
+function httpsGetJson<T>(url: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { timeout: 10_000 }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("end", () => {
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString()) as T); }
+        catch (e) { reject(e); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); reject(new Error("https request timed out")); });
+    req.on("error", reject);
+  });
+}
+
 // 60-second in-process cache for weather data per city.
 // Prevents Open-Meteo rate-limits under burst load.
 const _weatherCache = new Map<string, { data: unknown; expiresAt: number }>();
@@ -628,12 +646,9 @@ app.post("/api/weather", x402Paywall, x402Settle, async (req, res) => {
       weatherPayload = cached.data as typeof weatherPayload;
     } else {
       // Geocode city name → lat/lon
-      const geoRes = await fetch(
-        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`,
-      );
-      const geoData = await geoRes.json() as {
+      const geoData = await httpsGetJson<{
         results?: Array<{ latitude: number; longitude: number; name: string; country: string }>;
-      };
+      }>(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`);
       const loc = geoData.results?.[0];
       if (!loc) {
         res.status(404).json({ error: `City not found: ${city}` });
@@ -641,12 +656,9 @@ app.post("/api/weather", x402Paywall, x402Settle, async (req, res) => {
       }
 
       // Fetch current conditions from Open-Meteo (free, no API key)
-      const weatherRes = await fetch(
-        `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current=temperature_2m,wind_speed_10m,weather_code&timezone=auto`,
-      );
-      const weatherData = await weatherRes.json() as {
+      const weatherData = await httpsGetJson<{
         current: { temperature_2m: number; wind_speed_10m: number; weather_code: number; time: string };
-      };
+      }>(`https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current=temperature_2m,wind_speed_10m,weather_code&timezone=auto`);
 
       weatherPayload = {
         city:           loc.name,
