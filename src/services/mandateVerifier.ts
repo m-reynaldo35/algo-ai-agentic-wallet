@@ -62,6 +62,15 @@ export interface VerificationResult {
   error?: string;
 }
 
+export interface VelocityCheckResult {
+  ok: boolean;
+  error?: string;
+  /** Current 10-min window spend in µUSDC */
+  windowSpent?: bigint;
+  /** Current daily spend in µUSDC */
+  dailySpent?: bigint;
+}
+
 // ── Main verifier ─────────────────────────────────────────────────────────────
 
 /**
@@ -154,6 +163,103 @@ export async function verifyMandateCall(
       amountMicroUsdc,
     },
   };
+}
+
+// ── Velocity headroom check ───────────────────────────────────────────────────
+
+/**
+ * Pre-submission velocity check: reads wx, dy, vc, dc from the contract's
+ * global state and verifies the toll fits within the current 10-min window
+ * and daily cap.
+ *
+ * This is a best-effort optimisation — the AVM remains authoritative. The
+ * check closes the main post-broadcast failure mode (gate fires after data
+ * is delivered) without adding a separate algod call: the global state is
+ * fetched once and both provenance and velocity are verified in the same
+ * response.
+ *
+ * Returns ok=false with a human-readable error when a cap would be breached.
+ * The caller should return 429 (Retry-After) rather than 402.
+ */
+export async function checkVelocityHeadroom(
+  appId:         number,
+  tollMicroUsdc: bigint,
+): Promise<VelocityCheckResult> {
+  try {
+    const algod   = getAlgodClient();
+    const appInfo = await algod.getApplicationByID(appId).do() as unknown as {
+      params?: {
+        globalState?: Array<{ key: Uint8Array; value: { bytes?: Uint8Array; uint?: bigint | number } }>;
+      }
+    };
+
+    const globalState = appInfo?.params?.globalState ?? [];
+
+    const getUint = (key: string): bigint => {
+      const entry = globalState.find((e) => Buffer.from(e.key).toString() === key);
+      return BigInt(entry?.value?.uint ?? 0);
+    };
+
+    const wx = getUint("wx");  // µUSDC spent in current 10-min window
+    const vc = getUint("vc");  // 10-min velocity cap
+    const dy = getUint("dy");  // µUSDC spent today
+    const dc = getUint("dc");  // daily cap
+    const ws = getUint("ws");  // window start Unix timestamp
+
+    // If the window is older than 600s it has reset — treat wx as 0
+    const nowSec     = BigInt(Math.floor(Date.now() / 1000));
+    const windowAge  = nowSec - ws;
+    const effectiveWx = windowAge > 600n ? 0n : wx;
+
+    if (vc > 0n && effectiveWx + tollMicroUsdc > vc) {
+      return {
+        ok:          false,
+        error:       `Velocity cap would be exceeded (${effectiveWx + tollMicroUsdc} > ${vc} µUSDC per 10 min)`,
+        windowSpent: effectiveWx,
+        dailySpent:  dy,
+      };
+    }
+
+    if (dc > 0n && dy + tollMicroUsdc > dc) {
+      return {
+        ok:          false,
+        error:       `Daily cap would be exceeded (${dy + tollMicroUsdc} > ${dc} µUSDC per day)`,
+        windowSpent: effectiveWx,
+        dailySpent:  dy,
+      };
+    }
+
+    return { ok: true, windowSpent: effectiveWx, dailySpent: dy };
+
+  } catch (err) {
+    // Non-fatal: if we can't read state, let the AVM be the gate
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ appId, err: msg }, "[MandateVerifier] velocity headroom check failed — skipping pre-check");
+    return { ok: true };
+  }
+}
+
+// ── Provenance pre-warm ───────────────────────────────────────────────────────
+
+/**
+ * Pre-warm the provenance cache for a list of known mandate app IDs.
+ * Called at server startup so the first payment per deploy hits the cache
+ * rather than paying the ~400ms cold algod call.
+ */
+export async function prewarmProvenance(appIds: number[]): Promise<void> {
+  const unique = [...new Set(appIds.filter((id) => id > 0))];
+  if (unique.length === 0) return;
+
+  logger.info({ count: unique.length }, "[MandateVerifier] pre-warming provenance cache");
+
+  await Promise.allSettled(
+    unique.map((appId) =>
+      checkFactoryProvenance(appId).catch((err) =>
+        logger.warn({ appId, err: err instanceof Error ? err.message : err },
+          "[MandateVerifier] prewarm failed for app"),
+      ),
+    ),
+  );
 }
 
 // ── Factory provenance check ──────────────────────────────────────────────────

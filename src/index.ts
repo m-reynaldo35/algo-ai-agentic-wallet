@@ -56,6 +56,8 @@ import { runRekeySync } from "./services/rekeySync.js";
 import { startDriftPulse }             from "./jobs/driftPulse.js";
 import { startRecurringScheduler }       from "./jobs/recurringScheduler.js";
 import { runWorker }                     from "./queue/settlementWorker.js";
+import { prewarmProvenance }             from "./services/mandateVerifier.js";
+import { scanAllAgents }                 from "./services/agentRegistry.js";
 import {
   createMandate, revokeMandate, listMandates,
   registerWebAuthnCredential, issueMandateChallenge, registerAlgorandAddress,
@@ -3146,6 +3148,21 @@ const server = app.listen(port, "0.0.0.0", () => {
 
 // Module 9 — Log mTLS activation status at boot
 logMtlsStatus("main-api");
+
+// Pre-warm mandate provenance cache — eliminates the cold-start ~400ms algod
+// call on the first payment after each deploy. Runs in background, non-fatal.
+(async () => {
+  try {
+    const agents = await scanAllAgents();
+    const appIds = agents
+      .map((a) => a.mandateAppId)
+      .filter((id): id is number => typeof id === "number" && id > 0);
+    if (appIds.length > 0) await prewarmProvenance(appIds);
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : err },
+      "[Boot] Provenance pre-warm failed — first payment will take ~400ms longer");
+  }
+})();
 
 // Module 5 — Drift pulse: heartbeat that monitors on-chain agent state.
 // With mandate architecture, agents hold their own keys — no auth-addr drift.

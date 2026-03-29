@@ -12,13 +12,14 @@
 
 import algosdk from "algosdk";
 import { dequeueJob }                   from "./settlementQueue.js";
-import { getJob, updateJob }            from "./jobStore.js";
+import { getJob, updateJob, SettlementJob } from "./jobStore.js";
 import { getAlgodClient }               from "../network/nodely.js";
 import { extendReservationTTL }         from "../services/executionIdempotency.js";
 import { rollbackOutflow }              from "../protection/treasuryOutflowGuard.js";
 import { logSettlementSuccess,
          logExecutionFailure }          from "../services/audit.js";
 import { config }                       from "../config.js";
+import { logger }                       from "../lib/logger.js";
 
 const POLL_INTERVAL_MS   = 200;   // how often to check queue when idle
 const CONFIRMATION_ROUNDS = 8;    // max Algorand rounds to wait (~36s at 4.5s/round)
@@ -51,6 +52,51 @@ async function broadcastWithRetry(
   throw lastErr;
 }
 
+/**
+ * Optimistic mandate path: transaction already submitted by x402Settle.
+ * Skip broadcast — call waitForConfirmation directly and update job status.
+ * On failure: log alert (data was already delivered, payment did not land).
+ */
+async function confirmMandateTxn(job: SettlementJob): Promise<void> {
+  const algod = getAlgodClient();
+  const txid  = job.txnId!;
+
+  logger.info(
+    { jobId: job.jobId, txid, agentId: job.agentId },
+    "[Worker] Confirming mandate txn (optimistic path)",
+  );
+
+  try {
+    const confirmation  = await algosdk.waitForConfirmation(algod, txid, CONFIRMATION_ROUNDS);
+    const confirmedRound = Number(confirmation.confirmedRound ?? 0n);
+
+    await updateJob(job.jobId, {
+      status:       "confirmed",
+      txnId:        txid,
+      confirmedRound,
+      settledAt:    new Date().toISOString(),
+    });
+
+    logSettlementSuccess(txid, job.agentId, config.x402.priceMicroUsdc, txid);
+    logger.info(
+      { jobId: job.jobId, txid, round: confirmedRound },
+      "[Worker] ✓ Mandate txn confirmed",
+    );
+
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+
+    await updateJob(job.jobId, { status: "failed", error });
+    logExecutionFailure(job.agentId, "broadcast", error);
+
+    // Data was already delivered — this is a revenue loss event
+    logger.error(
+      { jobId: job.jobId, txid, agentId: job.agentId, error },
+      "[Worker] ✗ Mandate txn FAILED TO CONFIRM — data delivered without payment",
+    );
+  }
+}
+
 async function processJob(jobId: string): Promise<void> {
   const job = await getJob(jobId);
   if (!job) {
@@ -58,6 +104,15 @@ async function processJob(jobId: string): Promise<void> {
     return;
   }
 
+  // ── Optimistic mandate path ─────────────────────────────────────
+  // txnId is set = transaction already submitted by x402Settle.
+  // Skip broadcast and go straight to confirmation.
+  if (job.txnId && job.status === "broadcasting") {
+    await confirmMandateTxn(job);
+    return;
+  }
+
+  // ── Standard queue path ─────────────────────────────────────────
   console.log(`[Worker] Processing job ${jobId} (agent: ${job.agentId}, sandbox: ${job.sandboxId})`);
 
   await updateJob(jobId, { status: "broadcasting" });

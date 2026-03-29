@@ -150,7 +150,7 @@ async function pollJob(jobId: string, maxWaitMs = 30_000): Promise<JobStatus> {
 
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise(r => setTimeout(r, 300));
     const res = await fetch(`${API_URL}/api/jobs/${jobId}`, {
       headers: { "Authorization": `Bearer ${PORTAL_SECRET}` },
     });
