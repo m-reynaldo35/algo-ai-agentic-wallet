@@ -204,17 +204,20 @@ async function checkFactoryProvenance(appId: number): Promise<ProvenanceResult> 
   try {
     const { createHash } = await import("crypto");
     const algod   = getAlgodClient();
+    // algosdk v3: response is camelCase, approvalProgram is Uint8Array, globalState is typed array
     const appInfo = await algod.getApplicationByID(appId).do() as unknown as {
       params?: {
-        "approval-program"?: string;
-        "global-state"?: Array<{ key: string; value: { bytes?: string; uint?: number } }>;
+        approvalProgram?: Uint8Array;
+        globalState?:     Array<{ key: Uint8Array; value: { bytes?: Uint8Array; uint?: bigint | number } }>;
       }
     };
 
     // Check approval program hash
-    const programB64   = appInfo?.params?.["approval-program"] ?? "";
-    const programBytes = Buffer.from(programB64, "base64");
-    const hash         = createHash("sha256").update(programBytes).digest("hex");
+    const programBytes = appInfo?.params?.approvalProgram;
+    if (!programBytes || programBytes.length === 0) {
+      return { valid: false, error: `App ${appId} has no approval program on-chain` };
+    }
+    const hash = createHash("sha256").update(programBytes).digest("hex");
 
     if (hash !== APPROVAL_HASH) {
       await cacheProvenance(redis, cacheKey, false);
@@ -224,9 +227,12 @@ async function checkFactoryProvenance(appId: number): Promise<ProvenanceResult> 
     // ── Secondary (optional): factory_id global state ─────────────────────
     // Belt-and-braces only. Hash already confirmed the bytecode is correct.
     if (FACTORY_APP_ID) {
-      const globalState = appInfo?.params?.["global-state"] ?? [];
-      const fiEntry = globalState.find((e) => Buffer.from(e.key, "base64").toString() === "fi");
-      const storedFactoryId = fiEntry?.value?.uint ?? 0;
+      const globalState = appInfo?.params?.globalState ?? [];
+      // In algosdk v3, keys are Uint8Array; decode to string for lookup
+      const fiEntry = globalState.find((e) =>
+        Buffer.from(e.key).toString() === "fi"
+      );
+      const storedFactoryId = Number(fiEntry?.value?.uint ?? 0);
 
       if (storedFactoryId !== FACTORY_APP_ID) {
         logger.warn(
