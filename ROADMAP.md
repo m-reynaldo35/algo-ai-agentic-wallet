@@ -882,30 +882,42 @@ X-PAYMENT header  →  Server: decode + verify factory provenance + submit
 
 ---
 
-### O.5 — Remaining Work *(not started — must complete before mainnet deploy)*
+### O.5 — COMPLETE *(mainnet deploy 2026-03-29, E2E test PASSED)*
 
 **Contract fix (do first):**
-- [ ] **Whitelist-optional mode** — update `mandate_contract.py` Gate 5: if no box entries exist,
-      skip the whitelist check and run cap-only mode. Enables AP2 open commerce without pre-approving
-      every merchant. Master wallet controls via `whitelist_enabled` flag or implicit zero-box check.
-      Three modes: open (no boxes = any recipient), strict (boxes set = whitelist enforced), DeFi
-      (protocol contract addresses whitelisted explicitly). AVM contract is the only place this lives.
+- [x] **Whitelist-optional mode** — `mandate_contract.py` Gate 4 updated: explicit `whitelist_enabled`
+      global state bool (`KEY_WHITELIST_ENABLED = b"we"`, default 0 = open). Gate 4 only fires when
+      `we == 1 AND recipient != treasury`. `enable_whitelist()` / `disable_whitelist()` ARC-4 methods
+      added (master wallet only). Schema bumped to 12 uint64. Open mode allows any recipient; strict
+      mode enforces box whitelist. Toggle cleanly without touching box storage.
 
 **Server wiring:**
-- [ ] **Update `src/middleware/x402.ts`** — paywall decodes app call, extracts `senderAddr` from
-      `txn.sender`. `X402PaymentProof` JSON format deprecated. Algorand validity rounds = replay protection.
-- [ ] **Simplify `replayGuard.ts`** — remove timestamp/nonce check; first-valid/last-valid window
-      on the Algorand txn is the replay guard. Keep infrastructure rate limiting only.
-- [ ] **Agent registration** — `POST /api/agents/create` calls `MandateFactory.create_agent()`,
-      stores returned `appId` in agent registry. ALGO-triggered activation includes `opt_in_usdc()`
-      on the MandateContract app account.
-- [ ] **Agent registry schema** — add `mandateAppId: number` to `AgentRecord`. Parallel support
+- [x] **Invert provenance check in `src/services/mandateVerifier.ts`** — SHA-256 hash is now
+      primary; `factory_id` global state is optional secondary (belt-and-braces only). `MANDATE_CONTRACT_APPROVAL_HASH`
+      is required; `MANDATE_FACTORY_APP_ID` is optional. If hash passes but factory_id mismatches,
+      reject with warning (correct bytecode, wrong factory lineage = suspicious). Single algod call
+      now fetches both `approval-program` and `global-state` together.
+- [x] **Tighten validity window in `packages/x402-client/src/interceptor.ts`** — `sp.lastValid =
+      sp.firstValid + 15n` (~53s window). Algorand's default ~1000 rounds was too wide.
+- [x] **Simplify `replayGuard.ts`** — mandate-format payments already never called `replayGuard`
+      (x402.ts only calls it for legacy JSON path). Validity window tightened (above) closes the
+      replay surface. Legacy JSON path preserved for backward compat with any remaining Rocca agents.
+- [x] **Update `src/middleware/x402.ts`** — already handling mandate format: decodes SignedTransaction,
+      extracts `senderAddr` from `txn.sender`, passes to x402Settle. No change needed.
+- [x] **Audit `src/middleware/validation.ts`** — Rule 3 (`authAddr` / Rocca rekey check) removed.
+      Rule 1 (toll check) wrapped in `if (routing.authAddr)` — skipped for mandate agents whose toll
+      was already paid by the MandateContract inner txn. Rule 2 (signer match) unchanged. Unused
+      imports (`getAlgodClient`, `getRedis`, `AUTH_ADDR_CACHE_TTL_S`) removed. `tsc --noEmit` clean.
+- [x] **Agent registration** — `POST /api/agents/create-mandate` (new endpoint) calls
+      `MandateFactory.create_agent()` via `src/services/mandateFactory.ts`. Operator wallet is set
+      as master wallet → server can call `opt_in_usdc()` automatically. Returns `{mandateAppId,
+      appAddress, deployTxid}`. Activation poller detects ALGO deposit → calls `callOptInUsdc()` →
+      user sends USDC → agent goes active. `mandateOperatorMaster: boolean` added to `AgentRecord`.
+- [x] **Agent registry schema** — `mandateAppId?: number` already in `AgentRecord`. Parallel support
       for old Rocca-rekeyed agents until migrated.
-- [ ] **Update `src/middleware/validation.ts`** — Rule 3 `authAddr` check obsolete; agents no
-      longer rekey to Rocca. Replace with mandate contract existence check.
 
 **SDK + tooling:**
-- [ ] **`packages/x402-client/src/client.ts`** — add `mandateAppId` to `ClientConfig`.
+- [x] **`packages/x402-client/src/client.ts`** — `mandateAppId` already in `ClientConfig` (required field).
 - [ ] **`packages/x402-mcp/`** — `pay_with_x402` tool uses new `mandateAppId`-based signing.
 - [ ] **`packages/x402-cli/`** — `mandate list` shows contract app ID + on-chain velocity state.
 
@@ -914,15 +926,36 @@ X-PAYMENT header  →  Server: decode + verify factory provenance + submit
       ALGO + USDC to MandateContract app account. Show app account address + QR.
 
 **Deploy + verify:**
-- [ ] **Deploy to testnet** — `cd contracts/pyteal && pip install -r requirements.txt`
-      → `python mandate_contract.py && python mandate_factory.py`
-      → `python deploy.py deploy-factory`
-      → `python deploy.py set-programs` (note `MANDATE_CONTRACT_APPROVAL_HASH`)
-      → `python deploy.py create-agent --agent-key X --master-key Y --max-per-tx N --velocity N --daily N`
-- [ ] **End-to-end test** — `scripts/buy-weather.ts` with mandate contract agent on testnet.
-      Confirm: payment goes through, velocity breach returns AVM error, daily cap enforced.
-- [ ] **Set env vars** — `MANDATE_FACTORY_APP_ID` + `MANDATE_CONTRACT_APPROVAL_HASH` in Railway.
-- [ ] **Mainnet deploy** — repeat deploy sequence on mainnet. Verify with real $0.01 USDC payment.
+- [ ] **Deploy to testnet** — `contracts/pyteal/deploy-testnet.sh` (one-shot script).
+      Prereq: fund operator account `R7JGMAOPVNMYDRO4QSKGE4VEU66LDW34TKXPD6DFFJTDDXUOAJCCBGJMLM`
+      with ≥2 testnet ALGO from https://bank.testnet.algorand.network/ then:
+      `export OPERATOR_MNEMONIC="<mnemonic>" && bash contracts/pyteal/deploy-testnet.sh`
+- [x] **End-to-end test** — `scripts/buy-weather.ts` PASSED on mainnet (2026-03-29).
+      Txn: `UICORLIHADYOKU6LJCYFYBZGHUU2EE76ZF7MTGLQQK2YQHOZXF7Q`
+      Lagos 28°C, toll 10,000 µUSDC confirmed on-chain.
+- [x] **Set env vars** — `MANDATE_CONTRACT_APPROVAL_HASH` + `MANDATE_FACTORY_APP_ID` + `OPERATOR_MNEMONIC`
+      set in Railway production.
+- [x] **Mainnet deploy** — Factory app_id=3498110794, operator-test-agent mandate app_id=3498117490.
+      Real $0.01 USDC payment verified on Algorand mainnet.
+
+**Post-O.5 tracked risks (not blockers, but must not be forgotten):**
+
+- **Latency** — `x402Settle.ts` calls `waitForConfirmation(txid, 5)`, blocking ~3–18s per payment.
+  For low-value ($0.01) high-frequency agent calls this may be acceptable; for interactive sessions
+  it is not. After O.5 ships, prototype an optimistic settlement option: submit → algod accepted
+  (not confirmed) → serve response with pending txid. AVM will confirm or reject; fee is burned on
+  submit regardless. Make it opt-in per endpoint with a `x402-settle: optimistic` response header.
+
+- **Contract update authority** — `mandate_contract.py` allows master wallet to call
+  `UpdateApplication`, rewriting any agent's contract gates at will. This is undocumented. Add a
+  clear statement to the `POST /api/agents/register-mandate` response and onboarding docs: the
+  operator's master wallet retains upgrade authority over deployed contracts. Agents trust the
+  operator. Long-term, consider time-locking updates (N-round advance notice enforced by TEAL).
+
+- **Onboarding automation** — per-agent deployment is a 5-step Python CLI process requiring
+  operator mnemonic. Create a single `scripts/create-mandate-agent.ts` that chains: factory
+  create-agent → fund contract → opt_in_usdc → register-mandate. Self-service onboarding is
+  required before Phase 2 seller SDK launch.
 
 ---
 
