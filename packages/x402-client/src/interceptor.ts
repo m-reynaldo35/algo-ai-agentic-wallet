@@ -210,6 +210,8 @@ async function buildMandatePayCall(
   // The AVM reads treasury from contract global state ("tr") and sets it as
   // AssetReceiver in the inner axfer. That account must be declared in the
   // outer txn's accounts array or the AVM will reject with "unavailable Account".
+  // Random 8-byte note ensures uniqueness even when multiple payments are built
+  // within the same Algorand round (~4.5s) — prevents duplicate-tx rejection.
   const txn = algosdk.makeApplicationCallTxnFromObject({
     sender:          senderAddress,
     appIndex:        mandateAppId,
@@ -217,6 +219,7 @@ async function buildMandatePayCall(
     appArgs:         [PAY_SELECTOR, treasuryBytes, amountBuf],
     accounts:        [payJson.payment.payTo],
     foreignAssets:   [usdcAsaId],
+    note:            crypto.randomBytes(8),
     suggestedParams: sp,
   });
 
