@@ -76,7 +76,7 @@ def approval():
              Int(1),
          ])],
 
-        [Int(1), Err()],
+        [Int(1), Int(0)],
     )
 
 
@@ -120,6 +120,10 @@ def do_set_programs():
     approval_bytes = Txn.application_args[1]
     clear_bytes    = Txn.application_args[2]
 
+    # MaybeValue checks — must be declared before Seq, executed inside it
+    approval_len = App.box_length(BOX_APPROVAL)
+    clear_len    = App.box_length(BOX_CLEAR)
+
     return Seq([
         Assert(
             Txn.sender() == Global.creator_address(),
@@ -129,10 +133,10 @@ def do_set_programs():
         Assert(Len(clear_bytes) > Int(0),    comment="EMPTY_CLEAR"),
 
         # Recreate boxes to handle updates (delete if exists, then create)
-        If(App.box_length(BOX_APPROVAL).hasValue(),
-           Pop(App.box_delete(BOX_APPROVAL))),
-        If(App.box_length(BOX_CLEAR).hasValue(),
-           Pop(App.box_delete(BOX_CLEAR))),
+        approval_len,
+        If(approval_len.hasValue(), Pop(App.box_delete(BOX_APPROVAL))),
+        clear_len,
+        If(clear_len.hasValue(), Pop(App.box_delete(BOX_CLEAR))),
 
         Pop(App.box_create(BOX_APPROVAL, Len(approval_bytes))),
         App.box_put(BOX_APPROVAL, approval_bytes),
@@ -168,7 +172,7 @@ def do_create_agent():
     velocity_cap  = Btoi(Txn.application_args[4])
     daily_cap     = Btoi(Txn.application_args[5])
 
-    # Load program bytes from box storage
+    # MaybeValue box reads — declared before Seq, executed inside it
     approval_result = App.box_get(BOX_APPROVAL)
     clear_result    = App.box_get(BOX_CLEAR)
 
@@ -186,8 +190,10 @@ def do_create_agent():
             comment="FACTORY_PAUSED",
         ),
 
-        # Programs must be uploaded
+        # Execute box_get opcodes first, then check hasValue
+        approval_result,
         Assert(approval_result.hasValue(), comment="PROGRAMS_NOT_SET"),
+        clear_result,
         Assert(clear_result.hasValue(),    comment="PROGRAMS_NOT_SET"),
 
         # Mandate parameter sanity checks
@@ -309,8 +315,8 @@ if __name__ == "__main__":
     out_dir = os.path.join(os.path.dirname(__file__), "..", "teal")
     os.makedirs(out_dir, exist_ok=True)
 
-    approval_teal = compileTeal(approval(),     mode=Mode.Application, version=10)
-    clear_teal    = compileTeal(clear_state(),  mode=Mode.Application, version=10)
+    approval_teal = compileTeal(approval(),     mode=Mode.Application, version=9)
+    clear_teal    = compileTeal(clear_state(),  mode=Mode.Application, version=9)
 
     with open(os.path.join(out_dir, "mandate_factory_approval.teal"), "w") as f:
         f.write(approval_teal)

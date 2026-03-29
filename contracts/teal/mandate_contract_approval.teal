@@ -1,0 +1,460 @@
+#pragma version 9
+txn ApplicationID
+int 0
+==
+bnz main_l40
+txn ApplicationID
+int 0
+!=
+txn OnCompletion
+int NoOp
+==
+&&
+bnz main_l7
+txn OnCompletion
+int UpdateApplication
+==
+bnz main_l6
+int 1
+bnz main_l5
+err
+main_l5:
+int 0
+b main_l41
+main_l6:
+txn Sender
+byte 0x6d77
+app_global_get
+==
+assert
+int 1
+b main_l41
+main_l7:
+txna ApplicationArgs 0
+method "pay(address,uint64)void"
+==
+bnz main_l27
+txna ApplicationArgs 0
+method "opt_in_usdc()void"
+==
+bnz main_l26
+txna ApplicationArgs 0
+method "update_mandate(uint64,uint64,uint64,uint64)void"
+==
+bnz main_l25
+txna ApplicationArgs 0
+method "add_recipient(address)void"
+==
+bnz main_l24
+txna ApplicationArgs 0
+method "remove_recipient(address)void"
+==
+bnz main_l23
+txna ApplicationArgs 0
+method "halt()void"
+==
+bnz main_l22
+txna ApplicationArgs 0
+method "resume()void"
+==
+bnz main_l21
+txna ApplicationArgs 0
+method "transfer_master(address)void"
+==
+bnz main_l20
+txna ApplicationArgs 0
+method "enable_whitelist()void"
+==
+bnz main_l19
+txna ApplicationArgs 0
+method "disable_whitelist()void"
+==
+bnz main_l18
+err
+main_l18:
+txn Sender
+byte 0x6d77
+app_global_get
+==
+// NOT_MASTER_WALLET
+assert
+byte 0x7765
+int 0
+app_global_put
+int 1
+b main_l41
+main_l19:
+txn Sender
+byte 0x6d77
+app_global_get
+==
+// NOT_MASTER_WALLET
+assert
+byte 0x7765
+int 1
+app_global_put
+int 1
+b main_l41
+main_l20:
+txn Sender
+byte 0x6d77
+app_global_get
+==
+// NOT_MASTER_WALLET
+assert
+txna ApplicationArgs 1
+len
+int 32
+==
+// INVALID_ADDRESS
+assert
+byte 0x6d77
+txna ApplicationArgs 1
+app_global_put
+int 1
+b main_l41
+main_l21:
+txn Sender
+byte 0x6d77
+app_global_get
+==
+// NOT_MASTER_WALLET
+assert
+byte 0x68
+int 0
+app_global_put
+int 1
+b main_l41
+main_l22:
+txn Sender
+byte 0x6d77
+app_global_get
+==
+// NOT_MASTER_WALLET
+assert
+byte 0x68
+int 1
+app_global_put
+int 1
+b main_l41
+main_l23:
+txn Sender
+byte 0x6d77
+app_global_get
+==
+// NOT_MASTER_WALLET
+assert
+txna ApplicationArgs 1
+box_del
+pop
+int 1
+b main_l41
+main_l24:
+txn Sender
+byte 0x6d77
+app_global_get
+==
+// NOT_MASTER_WALLET
+assert
+txna ApplicationArgs 1
+int 1
+box_create
+pop
+int 1
+b main_l41
+main_l25:
+txn Sender
+byte 0x6d77
+app_global_get
+==
+// NOT_MASTER_WALLET
+assert
+txna ApplicationArgs 4
+btoi
+byte 0x76
+app_global_get
+>
+// VERSION_ROLLBACK
+assert
+byte 0x6d78
+txna ApplicationArgs 1
+btoi
+app_global_put
+byte 0x7663
+txna ApplicationArgs 2
+btoi
+app_global_put
+byte 0x6463
+txna ApplicationArgs 3
+btoi
+app_global_put
+byte 0x76
+txna ApplicationArgs 4
+btoi
+app_global_put
+int 1
+b main_l41
+main_l26:
+txn Sender
+byte 0x6d77
+app_global_get
+==
+txn Sender
+byte 0x616b
+app_global_get
+==
+||
+// NOT_AUTHORISED
+assert
+itxn_begin
+int axfer
+itxn_field TypeEnum
+global CurrentApplicationAddress
+itxn_field AssetReceiver
+int 0
+itxn_field AssetAmount
+byte 0x7569
+app_global_get
+itxn_field XferAsset
+int 0
+itxn_field Fee
+itxn_submit
+int 1
+b main_l41
+main_l27:
+byte 0x68
+app_global_get
+int 0
+==
+// MANDATE_HALTED
+assert
+txn Sender
+byte 0x616b
+app_global_get
+==
+// NOT_AGENT
+assert
+txna ApplicationArgs 2
+btoi
+int 0
+>
+// ZERO_AMOUNT
+assert
+txna ApplicationArgs 2
+btoi
+byte 0x6d78
+app_global_get
+<=
+// EXCEEDS_MAX_PER_TX
+assert
+txna ApplicationArgs 1
+byte 0x7472
+app_global_get
+!=
+byte 0x7765
+app_global_get
+int 1
+==
+&&
+bnz main_l39
+main_l28:
+txna ApplicationArgs 1
+byte 0x7472
+app_global_get
+==
+bnz main_l38
+txna ApplicationArgs 2
+btoi
+byte 0x746c
+app_global_get
++
+main_l30:
+store 2
+global LatestTimestamp
+byte 0x7773
+app_global_get
+-
+int 600
+>=
+bnz main_l37
+main_l31:
+byte 0x7778
+app_global_get
+load 2
++
+store 3
+load 3
+byte 0x7663
+app_global_get
+<=
+// VELOCITY_CAP_EXCEEDED
+assert
+global LatestTimestamp
+byte 0x6473
+app_global_get
+-
+int 86400
+>=
+bnz main_l36
+main_l32:
+byte 0x6479
+app_global_get
+load 2
++
+store 4
+load 4
+byte 0x6463
+app_global_get
+<=
+// DAILY_CAP_EXCEEDED
+assert
+byte 0x7778
+load 3
+app_global_put
+byte 0x6479
+load 4
+app_global_put
+txna ApplicationArgs 1
+byte 0x7472
+app_global_get
+==
+bnz main_l35
+itxn_begin
+int axfer
+itxn_field TypeEnum
+txna ApplicationArgs 1
+itxn_field AssetReceiver
+txna ApplicationArgs 2
+btoi
+itxn_field AssetAmount
+byte 0x7569
+app_global_get
+itxn_field XferAsset
+int 0
+itxn_field Fee
+itxn_next
+int axfer
+itxn_field TypeEnum
+byte 0x7472
+app_global_get
+itxn_field AssetReceiver
+byte 0x746c
+app_global_get
+itxn_field AssetAmount
+byte 0x7569
+app_global_get
+itxn_field XferAsset
+int 0
+itxn_field Fee
+itxn_submit
+main_l34:
+int 1
+b main_l41
+main_l35:
+itxn_begin
+int axfer
+itxn_field TypeEnum
+byte 0x7472
+app_global_get
+itxn_field AssetReceiver
+txna ApplicationArgs 2
+btoi
+itxn_field AssetAmount
+byte 0x7569
+app_global_get
+itxn_field XferAsset
+int 0
+itxn_field Fee
+itxn_submit
+b main_l34
+main_l36:
+byte 0x6473
+global LatestTimestamp
+app_global_put
+byte 0x6479
+int 0
+app_global_put
+b main_l32
+main_l37:
+byte 0x7773
+global LatestTimestamp
+app_global_put
+byte 0x7778
+int 0
+app_global_put
+b main_l31
+main_l38:
+txna ApplicationArgs 2
+btoi
+b main_l30
+main_l39:
+txna ApplicationArgs 1
+box_len
+store 1
+store 0
+load 1
+// RECIPIENT_NOT_WHITELISTED
+assert
+b main_l28
+main_l40:
+txn NumAppArgs
+int 10
+==
+assert
+byte 0x616b
+txna ApplicationArgs 1
+app_global_put
+byte 0x6d77
+txna ApplicationArgs 2
+app_global_put
+byte 0x7472
+txna ApplicationArgs 3
+app_global_put
+byte 0x746c
+txna ApplicationArgs 4
+btoi
+app_global_put
+byte 0x7569
+txna ApplicationArgs 5
+btoi
+app_global_put
+byte 0x6669
+txna ApplicationArgs 9
+btoi
+app_global_put
+byte 0x6d78
+txna ApplicationArgs 6
+btoi
+app_global_put
+byte 0x7663
+txna ApplicationArgs 7
+btoi
+app_global_put
+byte 0x6463
+txna ApplicationArgs 8
+btoi
+app_global_put
+byte 0x76
+int 1
+app_global_put
+byte 0x68
+int 0
+app_global_put
+byte 0x7765
+int 0
+app_global_put
+byte 0x7773
+global LatestTimestamp
+app_global_put
+byte 0x7778
+int 0
+app_global_put
+byte 0x6473
+global LatestTimestamp
+app_global_put
+byte 0x6479
+int 0
+app_global_put
+int 1
+main_l41:
+return

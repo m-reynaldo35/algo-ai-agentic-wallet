@@ -156,14 +156,12 @@ def set_programs(client: algod.AlgodClient, private_key: str, address: str):
         import hashlib
         return hashlib.new("sha512_256", sig.encode()).digest()[:4]
 
-    # ARC-4 encoding for byte[] includes a 2-byte big-endian length prefix
-    def encode_bytes(b: bytes) -> bytes:
-        return len(b).to_bytes(2, "big") + b
-
+    # Pass raw program bytes — the factory TEAL stores ApplicationArgs[1] directly
+    # in the box without stripping any prefix, so we must NOT add an ARC-4 length prefix.
     app_args = [
         method_selector("set_programs(byte[],byte[])void"),
-        encode_bytes(approval_bytes),
-        encode_bytes(clear_bytes),
+        approval_bytes,
+        clear_bytes,
     ]
 
     txn = transaction.ApplicationCallTxn(
@@ -205,6 +203,8 @@ def create_agent(
         return hashlib.new("sha512_256", sig.encode()).digest()[:4]
 
     params = client.suggested_params()
+    params.flat_fee = True
+    params.fee = 2000  # outer (1000) + inner app-create (1000) — pooled
 
     app_args = [
         method_selector("create_agent(address,address,uint64,uint64,uint64)uint64"),
@@ -232,7 +232,8 @@ def create_agent(
     # App ID is in the inner transaction
     inner    = result.get("inner-txns", [{}])[0]
     app_id   = inner.get("application-index", 0)
-    app_addr = transaction.get_application_address(app_id)
+    from algosdk import logic as algo_logic
+    app_addr = algo_logic.get_application_address(app_id)
 
     print(f"  MandateContract deployed: app_id = {app_id}")
     print(f"  Application address (deposit USDC + ALGO here): {app_addr}")

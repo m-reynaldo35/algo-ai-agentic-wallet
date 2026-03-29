@@ -22,8 +22,13 @@ import { logger }         from "../lib/logger.js";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
-const FACTORY_APP_ID    = Number(process.env.MANDATE_FACTORY_APP_ID ?? "0");
-const APPROVAL_HASH     = process.env.MANDATE_CONTRACT_APPROVAL_HASH ?? "";
+// MANDATE_CONTRACT_APPROVAL_HASH is the primary provenance check — SHA-256 of
+// the compiled approval program bytes. Required in production.
+// MANDATE_FACTORY_APP_ID is an optional belt-and-braces secondary check. Do NOT
+// use it as the primary: the fi global state field is self-reported (any caller
+// can pass any value as application_args[9] at create time).
+const APPROVAL_HASH  = process.env.MANDATE_CONTRACT_APPROVAL_HASH ?? "";
+const FACTORY_APP_ID = Number(process.env.MANDATE_FACTORY_APP_ID ?? "0");
 
 // Cache TTL for factory-membership lookups (app state doesn't change often)
 const PROVENANCE_CACHE_TTL_S = 60 * 60; // 1 hour
@@ -158,12 +163,23 @@ interface ProvenanceResult {
   error?: string;
 }
 
+/**
+ * Verify that appId was deployed with the known MandateContract bytecode.
+ *
+ * Primary check (required): SHA-256 hash of the approval program bytes.
+ *   MANDATE_CONTRACT_APPROVAL_HASH must be set. Hash verification checks
+ *   actual on-chain bytecode — it cannot be faked.
+ *
+ * Secondary check (optional belt-and-braces): factory_id global state.
+ *   Only runs when MANDATE_FACTORY_APP_ID is also set. Note: the fi field
+ *   is self-reported at create time (application_args[9]) so it is NOT
+ *   sufficient as a standalone check — used only to add defence-in-depth
+ *   after the hash has already passed.
+ *
+ * Fail closed: if MANDATE_CONTRACT_APPROVAL_HASH is not configured, all
+ * payments are rejected. Set it from `python deploy.py set-programs` output.
+ */
 async function checkFactoryProvenance(appId: number): Promise<ProvenanceResult> {
-  if (!FACTORY_APP_ID) {
-    // Factory not configured — fall back to approval program hash check
-    return checkApprovalHash(appId);
-  }
-
   const cacheKey = `x402:mandate:provenance:${appId}`;
   const redis    = getRedis();
 
@@ -172,38 +188,58 @@ async function checkFactoryProvenance(appId: number): Promise<ProvenanceResult> 
     try {
       const cached = await redis.get<string>(cacheKey);
       if (cached === "ok")   return { valid: true };
-      if (cached === "fail") return { valid: false, error: `App ${appId} not from MandateFactory` };
+      if (cached === "fail") return { valid: false, error: `App ${appId} failed provenance check` };
     } catch { /* non-fatal cache miss */ }
   }
 
-  // Read app state from Algorand
+  // ── Primary: SHA-256 approval program hash ─────────────────────────────
+  if (!APPROVAL_HASH) {
+    // Fail closed — operator must set MANDATE_CONTRACT_APPROVAL_HASH
+    return {
+      valid: false,
+      error: "MANDATE_CONTRACT_APPROVAL_HASH is not configured. Set it from `python deploy.py set-programs` output.",
+    };
+  }
+
   try {
+    const { createHash } = await import("crypto");
     const algod   = getAlgodClient();
     const appInfo = await algod.getApplicationByID(appId).do() as unknown as {
-      params?: { "creator"?: string; "global-state"?: Array<{ key: string; value: { bytes?: string; uint?: number } }> }
+      params?: {
+        "approval-program"?: string;
+        "global-state"?: Array<{ key: string; value: { bytes?: string; uint?: number } }>;
+      }
     };
 
-    const globalState = appInfo?.params?.["global-state"] ?? [];
+    // Check approval program hash
+    const programB64   = appInfo?.params?.["approval-program"] ?? "";
+    const programBytes = Buffer.from(programB64, "base64");
+    const hash         = createHash("sha256").update(programBytes).digest("hex");
 
-    // Look for KEY_FACTORY_ID ("fi") in global state
-    // The factory_app_id was written by MandateContract.handle_create()
-    const fiEntry = globalState.find((e) => {
-      const k = Buffer.from(e.key, "base64").toString();
-      return k === "fi";
-    });
-
-    if (!fiEntry) {
+    if (hash !== APPROVAL_HASH) {
       await cacheProvenance(redis, cacheKey, false);
-      return { valid: false, error: `App ${appId} has no factory_id field — not a MandateContract` };
+      return { valid: false, error: `App ${appId} approval program hash mismatch — not a recognised MandateContract` };
     }
 
-    const storedFactoryId = fiEntry.value?.uint ?? 0;
-    if (storedFactoryId !== FACTORY_APP_ID) {
-      await cacheProvenance(redis, cacheKey, false);
-      return {
-        valid: false,
-        error: `App ${appId} factory_id ${storedFactoryId} ≠ expected ${FACTORY_APP_ID}`,
-      };
+    // ── Secondary (optional): factory_id global state ─────────────────────
+    // Belt-and-braces only. Hash already confirmed the bytecode is correct.
+    if (FACTORY_APP_ID) {
+      const globalState = appInfo?.params?.["global-state"] ?? [];
+      const fiEntry = globalState.find((e) => Buffer.from(e.key, "base64").toString() === "fi");
+      const storedFactoryId = fiEntry?.value?.uint ?? 0;
+
+      if (storedFactoryId !== FACTORY_APP_ID) {
+        logger.warn(
+          { appId, storedFactoryId, expectedFactoryId: FACTORY_APP_ID },
+          "[MandateVerifier] app hash matches but factory_id mismatch — contract may have been deployed manually",
+        );
+        // Fail closed: correct bytecode but wrong factory lineage is suspicious
+        await cacheProvenance(redis, cacheKey, false);
+        return {
+          valid: false,
+          error: `App ${appId} factory_id ${storedFactoryId} ≠ expected ${FACTORY_APP_ID}`,
+        };
+      }
     }
 
     await cacheProvenance(redis, cacheKey, true);
@@ -212,32 +248,7 @@ async function checkFactoryProvenance(appId: number): Promise<ProvenanceResult> 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error({ appId, err: msg }, "[MandateVerifier] provenance check failed");
-    // Fail closed — unknown provenance = reject
     return { valid: false, error: `Cannot verify app ${appId} provenance: ${msg}` };
-  }
-}
-
-async function checkApprovalHash(appId: number): Promise<ProvenanceResult> {
-  if (!APPROVAL_HASH) {
-    return { valid: false, error: "MANDATE_FACTORY_APP_ID or MANDATE_CONTRACT_APPROVAL_HASH must be set" };
-  }
-  try {
-    const { createHash } = await import("crypto");
-    const algod    = getAlgodClient();
-    const appInfo  = await algod.getApplicationByID(appId).do() as unknown as {
-      params?: { "approval-program"?: string }
-    };
-    const programB64 = appInfo?.params?.["approval-program"] ?? "";
-    const programBytes = Buffer.from(programB64, "base64");
-    const hash = createHash("sha256").update(programBytes).digest("hex");
-
-    if (hash !== APPROVAL_HASH) {
-      return { valid: false, error: `App ${appId} approval program hash mismatch` };
-    }
-    return { valid: true };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { valid: false, error: `Cannot verify approval hash for app ${appId}: ${msg}` };
   }
 }
 

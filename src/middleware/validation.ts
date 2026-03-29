@@ -1,13 +1,6 @@
 import algosdk from "algosdk";
 import { config } from "../config.js";
-import { getAlgodClient } from "../network/nodely.js";
-import { getRedis } from "../services/redis.js";
 import type { SandboxExport } from "../services/transaction.js";
-
-// Auth-addr cache TTL — 5 minutes. Auth-addrs only change on deliberate
-// rekeying; 5 minutes of residual cache is safe. Any stale-cache txn will
-// be rejected by the Algorand network at settlement before funds move.
-const AUTH_ADDR_CACHE_TTL_S = 5 * 60;
 
 /**
  * Pre-Flight Validation Gatekeeper
@@ -20,8 +13,11 @@ const AUTH_ADDR_CACHE_TTL_S = 5 * 60;
  * and aborts the pipeline before any signing occurs.
  *
  * Rules enforced:
- *   Rule 1: Exactly one ASA transfer of the correct toll amount
- *           to the TREASURY_ADDRESS exists in the group.
+ *   Rule 1: (Rocca custodial agents only — routing.authAddr present)
+ *           Exactly one ASA transfer of the correct toll amount to
+ *           TREASURY_ADDRESS exists in the group. Skipped for mandate
+ *           agents: toll is already paid by the MandateContract inner
+ *           txn before the SandboxExport is generated.
  *   Rule 2: All transactions in the group are from the declared
  *           requiredSigner address.
  */
@@ -35,7 +31,6 @@ export interface ValidationResult {
   rules: {
     tollVerified: boolean;
     signerVerified: boolean;
-    authAddrVerified: boolean;
   };
   errors: string[];
 }
@@ -83,49 +78,57 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
     }
   }
 
-  // ── Rule 1: Verify the x402 Toll ──────────────────────────────
-  // Exactly one transaction must be an ASA transfer of EXPECTED_TOLL
-  // micro-USDC (ASA USDC_ASSET_ID) to the TREASURY_ADDRESS.
-  let tollVerifiedCount = 0;
-  let tollCount = 0;
+  // ── Rule 1: Verify the x402 Toll (Rocca custodial agents only) ───
+  // Only runs when routing.authAddr is present — that field is set by
+  // the Rocca constructAtomicGroup path and indicates the toll transfer
+  // must appear as an explicit transaction in the group.
+  //
+  // For mandate agents (Sprint O), the toll was already paid by the
+  // MandateContract.pay() inner transaction before this SandboxExport
+  // was generated. No toll transaction will exist in the group.
+  let tollVerified = true;
 
-  for (let i = 0; i < transactions.length; i++) {
-    const txn = transactions[i];
-    if (txn.type !== algosdk.TransactionType.axfer) continue;
+  if (routing.authAddr) {
+    let tollVerifiedCount = 0;
+    let tollCount = 0;
 
-    const axfer = txn.assetTransfer;
-    if (!axfer) continue;
+    for (let i = 0; i < transactions.length; i++) {
+      const txn = transactions[i];
+      if (txn.type !== algosdk.TransactionType.axfer) continue;
 
-    // Check if this is a toll transaction
-    if (axfer.assetIndex === USDC_ASSET_ID) {
-      tollCount++;
+      const axfer = txn.assetTransfer;
+      if (!axfer) continue;
 
-      const receiverOk = axfer.receiver.toString() === TREASURY_ADDRESS;
-      const amountOk   = axfer.amount === EXPECTED_TOLL;
+      if (axfer.assetIndex === USDC_ASSET_ID) {
+        tollCount++;
 
-      if (!receiverOk) {
-        errors.push(
-          `Rule 1: Toll receiver mismatch on txn [${i}]. Expected ${TREASURY_ADDRESS}, got ${axfer.receiver.toString()}`,
-        );
-      }
-      if (!amountOk) {
-        errors.push(
-          `Rule 1: Toll amount mismatch on txn [${i}]. Expected ${EXPECTED_TOLL} micro-USDC, got ${axfer.amount}`,
-        );
-      }
-      if (receiverOk && amountOk) {
-        tollVerifiedCount++;
+        const receiverOk = axfer.receiver.toString() === TREASURY_ADDRESS;
+        const amountOk   = axfer.amount === EXPECTED_TOLL;
+
+        if (!receiverOk) {
+          errors.push(
+            `Rule 1: Toll receiver mismatch on txn [${i}]. Expected ${TREASURY_ADDRESS}, got ${axfer.receiver.toString()}`,
+          );
+        }
+        if (!amountOk) {
+          errors.push(
+            `Rule 1: Toll amount mismatch on txn [${i}]. Expected ${EXPECTED_TOLL} micro-USDC, got ${axfer.amount}`,
+          );
+        }
+        if (receiverOk && amountOk) {
+          tollVerifiedCount++;
+        }
       }
     }
-  }
 
-  const tollVerified = tollVerifiedCount > 0 && tollVerifiedCount === tollCount;
+    tollVerified = tollVerifiedCount > 0 && tollVerifiedCount === tollCount;
 
-  const expectedTollCount = sandboxExport.batchSize ?? 1;
-  if (tollCount === 0) {
-    errors.push("Rule 1: No USDC ASA transfer found in atomic group");
-  } else if (tollCount !== expectedTollCount) {
-    errors.push(`Rule 1: Expected ${expectedTollCount} USDC toll transfer(s) for batch size ${expectedTollCount}, found ${tollCount}`);
+    const expectedTollCount = sandboxExport.batchSize ?? 1;
+    if (tollCount === 0) {
+      errors.push("Rule 1: No USDC ASA transfer found in atomic group");
+    } else if (tollCount !== expectedTollCount) {
+      errors.push(`Rule 1: Expected ${expectedTollCount} USDC toll transfer(s) for batch size ${expectedTollCount}, found ${tollCount}`);
+    }
   }
 
   // ── Rule 2: Verify all transactions are from the required signer ──
@@ -143,82 +146,12 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
     }
   }
 
-  // ── Rule 3: Verify on-chain auth-addr (rekey relationship) ───────
-  // For every unique sender in the group, confirm that their on-chain
-  // auth-addr equals routing.authAddr (the Rocca cohort signer).
-  // This proves the sender is a registered agent rekeyed to our signer
-  // and prevents unregistered accounts from submitting payment requests.
-  //
-  // Only runs when routing.authAddr is present (set by constructAtomicGroup).
-  // Skipped silently if authAddr is missing for backwards compatibility.
-  let authAddrVerified = true;
-
-  if (routing.authAddr) {
-    const uniqueSenders = [...new Set(
-      transactions.map((txn) => txn.sender.toString()),
-    )];
-
-    for (const sender of uniqueSenders) {
-      try {
-        // ── Cache lookup (x402:authaddr:{sender}, 5-min TTL) ──────
-        const redis = getRedis();
-        const cacheKey = `x402:authaddr:${sender}`;
-        let onChainAuthAddr: string | null = null;
-        let cacheHit = false;
-
-        if (redis) {
-          const cached = await redis.get(cacheKey);
-          if (cached !== null && cached !== undefined) {
-            // Empty string stored for "no auth-addr"
-            onChainAuthAddr = (cached as string) || null;
-            cacheHit = true;
-          }
-        }
-
-        if (!cacheHit) {
-          const accountInfo = await getAlgodClient().accountInformation(sender).do();
-          onChainAuthAddr = accountInfo.authAddr?.toString() ?? null;
-
-          // Cache the result; empty string represents "no auth-addr"
-          if (redis) {
-            redis.set(cacheKey, onChainAuthAddr ?? "", { ex: AUTH_ADDR_CACHE_TTL_S }).catch(() => {});
-          }
-        }
-
-        if (!onChainAuthAddr) {
-          // The Rocca signer itself is the top-level authority — no rekey required.
-          // All other un-rekeyed accounts are rejected.
-          if (sender === routing.authAddr) continue;
-          authAddrVerified = false;
-          errors.push(
-            `Rule 3: Sender ${sender} has no auth-addr — account is not rekeyed to Rocca signer`,
-          );
-        } else if (onChainAuthAddr !== routing.authAddr) {
-          authAddrVerified = false;
-          errors.push(
-            `Rule 3: Sender ${sender} auth-addr mismatch. Expected ${routing.authAddr}, got ${onChainAuthAddr}`,
-          );
-        }
-      } catch (err) {
-        // Treat lookup failure as a hard validation error — we must not sign
-        // for an account whose rekey status we cannot confirm.
-        const msg = err instanceof Error ? err.message : "lookup error";
-        authAddrVerified = false;
-        errors.push(`Rule 3: Cannot verify auth-addr for ${sender}: ${msg}`);
-      }
-    }
-
-    console.log(`[Validation] Rule 3 (auth-addr): verified=${authAddrVerified}`);
-  } else {
-    console.warn(`[Validation] Rule 3 skipped — routing.authAddr not set`);
-  }
-
   // ── Verdict ───────────────────────────────────────────────────
-  const valid = tollVerified && signerVerified && authAddrVerified && errors.length === 0;
+  const valid = tollVerified && signerVerified && errors.length === 0;
 
   const result: ValidationResult = {
     valid,
-    rules: { tollVerified, signerVerified, authAddrVerified },
+    rules: { tollVerified, signerVerified },
     errors,
   };
 
@@ -229,6 +162,6 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
     );
   }
 
-  console.log(`[Validation] PASSED: toll=${tollVerified}, signer=${signerVerified}, authAddr=${authAddrVerified}`);
+  console.log(`[Validation] PASSED: toll=${tollVerified} (${routing.authAddr ? "checked" : "skipped — mandate agent"}), signer=${signerVerified}`);
   return result;
 }

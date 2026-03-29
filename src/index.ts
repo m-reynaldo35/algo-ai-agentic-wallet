@@ -76,6 +76,7 @@ import {
   issueAdminPeraChallenge, verifyAdminPeraSignature, consumeAdminPeraSession,
 }                                        from "./auth/adminAuth.js";
 import { evaluateMandate }               from "./services/mandateEngine.js";
+import { createMandateAgent }            from "./services/mandateFactory.js";
 import a2aRouter                         from "./routes/a2a.js";
 import { getRecentSecurityEvents, emitSecurityEvent, querySecurityEvents } from "./services/securityAudit.js";
 import { validateAuthToken } from "./auth/liquidAuth.js";
@@ -1355,15 +1356,130 @@ app.post("/api/agents/create", requirePortalAuth, async (req, res) => {
   }
 });
 
-// ── Mandate-Architecture Registration ───────────────────────────
+// ── Mandate-Architecture Agent Creation (portal-managed) ────────
 //
-// For non-custodial agents using the on-chain AVM mandate architecture.
-// The agent already holds their own Ed25519 key and has a MandateContract
-// deployed via `python deploy.py create-agent`. No on-chain operations are
-// needed here — we just record the agentId → address → mandateAppId mapping.
+// POST /api/agents/create-mandate
+//   Calls MandateFactory.create_agent() on-chain via the operator wallet.
+//   The operator is set as the contract's master wallet, allowing the
+//   server to call opt_in_usdc() automatically once the contract is funded.
 //
-// Unlike register-existing, this route does NOT rekey the wallet to Rocca
-// and does NOT perform a USDC opt-in. The MandateContract holds the USDC.
+//   Body:  { agentId, agentKey, maxPerTx?, velocityCap?, dailyCap? }
+//   Returns: { agentId, address, mandateAppId, appAddress, deployTxid }
+//
+// Default caps (in micro-USDC):
+//   maxPerTx:    1_000_000  ($1.00)
+//   velocityCap: 5_000_000  ($5.00 / 10 min)
+//   dailyCap:   50_000_000  ($50.00 / day)
+
+const DEFAULT_MAX_PER_TX    = 1_000_000;
+const DEFAULT_VELOCITY_CAP  = 5_000_000;
+const DEFAULT_DAILY_CAP     = 50_000_000;
+const ALGO_ADDR_RE_CM       = /^[A-Z2-7]{58}$/;
+
+app.post("/api/agents/create-mandate", requirePortalAuth, async (req, res) => {
+  try {
+    const {
+      agentId,
+      agentKey,
+      maxPerTx    = DEFAULT_MAX_PER_TX,
+      velocityCap = DEFAULT_VELOCITY_CAP,
+      dailyCap    = DEFAULT_DAILY_CAP,
+      platform,
+      ownerAddress,
+    } = req.body as {
+      agentId:      unknown;
+      agentKey:     unknown;
+      maxPerTx?:    number;
+      velocityCap?: number;
+      dailyCap?:    number;
+      platform?:    string;
+      ownerAddress?: string;
+    };
+
+    // ── Validate inputs ────────────────────────────────────────────
+    if (!agentId || typeof agentId !== "string") {
+      res.status(400).json({ error: "Missing required field: agentId" });
+      return;
+    }
+    if (!agentKey || typeof agentKey !== "string" || !ALGO_ADDR_RE_CM.test(agentKey)) {
+      res.status(400).json({ error: "Missing or invalid field: agentKey (must be a 58-char Algorand address)" });
+      return;
+    }
+    if (typeof maxPerTx !== "number" || maxPerTx <= 0) {
+      res.status(400).json({ error: "maxPerTx must be a positive integer (micro-USDC)" });
+      return;
+    }
+    if (typeof velocityCap !== "number" || velocityCap <= 0) {
+      res.status(400).json({ error: "velocityCap must be a positive integer (micro-USDC)" });
+      return;
+    }
+    if (typeof dailyCap !== "number" || dailyCap <= 0 || velocityCap > dailyCap) {
+      res.status(400).json({ error: "dailyCap must be a positive integer ≥ velocityCap (micro-USDC)" });
+      return;
+    }
+
+    try { validateAgentId(agentId); } catch (e) {
+      res.status(400).json({ error: e instanceof Error ? e.message : "Invalid agentId" });
+      return;
+    }
+
+    // ── Duplicate check ────────────────────────────────────────────
+    const existing = await getAgent(agentId);
+    if (existing) {
+      res.status(409).json({ error: `Agent already registered: ${agentId}` });
+      return;
+    }
+
+    // ── Deploy MandateContract via factory ─────────────────────────
+    const { mandateAppId, appAddress, txid: deployTxid } = await createMandateAgent(
+      agentKey,
+      maxPerTx,
+      velocityCap,
+      dailyCap,
+    );
+
+    // ── Store agent record ─────────────────────────────────────────
+    const record = {
+      agentId,
+      address:              agentKey,
+      cohort:               assignCohort(agentId),
+      authAddr:             agentKey,   // non-custodial — agent is its own auth
+      custody:              "user" as const,
+      custodyVersion:       0,
+      mandateAppId,
+      mandateOperatorMaster: true,       // operator = master wallet → server can call opt_in_usdc()
+      platform,
+      ownerAddress,
+      createdAt:            new Date().toISOString(),
+      registrationTxnId:    deployTxid,
+      status:               "registered" as const, // poller sets "active" once USDC arrives
+    };
+
+    await storeAgent(record);
+
+    res.status(201).json({
+      agentId,
+      address:     agentKey,
+      mandateAppId,
+      appAddress,
+      deployTxid,
+      nextSteps: [
+        `Send ≥0.5 ALGO to ${appAddress} (contract MBR + fee reserve).`,
+        `Server will call opt_in_usdc() automatically within ~10s of the deposit confirming.`,
+        `Send USDC to ${appAddress} — agent activates automatically when USDC balance > 0.`,
+      ],
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("[agents/create-mandate]", message);
+    res.status(500).json({ error: "Mandate agent creation failed", detail: message });
+  }
+});
+
+// ── Mandate-Architecture Registration (self-deployed) ────────────
+//
+// For agents that deployed their own MandateContract via deploy.py.
+// No on-chain operations — just records the agentId → address → mandateAppId.
 //
 // POST /api/agents/register-mandate
 //   Body: { agentId, address, mandateAppId }

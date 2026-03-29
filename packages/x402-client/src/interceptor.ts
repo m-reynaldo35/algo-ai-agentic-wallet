@@ -191,13 +191,28 @@ async function buildMandatePayCall(
 
   // AVM fires 2 inner asset transfers — budget outer + 2 inner txn fees.
   // In algosdk v3, flatFee and fee are properties on suggestedParams.
-  const sp = { ...suggestedParams, fee: 3_000n, flatFee: true };
+  //
+  // Tighten the validity window to 15 rounds (~53s). Algorand's default is
+  // ~1000 rounds (~3500s) which would be a wide replay window. 15 rounds
+  // matches the old nonce-guard expiry and limits the replay surface to
+  // the settlement latency + reasonable clock skew.
+  const sp = {
+    ...suggestedParams,
+    fee:       3_000n,
+    flatFee:   true,
+    lastValid: BigInt(suggestedParams.firstValid) + 15n,
+  };
+
+  // MandateContract.pay() fires inner asset transfers — the outer txn must
+  // declare the USDC ASA so the AVM can resolve it in the inner transactions.
+  const usdcAsaId = payJson.network.chain === "mainnet" ? 31_566_704 : 10_458_941;
 
   const txn = algosdk.makeApplicationCallTxnFromObject({
     sender:          senderAddress,
     appIndex:        mandateAppId,
     onComplete:      algosdk.OnApplicationComplete.NoOpOC,
     appArgs:         [PAY_SELECTOR, treasuryBytes, amountBuf],
+    foreignAssets:   [usdcAsaId],
     suggestedParams: sp,
   });
 

@@ -22,11 +22,12 @@ import "dotenv/config";
 
 // ── Environment ────────────────────────────────────────────────
 
-const API_URL       = (process.env.API_URL ?? "https://api.ai-agentic-wallet.com").replace(/\/+$/, "");
-const MNEMONIC      = process.env.ALGO_MNEMONIC;
-const PORTAL_SECRET = process.env.PORTAL_API_SECRET;
-const CITY          = process.env.CITY ?? "Lagos";
-const EXPLORER_BASE = "https://explorer.perawallet.app/tx";
+const API_URL        = (process.env.API_URL ?? "https://api.ai-agentic-wallet.com").replace(/\/+$/, "");
+const MNEMONIC       = process.env.ALGO_MNEMONIC;
+const PORTAL_SECRET  = process.env.PORTAL_API_SECRET;
+const CITY           = process.env.CITY ?? "Lagos";
+const EXPLORER_BASE  = "https://explorer.perawallet.app/tx";
+const MANDATE_APP_ID = parseInt(process.env.MANDATE_APP_ID ?? "0", 10);
 
 if (!MNEMONIC) {
   console.error("[FATAL] ALGO_MNEMONIC is required.");
@@ -36,11 +37,15 @@ if (!PORTAL_SECRET) {
   console.error("[FATAL] PORTAL_API_SECRET is required to poll job status.");
   process.exit(1);
 }
+if (!MANDATE_APP_ID) {
+  console.error("[FATAL] MANDATE_APP_ID is required — set the MandateContract app ID.");
+  process.exit(1);
+}
 
 const account = algosdk.mnemonicToSecretKey(MNEMONIC);
 const SENDER  = account.addr.toString();
 
-const client = new AlgoAgentClient({ baseUrl: API_URL, privateKey: account.sk });
+const client = new AlgoAgentClient({ baseUrl: API_URL, privateKey: account.sk, mandateAppId: MANDATE_APP_ID });
 
 // ── Banner ─────────────────────────────────────────────────────
 

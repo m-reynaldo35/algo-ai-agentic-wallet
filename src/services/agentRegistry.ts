@@ -119,6 +119,13 @@ export interface AgentRecord {
    * Absent for legacy Rocca custodial agents.
    */
   mandateAppId?: number;
+  /**
+   * True when the server's operator wallet is the MandateContract master wallet.
+   * Set for agents created via POST /api/agents/create-mandate.
+   * Allows the activation poller to call opt_in_usdc() automatically once
+   * the contract has been funded with ALGO.
+   */
+  mandateOperatorMaster?: boolean;
 }
 
 // ── Rotation Batch ────────────────────────────────────────────────

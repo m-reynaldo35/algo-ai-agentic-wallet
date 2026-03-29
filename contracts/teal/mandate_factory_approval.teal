@@ -1,0 +1,303 @@
+#pragma version 9
+txn ApplicationID
+int 0
+==
+bnz main_l24
+txn ApplicationID
+int 0
+!=
+txn OnCompletion
+int NoOp
+==
+&&
+bnz main_l7
+txn OnCompletion
+int UpdateApplication
+==
+bnz main_l6
+int 1
+bnz main_l5
+err
+main_l5:
+int 0
+b main_l25
+main_l6:
+txn Sender
+global CreatorAddress
+==
+assert
+int 1
+b main_l25
+main_l7:
+txna ApplicationArgs 0
+method "set_programs(byte[],byte[])void"
+==
+bnz main_l19
+txna ApplicationArgs 0
+method "create_agent(address,address,uint64,uint64,uint64)uint64"
+==
+bnz main_l18
+txna ApplicationArgs 0
+method "update_toll(uint64)void"
+==
+bnz main_l17
+txna ApplicationArgs 0
+method "update_treasury(address)void"
+==
+bnz main_l16
+txna ApplicationArgs 0
+method "pause()void"
+==
+bnz main_l15
+txna ApplicationArgs 0
+method "unpause()void"
+==
+bnz main_l14
+err
+main_l14:
+txn Sender
+global CreatorAddress
+==
+assert
+byte 0x70
+int 0
+app_global_put
+int 1
+b main_l25
+main_l15:
+txn Sender
+global CreatorAddress
+==
+assert
+byte 0x70
+int 1
+app_global_put
+int 1
+b main_l25
+main_l16:
+txn Sender
+global CreatorAddress
+==
+// NOT_CREATOR
+assert
+txna ApplicationArgs 1
+len
+int 32
+==
+// INVALID_ADDRESS
+assert
+byte 0x7472
+txna ApplicationArgs 1
+app_global_put
+int 1
+b main_l25
+main_l17:
+txn Sender
+global CreatorAddress
+==
+// NOT_CREATOR
+assert
+txna ApplicationArgs 1
+btoi
+int 0
+>
+// ZERO_TOLL
+assert
+byte 0x746c
+txna ApplicationArgs 1
+btoi
+app_global_put
+int 1
+b main_l25
+main_l18:
+byte 0x70
+app_global_get
+int 0
+==
+// FACTORY_PAUSED
+assert
+byte 0x5f5f617070726f76616c5f5f
+box_get
+store 5
+store 4
+load 5
+// PROGRAMS_NOT_SET
+assert
+byte 0x5f5f636c6561725f5f
+box_get
+store 7
+store 6
+load 7
+// PROGRAMS_NOT_SET
+assert
+txna ApplicationArgs 3
+btoi
+int 0
+>
+// INVALID_MAX_PER_TX
+assert
+txna ApplicationArgs 4
+btoi
+int 0
+>
+// INVALID_VELOCITY_CAP
+assert
+txna ApplicationArgs 5
+btoi
+int 0
+>
+// INVALID_DAILY_CAP
+assert
+txna ApplicationArgs 4
+btoi
+txna ApplicationArgs 5
+btoi
+<=
+// VELOCITY_EXCEEDS_DAILY
+assert
+itxn_begin
+int appl
+itxn_field TypeEnum
+load 4
+itxn_field ApprovalProgram
+load 6
+itxn_field ClearStateProgram
+int 13
+itxn_field GlobalNumUint
+int 4
+itxn_field GlobalNumByteSlice
+method "create(address,address,address,uint64,uint64,uint64,uint64,uint64,uint64)void"
+itxn_field ApplicationArgs
+txna ApplicationArgs 1
+itxn_field ApplicationArgs
+txna ApplicationArgs 2
+itxn_field ApplicationArgs
+byte 0x7472
+app_global_get
+itxn_field ApplicationArgs
+byte 0x746c
+app_global_get
+itob
+itxn_field ApplicationArgs
+byte 0x7569
+app_global_get
+itob
+itxn_field ApplicationArgs
+txna ApplicationArgs 3
+btoi
+itob
+itxn_field ApplicationArgs
+txna ApplicationArgs 4
+btoi
+itob
+itxn_field ApplicationArgs
+txna ApplicationArgs 5
+btoi
+itob
+itxn_field ApplicationArgs
+global CurrentApplicationID
+itob
+itxn_field ApplicationArgs
+int 0
+itxn_field Fee
+itxn_submit
+itxn CreatedApplicationID
+store 8
+byte 0x6e
+byte 0x6e
+app_global_get
+int 1
++
+app_global_put
+byte "return"
+load 8
+itob
+concat
+log
+int 1
+b main_l25
+main_l19:
+txn Sender
+global CreatorAddress
+==
+// NOT_CREATOR
+assert
+txna ApplicationArgs 1
+len
+int 0
+>
+// EMPTY_APPROVAL
+assert
+txna ApplicationArgs 2
+len
+int 0
+>
+// EMPTY_CLEAR
+assert
+byte 0x5f5f617070726f76616c5f5f
+box_len
+store 1
+store 0
+load 1
+bnz main_l23
+main_l20:
+byte 0x5f5f636c6561725f5f
+box_len
+store 3
+store 2
+load 3
+bnz main_l22
+main_l21:
+byte 0x5f5f617070726f76616c5f5f
+txna ApplicationArgs 1
+len
+box_create
+pop
+byte 0x5f5f617070726f76616c5f5f
+txna ApplicationArgs 1
+box_put
+byte 0x5f5f636c6561725f5f
+txna ApplicationArgs 2
+len
+box_create
+pop
+byte 0x5f5f636c6561725f5f
+txna ApplicationArgs 2
+box_put
+int 1
+b main_l25
+main_l22:
+byte 0x5f5f636c6561725f5f
+box_del
+pop
+b main_l21
+main_l23:
+byte 0x5f5f617070726f76616c5f5f
+box_del
+pop
+b main_l20
+main_l24:
+txn NumAppArgs
+int 4
+==
+assert
+byte 0x7472
+txna ApplicationArgs 1
+app_global_put
+byte 0x746c
+txna ApplicationArgs 2
+btoi
+app_global_put
+byte 0x7569
+txna ApplicationArgs 3
+btoi
+app_global_put
+byte 0x6e
+int 0
+app_global_put
+byte 0x70
+int 0
+app_global_put
+int 1
+main_l25:
+return

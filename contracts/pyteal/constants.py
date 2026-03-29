@@ -12,9 +12,9 @@ SECONDS_PER_10_MIN = 600
 SECONDS_PER_DAY    = 86_400
 
 # ── Global state schema ─────────────────────────────────────────────────────
-# MandateContract: 11 uint64 + 4 byte slices
+# MandateContract: 13 uint64 + 4 byte slices
 # MandateFactory:  4 uint64  + 1 byte slice
-MANDATE_CONTRACT_GLOBAL_UINTS      = 11
+MANDATE_CONTRACT_GLOBAL_UINTS      = 13
 MANDATE_CONTRACT_GLOBAL_BYTE_SLICES = 4
 
 FACTORY_GLOBAL_UINTS       = 4
@@ -33,8 +33,9 @@ KEY_FACTORY_ID   = b"fi"   # deploying factory app ID — provenance proof (uint
 KEY_MAX_PER_TX   = b"mx"   # max micro-USDC per single tx (uint64)
 KEY_VEL_CAP      = b"vc"   # max micro-USDC per 10-min window (uint64)
 KEY_DAILY_CAP    = b"dc"   # max micro-USDC per 24-hour window (uint64)
-KEY_VERSION      = b"v"    # mandate version — monotonic, prevents rollback (uint64)
-KEY_HALTED       = b"h"    # 0 = active, 1 = halted (uint64)
+KEY_VERSION          = b"v"    # mandate version — monotonic, prevents rollback (uint64)
+KEY_HALTED           = b"h"    # 0 = active, 1 = halted (uint64)
+KEY_WHITELIST_ENABLED = b"we"  # 0 = open (any recipient), 1 = strict whitelist (uint64)
 
 # MandateContract runtime velocity state
 KEY_WIN_START    = b"ws"   # unix timestamp of current 10-min window start (uint64)
