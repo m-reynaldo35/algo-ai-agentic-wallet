@@ -207,11 +207,15 @@ async function buildMandatePayCall(
   // declare the USDC ASA so the AVM can resolve it in the inner transactions.
   const usdcAsaId = payJson.network.chain === "mainnet" ? 31_566_704 : 10_458_941;
 
+  // The AVM reads treasury from contract global state ("tr") and sets it as
+  // AssetReceiver in the inner axfer. That account must be declared in the
+  // outer txn's accounts array or the AVM will reject with "unavailable Account".
   const txn = algosdk.makeApplicationCallTxnFromObject({
     sender:          senderAddress,
     appIndex:        mandateAppId,
     onComplete:      algosdk.OnApplicationComplete.NoOpOC,
     appArgs:         [PAY_SELECTOR, treasuryBytes, amountBuf],
+    accounts:        [payJson.payment.payTo],
     foreignAssets:   [usdcAsaId],
     suggestedParams: sp,
   });
