@@ -8,6 +8,9 @@ import { checkExecutionLimits } from "../protection/executionLimiter.js";
 import { getRedis } from "../services/redis.js";
 import { logger } from "../lib/logger.js";
 
+const JOB_KEY_PREFIX = "x402:settlement:job:";
+const JOB_TTL_S      = 86_400; // 24 hours — matches jobStore.ts
+
 /**
  * TTL for the per-agent concurrent-settlement lock (seconds).
  * Comfortably exceeds the submit + confirm path (~5–15s on-chain).
@@ -233,6 +236,30 @@ export async function x402Settle(
 
   req.x402!.settlementJobId   = txid;
   req.x402!.settlementAgentId = agent.agentId;
+
+  // ── Store confirmed job record so /api/jobs/:txid can return status ──
+  // Inline mandate settlements bypass the async job queue, so we write a
+  // synthetic "confirmed" record keyed by txid for client polling.
+  {
+    const redisClient = getRedis();
+    if (redisClient) {
+      const now = new Date().toISOString();
+      const record = {
+        jobId:              txid,
+        agentId:            agent.agentId,
+        sandboxId:          "",
+        signedTransactions: [],
+        network:            "algorand-mainnet",
+        status:             "confirmed",
+        enqueuedAt:         now,
+        updatedAt:          now,
+        txnId:              txid,
+        settledAt:          now,
+      };
+      redisClient.set(`${JOB_KEY_PREFIX}${txid}`, JSON.stringify(record), { ex: JOB_TTL_S })
+        .catch((e) => logger.warn({ err: e }, "[x402Settle] failed to store job record"));
+    }
+  }
 
   // ── Gas advisory headers (best-effort, 1.5s cap) ─────────────────
   // Reports the MandateContract app account ALGO balance.
