@@ -180,7 +180,7 @@ interface ProvenanceResult {
  * payments are rejected. Set it from `python deploy.py set-programs` output.
  */
 async function checkFactoryProvenance(appId: number): Promise<ProvenanceResult> {
-  const cacheKey = `x402:mandate:provenance:v2:${appId}`;
+  const cacheKey = `x402:mandate:provenance:v3:${appId}`;
   const redis    = getRedis();
 
   // Check Redis cache first
