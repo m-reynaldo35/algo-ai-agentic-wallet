@@ -1,0 +1,31 @@
+# Smithery configuration for @algo-wallet/x402-mcp
+# https://smithery.ai
+
+startCommand:
+  type: http
+  configSchema:
+    type: object
+    required:
+      - ALGO_MNEMONIC
+      - X402_AGENT_ID
+      - X402_PORTAL_KEY
+    properties:
+      ALGO_MNEMONIC:
+        type: string
+        description: "25-word Algorand mnemonic of your registered agent wallet (from ai-agentic-wallet.com)"
+      X402_AGENT_ID:
+        type: string
+        description: "Your agent ID registered at ai-agentic-wallet.com"
+      X402_PORTAL_KEY:
+        type: string
+        description: "Portal API key from your dashboard (Dashboard → API Keys)"
+      X402_API_URL:
+        type: string
+        description: "Backend URL — leave blank to use the default production server"
+        default: "https://api.ai-agentic-wallet.com"
+  url: "https://api.ai-agentic-wallet.com/mcp"
+  headers:
+    X-Algo-Mnemonic: "{{ALGO_MNEMONIC}}"
+    X-Agent-Id:      "{{X402_AGENT_ID}}"
+    X-Portal-Key:    "{{X402_PORTAL_KEY}}"
+    X-Api-Url:       "{{X402_API_URL}}"

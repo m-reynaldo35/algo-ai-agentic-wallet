@@ -63,25 +63,29 @@ npx @algo-wallet/x402-cli health
 
 ## 2. Initialize the Client
 
-To create a client, the developer must provide a 64-byte Algorand private key. Generate one with `algosdk.generateAccount()`.
+To create a client, the developer must provide their Algorand private key and the `mandateAppId` of their deployed MandateContract. Both are required.
 
 ```typescript
 import { AlgoAgentClient } from "@algo-wallet/x402-client";
 import algosdk from "algosdk";
 
-// Generate a funded Algorand account (must hold USDC ASA 31566704 on mainnet)
-const account = algosdk.generateAccount();
+// Restore the agent's keypair from its saved mnemonic
+const account = algosdk.mnemonicToSecretKey("word1 word2 ... word25");
 
 const client = new AlgoAgentClient({
   baseUrl: "https://api.ai-agentic-wallet.com",
   privateKey: account.sk,               // 64-byte Uint8Array
+  mandateAppId: 123456789,              // MandateContract application ID — from registration
   slippageBips: 50,                     // 0.5% — safe default
   maxRetries: 2,
   onProgress: (event) => console.log(`[${event.stage}] ${event.message}`),
 });
 ```
 
-**Key constraint:** The account at `account.addr` must be opted into USDC (ASA 31566704) and hold at least 0.01 USDC (10,000 micro-USDC) to pay the x402 toll.
+**Key constraints:**
+- `mandateAppId` is required. Deploy a MandateContract for this agent first (see Section 8).
+- USDC spending power lives in the MandateContract app account — NOT in the agent's own address.
+- The agent's address is the transaction signer. The AVM enforces all spend limits on-chain.
 
 ---
 
@@ -146,7 +150,9 @@ and no data is delivered. There is no way to receive data without the payment be
 
 ## 4. Manual x402 Handshake (Without SDK)
 
-If the developer cannot use the SDK, build the handshake manually:
+If the developer cannot use the SDK, build the handshake manually. The X-PAYMENT header
+is a base64-encoded signed `MandateContract.pay()` application call — a real Algorand
+transaction signed by the agent's own key.
 
 ### Step 1 — Get the 402 Challenge
 
@@ -158,47 +164,47 @@ const bounce = await fetch("https://api.ai-agentic-wallet.com/v1/api/agent-actio
 });
 // bounce.status === 402
 const terms = await bounce.json();
-// terms.payment.payTo     → treasury address
+// terms.payment.payTo     → treasury address (the `pay()` recipient)
 // terms.payment.amount    → toll in micro-USDC
-// terms.payment.asset.id  → USDC ASA ID
 // terms.expires           → ISO 8601 expiry (5 min window)
 ```
 
-### Step 2 — Build the Toll Transaction
+### Step 2 — Build the MandateContract.pay() Application Call
 
 ```typescript
 import algosdk from "algosdk";
 
-const tollTxn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
-  sender: algoAddress,
-  receiver: terms.payment.payTo,
-  amount: BigInt(terms.payment.amount),      // micro-USDC
-  assetIndex: BigInt(terms.payment.asset.id),
-  suggestedParams,
-  note: new Uint8Array(Buffer.from(`x402-toll:${Date.now()}`)),
-});
+// ARC-4 method selector: pay(address,uint64)void
+const PAY_SELECTOR = Buffer.from(
+  algosdk.ABIMethod.fromSignature("pay(address,uint64)void").getSelector(),
+);
 
-algosdk.assignGroupID([tollTxn]);
+const algod = new algosdk.Algodv2("", "https://mainnet-api.4160.nodely.dev", "");
+const suggestedParams = await algod.getTransactionParams().do();
+
+// AVM fires 2 inner asset transfers — budget outer + 2 inner txn fees
+const sp = { ...suggestedParams, fee: 3_000n, flatFee: true };
+
+const treasuryBytes = algosdk.decodeAddress(terms.payment.payTo).publicKey;
+const amountBuf = Buffer.alloc(8);
+amountBuf.writeBigUInt64BE(BigInt(terms.payment.amount));
+
+const txn = algosdk.makeApplicationCallTxnFromObject({
+  sender:          algoAddress,
+  appIndex:        MANDATE_APP_ID,          // your MandateContract application ID
+  onComplete:      algosdk.OnApplicationComplete.NoOpOC,
+  appArgs:         [PAY_SELECTOR, treasuryBytes, amountBuf],
+  suggestedParams: sp,
+});
 ```
 
-### Step 3 — Build and Encode the X-PAYMENT Header
+### Step 3 — Sign and Encode the X-PAYMENT Header
 
 ```typescript
-const groupId     = Buffer.from(tollTxn.group!).toString("base64");
-const groupIdBytes = Buffer.from(groupId, "base64");
-const signature   = algosdk.signBytes(groupIdBytes, privateKey);
-const signedToll  = tollTxn.signTxn(privateKey);
+const signedTxn = txn.signTxn(privateKey);   // agent signs with own key
 
-const proof = {
-  groupId,
-  transactions: [
-    Buffer.from(signedToll).toString("base64"),
-  ],
-  senderAddr: algoAddress,
-  signature:  Buffer.from(signature).toString("base64"),
-};
-
-const xPaymentHeader = Buffer.from(JSON.stringify(proof)).toString("base64");
+// X-PAYMENT = base64(msgpack(SignedTransaction))
+const xPaymentHeader = Buffer.from(signedTxn).toString("base64");
 ```
 
 ### Step 4 — Replay the Request
@@ -230,6 +236,9 @@ const result = await settlement.json();
 // result.settlement.txnId → Algorand transaction ID
 // result.settlement.confirmedRound → block number
 ```
+
+**Replay protection:** Provided by Algorand's built-in transaction validity window
+(`firstValid` / `lastValid`). No separate nonce or timestamp required.
 
 ---
 
@@ -303,137 +312,136 @@ GET https://api.ai-agentic-wallet.com/health        → live status
 - **Atomicity:** All transactions in a group settle together or all revert — enforced by the Algorand AVM at Layer 1, not by this server.
 - **Finality:** Sub-3-second (4 confirmation rounds on Algorand mainnet).
 - **No partial settlement:** If any call in the atomic group fails, the USDC toll is automatically refunded by the AVM.
-- **Replay protection:** 60-second nonce cache. Replayed proofs are rejected with HTTP 401.
-- **Zero private key exposure:** Transactions are built in a VibeKit sandbox and signed by Rocca Wallet (FIDO2/seedless). No private key ever touches the server.
+- **Replay protection:** Provided by Algorand's transaction validity window. The server also rejects transactions whose `firstValid` round has already passed.
+- **Non-custodial:** The agent holds its own private key. The server never sees or stores it. The MandateContract AVM code enforces all spend limits on-chain — the server cannot spend more than the caps allow even if compromised.
+- **AVM-enforced spend limits:** Per-transaction cap, 10-minute velocity window, 24-hour daily cap, and an optional recipient whitelist are enforced at the smart contract level. No server-side configuration can override them.
 
 ---
 
-## 8. Agent Registration
+## 8. Agent Registration (Mandate Architecture)
 
-Before an agent can make x402 payments, it must be registered. Registration is
-ALGO-triggered — you create an agent address, send ALGO to it, and the server
-activates it automatically.
+Before an agent can make x402 payments it needs:
+1. An Algorand keypair (the agent owns this — non-custodial)
+2. A MandateContract deployed by the operator (on-chain spend limits)
+3. The contract app account funded with ALGO (gas) + USDC (spending power)
 
-### Step 1 — Create agent (generates address, no blockchain cost)
+Registration is fully non-custodial. The server never holds or sees the agent's private key.
+All spend limits are enforced by the AVM — not by server-side configuration.
 
-```typescript
-const response = await fetch("https://api.ai-agentic-wallet.com/v1/api/agents/create", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "X-Portal-Key": PORTAL_API_KEY,
-  },
-  body: JSON.stringify({
-    agentId:  "my-agent-001",  // unique ID, 3–64 chars, alphanumeric + _-
-    platform: "anthropic",     // optional
-  }),
-});
-
-const { agentId, address, mnemonic, minimumFundingAlgo } = await response.json();
-// address            → the agent's permanent Algorand address
-// mnemonic           → 25-word secret phrase — save this, server discards it
-// minimumFundingAlgo → 0.5 ALGO required to trigger activation
-```
-
-**Save the mnemonic.** It is shown once and immediately discarded by the server.
-You will use it to sign x402 payment proofs.
-
-### Step 2 — Send ALGO to activate
-
-Send **at least 0.5 ALGO** to the `address` returned above.
-
-```bash
-# Example using goal (Algorand CLI)
-goal clerk send -a 500000 -t <agent-address> -f <your-wallet>
-```
-
-Once the deposit confirms on-chain (~3.8 seconds), the server:
-1. Detects the deposit (checks every 10 seconds)
-2. Opts the agent wallet into USDC (ASA 31566704)
-3. Rekeys the wallet to the Rocca signer (auth-addr)
-4. Marks the agent `registered` in the registry
-
-### Step 3 — Poll for activation
+### Step 1 — Generate an agent keypair
 
 ```typescript
-// Poll until agent status === "registered" or "active"
-async function waitForActivation(agentId: string): Promise<void> {
-  for (let i = 0; i < 60; i++) {
-    const res = await fetch(`https://api.ai-agentic-wallet.com/v1/api/agents/${agentId}`, {
-      headers: { "X-Portal-Key": PORTAL_API_KEY },
-    });
-    if (res.ok) {
-      const agent = await res.json();
-      console.log("Agent activated:", agent.agentId, agent.status);
-      return;
-    }
-    await new Promise(r => setTimeout(r, 5_000)); // retry every 5s
-  }
-  throw new Error("Activation timeout — check ALGO deposit");
-}
+import algosdk from "algosdk";
+
+const account = algosdk.generateAccount();
+console.log("Agent address:", account.addr.toString());
+console.log("Mnemonic:", algosdk.secretKeyToMnemonic(account.sk));
+// Save the mnemonic securely — this is the agent's signing key forever.
 ```
 
-### Step 4 — Deposit USDC
+### Step 2 — Operator deploys the MandateContract
 
-Once activated, deposit USDC (ASA 31566704 mainnet / 10458941 testnet) to the agent address:
+The operator calls `MandateFactory.create_agent()` to deploy a per-agent MandateContract.
+This is a single Algorand application call to the factory app.
 
-```typescript
-// The agent's USDC balance is its spending power.
-// Minimum for first payment: 10 000 micro-USDC ($0.01)
+```python
+# python deploy.py create-agent --agent-address <address> --per-tx-cap 10000 --vel-cap 50000 --daily-cap 1000000
+# Returns: mandateAppId (the new MandateContract's application ID)
 ```
 
-### Alternative: Register an existing funded wallet
+The factory pre-funds the new contract's minimum balance from the operator's funded factory account.
+The agent does not need to hold ALGO for deployment.
 
-If you already have an Algorand wallet with sufficient ALGO and USDC:
+**MandateContract spend limits set at deployment:**
+
+| Parameter | Description | Example |
+|---|---|---|
+| `per_tx_cap` | Max USDC per single payment (µUSDC) | `10000` = $0.01 |
+| `vel_cap` | Max USDC per 10-minute window (µUSDC) | `50000` = $0.05 |
+| `daily_cap` | Max USDC per 24-hour period (µUSDC) | `1000000` = $1.00 |
+| `whitelist` | Optional list of allowed recipient addresses | `[]` = any recipient |
+
+### Step 3 — Register with the server
 
 ```typescript
-const response = await fetch("https://api.ai-agentic-wallet.com/v1/api/agents/register-existing", {
+const response = await fetch("https://api.ai-agentic-wallet.com/api/agents/register-mandate", {
   method: "POST",
   headers: { "Content-Type": "application/json", "X-Portal-Key": PORTAL_API_KEY },
   body: JSON.stringify({
-    agentId:  "my-agent-001",
-    mnemonic: "word1 word2 ... word25",
+    agentId:      "my-agent-001",    // unique ID, 3–64 chars, alphanumeric + _-
+    address:      account.addr.toString(),
+    mandateAppId: 123456789,         // application ID from Step 2
+    platform:     "anthropic",       // optional
   }),
 });
-const { agentId, address, authAddr, registrationTxnId } = await response.json();
+const { agentId, address, mandateAppId, custody } = await response.json();
+// custody === "user"  — server has no custody of the key
+// status  === "active"
 ```
 
-### Signing key split after rekeying
+### Step 4 — Fund the MandateContract app account
 
-- On-chain transactions FROM the agent's address → Rocca signs (as auth-addr)
-- Off-chain x402 payment proofs (`algosdk.signBytes`) → original mnemonic signs
-- These do not conflict — `algosdk.verifyBytes` checks against the agent's address, not the auth-addr
+The MandateContract's app account is the Algorand address derived from its application ID.
+It must hold ALGO (for inner txn gas) and be opted into USDC before any payments can fire.
+
+```typescript
+import algosdk from "algosdk";
+
+// Derive the contract's app account address
+const appAddress = algosdk.getApplicationAddress(BigInt(MANDATE_APP_ID)).toString();
+console.log("Fund this address:", appAddress);
+```
+
+**Funding steps:**
+1. **Opt in to USDC:** Call `MandateContract.opt_in_usdc()` (the contract handles USDC opt-in internally)
+2. **Send ALGO to app account:** At least 0.3 ALGO for gas reserve (more = more transactions before refill)
+3. **Send USDC to app account:** Minimum 10,000 µUSDC ($0.01) for first payment
+
+```bash
+# Using goal CLI:
+goal app call --app-id <MANDATE_APP_ID> --from <your-wallet> --on-completion NoOp \
+  --app-arg "str:opt_in_usdc"
+
+goal clerk send -a 300000 -t <appAddress> -f <your-wallet>
+
+goal asset send --assetid 31566704 -a 100000 -t <appAddress> -f <your-wallet>
+```
+
+### Step 5 — Verify activation
+
+The server checks the MandateContract app account every 10 seconds.
+When it detects USDC > 0, the agent is confirmed active.
+
+```typescript
+const res = await fetch(`https://api.ai-agentic-wallet.com/api/agents/my-agent-001`, {
+  headers: { "X-Portal-Key": PORTAL_API_KEY },
+});
+const agent = await res.json();
+// agent.status        → "active"
+// agent.mandateAppId  → 123456789
+// agent.custody       → "user"
+```
 
 ### Gas warning headers
 
-After each successful payment, the server includes advisory headers:
+After each successful payment, the server includes advisory headers about the
+contract's remaining ALGO gas balance:
 
 ```
 X-Agent-Gas-Status:    ok | low | critical
 X-Agent-Gas-Remaining: 847   (estimated transactions remaining)
+X-Agent-Contract-Id:   123456789
 ```
-
-Thresholds:
-- `low`      — < 200 000 µALGO above minimum balance (~200 transactions remaining)
-- `critical` — < 50 000 µALGO above minimum balance (~50 transactions remaining)
-
-When `critical`, the agent should pause payments and alert the operator to top up ALGO.
-You can read these headers with the x402-client SDK:
 
 ```typescript
-import { requestWithPayment, parseGasInfo } from "@algo-wallet/x402-client";
+import { parseGasInfo } from "@algo-wallet/x402-client";
 
-const response = await requestWithPayment(url, init, privateKey, senderAddress);
+const response = await client.fetch("/api/some-endpoint");
 const gas = parseGasInfo(response);
 if (gas?.status === "critical") {
-  console.warn(`Gas critical — only ${gas.remaining} transactions remaining`);
+  // Top up the MandateContract app account with more ALGO
+  console.warn(`Gas critical — refill ${algosdk.getApplicationAddress(BigInt(gas.contractId!)).toString()}`);
 }
-```
-
-**AP2 mandates (optional, for recurring/autonomous payments):**
-```
-POST /api/agents/:agentId/mandate/create (FIDO2-authenticated) → define spend limits
-Rocca evaluates mandate + signs all transactions — no x402 proof required per-request
 ```
 
 ---
@@ -442,8 +450,7 @@ Rocca evaluates mandate + signs all transactions — no x402 proof required per-
 
 | Task | Method | Path |
 |---|---|---|
-| Create agent (ALGO-triggered activation) | POST | `/api/agents/create` |
-| Register existing funded wallet | POST | `/api/agents/register-existing` |
+| Register mandate agent (non-custodial) | POST | `/api/agents/register-mandate` |
 | Get agent status | GET | `/api/agents/:agentId` |
 | Execute payment | POST | `/api/agent-action` then `/api/execute` |
 | Health check | GET | `/health` |
@@ -461,54 +468,45 @@ Rocca evaluates mandate + signs all transactions — no x402 proof required per-
 
 ---
 
-## 10. Mandate Secret Rotation
+## 10. MandateContract Spend Limits
 
-The mandate signing key (HMAC-SHA256) can be rotated without revoking existing mandates.
-Existing mandates remain verifiable during the transition window.
+Spend limits are set once at contract deployment and enforced by the AVM.
+They cannot be changed by the server — only by an on-chain update from the operator.
 
-### Step-by-step rotation (v1 → v2)
+| Global state key | Description | Notes |
+|---|---|---|
+| `per_tx_cap` | Maximum USDC per single `pay()` call (µUSDC) | AVM rejects calls above this |
+| `vel_cap` | Maximum USDC in any 10-minute window (µUSDC) | Resets when window expires |
+| `daily_cap` | Maximum USDC in any 24-hour period (µUSDC) | Resets at UTC midnight |
+| `toll` | Fixed x402 toll amount (µUSDC) | Set by operator to match server config |
+| `treasury` | Authorized treasury address (bytes) | Only address that can receive toll |
 
-**1. Generate a new secret:**
-```bash
-openssl rand -hex 32
+### Velocity gate accounting
+
+The velocity and daily caps count **total USDC outflow**:
+- For payments to the treasury: `total_debit = amount` (toll only, one inner txn)
+- For payments to a seller: `total_debit = amount + toll` (two inner txns)
+
+This prevents cap evasion by routing large payments through seller addresses.
+
+### Checking on-chain cap state
+
+```typescript
+const algod = new algosdk.Algodv2("", "https://mainnet-api.4160.nodely.dev", "");
+const appInfo = await algod.getApplicationByID(MANDATE_APP_ID).do();
+const globalState = appInfo.params.globalState ?? [];
+
+for (const kv of globalState) {
+  const key   = Buffer.from(kv.key, "base64").toString("utf8");
+  const value = kv.value.type === 2 ? kv.value.uint : kv.value.bytes;
+  console.log(key, "=", value);
+}
+// win_spend    → current 10-min window spend (µUSDC)
+// day_spend    → current 24h spend (µUSDC)
+// vel_cap      → 10-min cap (µUSDC)
+// daily_cap    → 24h cap (µUSDC)
+// per_tx_cap   → per-tx cap (µUSDC)
 ```
-
-**2. Add the new secret to your environment without removing the old one:**
-```
-MANDATE_SECRET_v2=<new-secret>
-MANDATE_SECRET_v1=<old-secret>   # keep — needed to verify existing mandates
-MANDATE_SECRET_KID=v2            # switch signing to v2
-```
-
-> Note: `MANDATE_SECRET` (no suffix) is treated as `kid=v1` for backwards compatibility
-> with deployments predating the rotation system.
-
-**3. Deploy.** New mandates will be signed with `v2`. Existing `v1` mandates remain verifiable
-(status: `retired` — verify-only, no new mandates signed with it).
-
-**4. Wait** for all `v1` mandates to expire naturally (check their `expiresAt` field in Redis),
-or revoke them manually:
-```
-POST /api/agents/:agentId/mandate/:id/revoke
-```
-
-**5. Once no `v1` mandates remain active**, remove `MANDATE_SECRET_v1` from the environment
-and redeploy. Any remaining `v1` mandates will be blocked (fail-closed) — callers will see
-a `kid not in registry` error prompting them to re-issue the mandate.
-
-### Key lifecycle states
-
-| State | Behaviour |
-|-------|-----------|
-| `active` | Signs new mandates; used for HMAC verification |
-| `retired` | Verify-only; no new mandates signed with it |
-| absent | Verification throws → mandate blocked (fail-closed) |
-
-### Security invariant
-
-Only one key may be `active` at a time. The key whose suffix matches `MANDATE_SECRET_KID`
-is active. All others in the registry are `retired`. The system throws at boot if this
-invariant is violated — multiple active keys or a missing active key are both hard failures.
 
 ---
 
@@ -576,16 +574,18 @@ is a single `verifyBytes()` call with no external server. The wallet handles the
 
 ---
 
-### Layer 2 — AI Agent Execution (`/api/execute`)
+### Layer 2 — AI Agent Execution (x402 mandate payments)
 
-Once a mandate is in place, the AI agent takes over. Agents authenticate via short-lived,
-single-use HMAC tokens stored in Redis. This path has zero external dependencies and
-microsecond validation.
+The agent authenticates by signing a real Algorand `MandateContract.pay()` application call
+with its own Ed25519 private key. The server decodes the signed transaction, verifies the
+sender address, checks factory provenance (that the app was deployed by the known factory),
+and submits it to the network. The AVM then enforces all spend limits on-chain.
 
-**Token properties:**
-- Cryptographically random challenge per issuance
-- HMAC-SHA256 bound to `agentId` + timestamp
-- Single-use, 5-minute TTL, consumed atomically on first use (replay-protected)
+**Properties:**
+- Agent holds its own private key (non-custodial)
+- Replay protection via Algorand transaction validity window (`firstValid` / `lastValid`)
+- AVM enforces per-tx cap, velocity window, daily cap, recipient whitelist
+- Server cannot spend more than the on-chain caps allow, even if compromised
 
 ---
 
@@ -594,104 +594,57 @@ microsecond validation.
 | # | Invariant |
 |---|-----------|
 | 1 | Only a WebAuthn- or Liquid Auth-authenticated human can create or modify a mandate |
-| 2 | Only mandate-valid transactions pass the signing gate |
-| 3 | Only Rocca signs on-chain |
-| 4 | No single service can bypass velocity constraints |
+| 2 | The AVM rejects `pay()` calls that violate per-tx cap, velocity cap, or daily cap |
+| 3 | The agent signs its own transactions — the server never holds a signing key |
+| 4 | No server-side configuration can override on-chain spend limits |
 | 5 | All governance operations are auditable (Redis + telemetry sink) |
-| 6 | Agent execution tokens are single-use and expire in 5 minutes |
-| 7 | Layer 1 (human) and Layer 2 (agent) credentials cannot be exchanged or escalated |
+| 6 | Factory provenance is verified before any payment is submitted |
+| 7 | Layer 1 (human governance) and Layer 2 (agent execution) credentials are independent |
 
 ---
 
-## 12. USDC-Native Agent Registration (No Manual ALGO Required)
+## 12. Operator Setup — Deploying the MandateFactory
 
-**Problem solved:** Previously, registering an AI agent required the operator to manually acquire ALGO
-(for Minimum Balance Requirements) from an exchange — a Web2 friction point that blocks autonomous onboarding.
+The MandateFactory is a single Algorand application that creates per-agent MandateContracts.
+The operator deploys it once; all agents share the same factory.
 
-**New flow:** Pay a single USDC registration fee. The protocol atomically funds the agent's ALGO reserve
-and completes opt-in + rekey in one request chain. No exchange, no faucet, no ALGO wallet needed.
+### Deploy the factory
 
-### Step 1 — Get a live pricing quote (public endpoint)
-
-```typescript
-const quote = await fetch("https://api.ai-agentic-wallet.com/api/agents/onboarding-quote");
-const {
-  feeMicroUsdc,       // USDC cost of MBR funding (e.g. 300000 = $0.30)
-  fundingMicroAlgo,   // ALGO the treasury will send to the agent (215000 = 0.215 ALGO)
-  expiresAt,          // ISO timestamp — complete activation within 90 seconds
-  treasuryAddress,    // Algorand address to receive USDC payment
-  algoPriceUsdc,      // Live ALGO/USDC spot price used for this quote
-} = await quote.json();
+```bash
+cd contracts/
+python deploy.py deploy-factory
+# Returns: factoryAppId — set as MANDATE_FACTORY_APP_ID in your server env
 ```
 
-### Step 2 — Generate a keypair
+**Fund the factory app account** with enough ALGO to cover MBR for new contracts.
+Each new MandateContract requires ~0.2 ALGO from the factory to cover Algorand's
+minimum balance requirement. With 1 ALGO you can deploy ~5 agents; with 10 ALGO, ~50.
 
-```typescript
-// POST /api/agents/create  (portal auth required)
-const created = await fetch("https://api.ai-agentic-wallet.com/api/agents/create", {
-  method: "POST",
-  headers: { "Content-Type": "application/json", "X-Portal-Key": YOUR_PORTAL_KEY },
-  body: JSON.stringify({ agentId: "my-agent-001" }),
-});
-const { address, mnemonic } = await created.json();
-// Save mnemonic — the server has already discarded it.
+```bash
+# Derive factory app account address
+python -c "import algosdk; print(algosdk.logic.get_application_address(<FACTORY_APP_ID>))"
+
+# Fund it
+goal clerk send -a 5000000 -t <factory-app-address> -f <your-wallet>
 ```
 
-### Step 3 — Build the atomic group (treasury pre-signs ALGO side)
+### Create a MandateContract for an agent
 
-```typescript
-// POST /api/agents/prepare-onboarding  (portal auth required)
-const prep = await fetch("https://api.ai-agentic-wallet.com/api/agents/prepare-onboarding", {
-  method: "POST",
-  headers: { "Content-Type": "application/json", "X-Portal-Key": YOUR_PORTAL_KEY },
-  body: JSON.stringify({ payerAddress: PAYER_ALGO_ADDRESS, agentAddress: address }),
-});
-const {
-  unsignedUsdcTxB64,  // USDC transfer tx — YOU must sign this with your payer wallet
-  signedAlgoTxB64,    // ALGO funding tx — already signed by treasury
-  groupIdB64,         // Shared atomic group ID
-} = await prep.json();
+```bash
+python deploy.py create-agent \
+  --agent-address <AGENT_ALGORAND_ADDRESS> \
+  --per-tx-cap  10000    \   # max µUSDC per payment
+  --vel-cap     50000    \   # max µUSDC per 10-min window
+  --daily-cap   1000000  \   # max µUSDC per 24h
+  --toll        10000        # must match server X402_TOLL_MICROUSDC
+
+# Returns: mandateAppId — pass this to POST /api/agents/register-mandate
 ```
 
-### Step 4 — Sign the USDC transfer with your payer wallet
+### Environment variables
 
-```typescript
-import algosdk from "algosdk";
-
-const payerAccount   = algosdk.mnemonicToSecretKey(PAYER_MNEMONIC);
-const usdcTxBytes    = new Uint8Array(Buffer.from(unsignedUsdcTxB64, "base64"));
-const usdcTx         = algosdk.decodeUnsignedTransaction(usdcTxBytes);
-const signedUsdcTxB64 = Buffer.from(usdcTx.signTxn(payerAccount.sk)).toString("base64");
-```
-
-### Step 5 — Activate: submit atomic group + register agent
-
-```typescript
-// POST /api/agents/activate  (portal auth required)
-const activated = await fetch("https://api.ai-agentic-wallet.com/api/agents/activate", {
-  method: "POST",
-  headers: { "Content-Type": "application/json", "X-Portal-Key": YOUR_PORTAL_KEY },
-  body: JSON.stringify({
-    agentId,
-    mnemonic,           // Agent's own mnemonic (for opt-in + rekey)
-    signedUsdcTxB64,    // Your signed USDC payment
-    signedAlgoTxB64,    // Treasury-signed ALGO funding (from step 3)
-    groupIdB64,         // Group ID returned by prepare-onboarding (for nonce check)
-  }),
-});
-const { status, address, fundingTxId, registrationTxnId } = await activated.json();
-// status === "registered"
-// fundingTxId — on-chain proof that treasury funded the agent
-// registrationTxnId — on-chain proof of opt-in + rekey
-```
-
-**After this, the agent holds 0.215 ALGO, is opted into USDC, and is rekeyed to Rocca. It can immediately
-start making x402 payments using the SDK.**
-
-### Error codes specific to onboarding
-
-| HTTP | Meaning | Action |
-|---|---|---|
-| `410` | Quote expired or already used | Call `prepare-onboarding` again for a fresh quote |
-| `400` | Group ID mismatch in activate | Ensure signedAlgoTxB64 matches the group from prepare-onboarding |
-| `500` | Oracle unavailable and no cached price | Try again in 60s; oracle will recover |
+| Variable | Description |
+|---|---|
+| `MANDATE_FACTORY_APP_ID` | Factory application ID |
+| `X402_TOLL_MICROUSDC` | Toll amount charged per request (must match contract `toll` param) |
+| `USDC_ASSET_ID` | `31566704` (mainnet) or `10458941` (testnet) |

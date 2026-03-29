@@ -4,42 +4,27 @@ import { config } from "../config.js";
 import { enforceReplayProtection } from "./replayGuard.js";
 
 /**
- * x402 Payment Required middleware — Phase 2: Cryptographic Enforcement.
+ * x402 Payment Required middleware — dual-format support.
  *
- * Parses the `X-PAYMENT` header as a JSON payload containing:
- *   - groupId:      Base64 atomic group ID
- *   - transactions: Base64[] of signed transaction bytes
- *   - senderAddr:   Algorand address of the payer
- *   - signature:    Base64 ed25519 signature over the groupId by senderAddr
+ * Supports two X-PAYMENT formats:
  *
- * Verification steps:
- *   1. Header presence check
- *   2. JSON structure validation
- *   3. Ed25519 signature verification against the sender's public key
- *   4. Group ID integrity check (all txns share the claimed groupId)
+ * ── Mandate format (Sprint O, on-chain AVM) ──
+ *   X-PAYMENT = base64(msgpack(SignedTransaction))
+ *   A real signed MandateContract.pay() application call.
+ *   Full verification (method selector, toll, provenance, AVM submission)
+ *   is handled downstream by x402Settle.
+ *   The paywall only decodes the transaction and extracts senderAddr.
  *
- * On failure → HTTP 402 with `application/pay+json` body per x402 standard.
+ * ── Legacy format (pre-Sprint O, Rocca custodial agents) ──
+ *   X-PAYMENT = base64(JSON({groupId, senderAddr, signature, ...}))
+ *   Ed25519 signature over groupId, with optional nonce+timestamp replay guard.
+ *   Full verification done here; no x402Settle required.
+ *
+ * On failure → HTTP 402 with application/pay+json body per x402 standard.
  */
 
-// ── x402 Payment Proof Schema ──────────────────────────────────
-interface X402PaymentProof {
-  groupId: string;
-  /**
-   * Optional: signed transaction bytes for group integrity verification.
-   * Omitted by custodially-managed (rekeyed) agents — their auth-addr is
-   * the Rocca signer so signed transaction bytes would be invalid on-chain.
-   * When absent, identity is proven solely via `signature` over `groupId`.
-   */
-  transactions?: string[];
-  senderAddr: string;
-  signature: string;
-  /** Unix epoch seconds — enforced within 60s time bound */
-  timestamp?: number;
-  /** Number Used Once — prevents signature replay */
-  nonce?: string;
-}
+// ── pay+json response schema ──────────────────────────────────────
 
-// ── application/pay+json response schema ────────────────────────
 interface PayJsonResponse {
   version: "x402-v1";
   status: 402;
@@ -91,27 +76,29 @@ function reject402(res: Response, endpoint: string, reason: string): void {
   res.status(402).contentType("application/pay+json").json(buildPayJson(endpoint, reason));
 }
 
-// Algorand address regex: 58 chars, Base32 uppercase + digits 2-7
+// ── Legacy JSON proof schema ──────────────────────────────────────
+
+interface X402PaymentProof {
+  groupId: string;
+  transactions?: string[];
+  senderAddr: string;
+  signature: string;
+  timestamp?: number;
+  nonce?: string;
+}
+
 const ALGO_ADDR_RE = /^[A-Z2-7]{58}$/;
 
-/**
- * Parse and structurally validate the X-PAYMENT header JSON.
- * Enforces strict length bounds on all fields to prevent DoS.
- */
 function parsePaymentHeader(raw: string): X402PaymentProof | null {
-  // Hard cap: 1 MB on the raw header value
   if (raw.length > 1_000_000) return null;
-
   try {
     const decoded = JSON.parse(Buffer.from(raw, "base64").toString("utf-8"));
-    // transactions is optional — absent for custodially-managed (rekeyed) agents
     const txns = decoded.transactions;
     const txnsValid = txns === undefined || txns === null || (
       Array.isArray(txns) &&
-      txns.length <= 16 && // Algorand atomic group max
+      txns.length <= 16 &&
       txns.every((t: unknown) => typeof t === "string" && t.length > 0 && t.length < 20_000)
     );
-
     if (
       typeof decoded.groupId === "string" &&
       decoded.groupId.length >= 32 &&
@@ -131,42 +118,26 @@ function parsePaymentHeader(raw: string): X402PaymentProof | null {
   }
 }
 
-/**
- * Verify ed25519 signature: the sender signed the groupId bytes
- * with the private key corresponding to their Algorand address.
- */
 function verifySignature(proof: X402PaymentProof): boolean {
   try {
-    const message = Buffer.from(proof.groupId, "base64");
+    const message   = Buffer.from(proof.groupId, "base64");
     const signature = new Uint8Array(Buffer.from(proof.signature, "base64"));
-
-    // algosdk v3: verifyBytes accepts address string directly
     return algosdk.verifyBytes(message, signature, proof.senderAddr);
   } catch {
     return false;
   }
 }
 
-/**
- * Verify that every signed transaction in the group references the claimed groupId.
- * Skipped when transactions are absent (custodially-managed agents omit them —
- * identity is proven solely via the ed25519 signature over groupId).
- */
 function verifyGroupIntegrity(proof: X402PaymentProof): boolean {
   if (!proof.transactions || proof.transactions.length === 0) return true;
-
   try {
     const claimedGroupId = Buffer.from(proof.groupId, "base64");
-
     for (const txnB64 of proof.transactions) {
       const txnBytes = new Uint8Array(Buffer.from(txnB64, "base64"));
-      // Decode the signed transaction to inspect the inner txn's group field
-      const decoded = algosdk.decodeSignedTransaction(txnBytes);
+      const decoded  = algosdk.decodeSignedTransaction(txnBytes);
       const txnGroupId = decoded.txn.group;
       if (!txnGroupId) return false;
-
-      const groupBytes = Buffer.from(txnGroupId);
-      if (!groupBytes.equals(claimedGroupId)) return false;
+      if (!Buffer.from(txnGroupId).equals(claimedGroupId)) return false;
     }
     return true;
   } catch {
@@ -174,68 +145,104 @@ function verifyGroupIntegrity(proof: X402PaymentProof): boolean {
   }
 }
 
-// ── Middleware ──────────────────────────────────────────────────
-export async function x402Paywall(req: Request, res: Response, next: NextFunction): Promise<void> {
+// ── Middleware ────────────────────────────────────────────────────
+
+export async function x402Paywall(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
   const paymentHeader = req.header("X-PAYMENT");
 
-  // Step 1: Header presence
+  // ── Header presence ─────────────────────────────────────────────
   if (!paymentHeader) {
-    reject402(res, req.path, "Missing X-PAYMENT header. Submit a signed Algorand atomic group proof.");
+    reject402(
+      res,
+      req.path,
+      "Missing X-PAYMENT header. For mandate-architecture agents: include a signed MandateContract.pay() application call.",
+    );
     return;
   }
 
-  // Step 2: Structural validation
+  // ── Try mandate format first ────────────────────────────────────
+  // base64(msgpack(SignedTransaction)) — a real signed Algorand app call.
+  // If decoding succeeds we extract senderAddr and let x402Settle do the rest.
+  try {
+    const bytes  = new Uint8Array(Buffer.from(paymentHeader, "base64"));
+    const signed = algosdk.decodeSignedTransaction(bytes);
+
+    req.x402 = {
+      paymentProof: paymentHeader,
+      verified:     false,  // x402Settle performs full verification
+      senderAddr:   signed.txn.sender.toString(),
+    };
+    return next();
+  } catch {
+    // Not a valid SignedTransaction — fall through to legacy JSON path
+  }
+
+  // ── Legacy JSON proof format ────────────────────────────────────
+  // base64(JSON({groupId, senderAddr, signature, ...}))
   const proof = parsePaymentHeader(paymentHeader);
   if (!proof) {
-    reject402(res, req.path, "Malformed X-PAYMENT payload. Expected Base64-encoded JSON with {groupId, senderAddr, signature} (transactions optional).");
+    reject402(
+      res,
+      req.path,
+      "Malformed X-PAYMENT. Expected base64(msgpack(SignedTransaction)) for mandate agents, " +
+      "or base64(JSON({groupId, senderAddr, signature})) for legacy agents.",
+    );
     return;
   }
 
-  // Step 3: Ed25519 signature verification
   if (!verifySignature(proof)) {
     reject402(res, req.path, "Invalid signature. The groupId must be signed by the sender's ed25519 key.");
     return;
   }
 
-  // Step 4: Atomic group integrity
   if (!verifyGroupIntegrity(proof)) {
     reject402(res, req.path, "Group integrity failure. Transaction group IDs do not match the claimed groupId.");
     return;
   }
 
-  // Step 5: Replay attack prevention — time bound + nonce uniqueness (Redis-backed)
   const replayCheck = await enforceReplayProtection(proof.timestamp, proof.nonce);
   if (!replayCheck.valid) {
     res.status(401).json({
-      error: `Unauthorized: Signature Replay Detected`,
+      error:  "Unauthorized: Signature Replay Detected",
       detail: replayCheck.error,
     });
     return;
   }
 
-  // Attach verified proof to request
   req.x402 = {
     paymentProof: paymentHeader,
-    verified: true,
-    senderAddr: proof.senderAddr,
-    groupId: proof.groupId,
+    verified:     true,
+    senderAddr:   proof.senderAddr,
+    groupId:      proof.groupId,
   };
 
   next();
 }
 
-// ── Express Request augmentation ────────────────────────────────
+// ── Express Request augmentation ─────────────────────────────────
+
 declare global {
   namespace Express {
     interface Request {
       x402?: {
+        /** Raw X-PAYMENT header value */
         paymentProof: string;
+        /**
+         * true  = legacy JSON proof fully verified (ed25519 + replay guard)
+         * false = mandate format decoded; full verification in x402Settle
+         */
         verified: boolean;
+        /** Algorand address of the payer — extracted from proof or txn.sender */
         senderAddr?: string;
+        /** groupId from legacy JSON proof — absent for mandate format */
         groupId?: string;
-        /** jobId from the async settlement queue — set by x402Settle middleware */
+        /** On-chain txId of the confirmed mandate transaction — set by x402Settle */
         settlementJobId?: string;
-        /** agentId resolved from senderAddr — set by x402Settle middleware */
+        /** agentId resolved from senderAddr — set by x402Settle */
         settlementAgentId?: string;
       };
     }

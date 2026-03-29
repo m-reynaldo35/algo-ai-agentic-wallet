@@ -81,8 +81,8 @@ export default function AgentStatusCard({ agentId, agent, error, onRegister }: P
     ? "Self-custody"
     : "Server-managed";
   const custodyDesc  = agent?.custody === "user"
-    ? "You hold the signing key"
-    : "Rocca signs on your behalf";
+    ? "You hold the signing key — AVM enforces spend limits"
+    : "Server manages signing on your behalf";
 
   const networkLabel = NETWORK === "mainnet" ? "Mainnet" : "Testnet";
   const networkStyle = NETWORK === "mainnet"

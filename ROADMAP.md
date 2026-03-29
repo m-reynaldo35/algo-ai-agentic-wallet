@@ -8,36 +8,60 @@
 
 ## Vision
 
-**Phase 1 — Infrastructure** *(current)*
-An AI autonomous wallet bound to a human, with mandate-gated spending and an Algorand USDC payment rail.
+**The core truth:** A non-custodial AI agent governed by an on-chain AVM mandate contract.
+The human sets limits once via their master wallet. The AVM enforces every payment atomically.
+No server-side signing. No trusted intermediary. The chain is the truth.
 
-**Phase 2 — Ecosystem** *(next)*
-A discoverable marketplace where AI agents autonomously find, pay for, and consume API services using the payment rail — buyers and sellers matched by Claude and other LLMs through MCP tool discovery.
+**The payment rail:** x402 over Algorand USDC. Agents pay APIs natively.
+~$0.0002/txn. 3.8s finality. Immediate confirmation.
+
+**The distribution layer:** AP2 (Google's Agent Payments Protocol) as a thin translation
+adapter. AVM mandates are the enforcement. AP2 is how agents built on other frameworks
+find and pay through this rail. AP2 does not drive architecture — the AVM contract does.
 
 ```
-Human sets mandate (spending limits)
+Human (master wallet)
+    │  deploys MandateContract once
+    │  sets: per-tx cap, velocity, daily cap, whitelist
     ↓
-AI Agent (autonomous wallet)
+MandateContract (Algorand AVM) ← the truth. code is law.
+    │  enforces all gates atomically on every pay() call
+    │  inner txns: USDC to recipient + toll to treasury
     ↓
-x402-Algorand payment rail (USDC, ~$0.0002/txn, 3.8s finality)
+AI Agent (own Ed25519 key, non-custodial)
+    │  signs MandateContract.pay() app calls autonomously
+    │  speaks x402 natively
+    │  optionally wraps in AP2 semantics for cross-framework agents
     ↓
-API Registry / MCP Aggregator  ←─── Sellers list their APIs here
-    ↓
-Claude discovers tool → pays → gets data → answers user
+x402 payment rail  ──────────────────────────────────────────────────────────┐
+    │                                                                         │
+    ├── API Registry / MCP Aggregator (Sprints 19–20)                        │
+    │       Claude / Gemini / any LLM discovers tools → pays → gets data     │
+    │                                                                         │
+    └── AP2 adapter (Sprint Q — thin layer, not architecture)                │
+            Any AP2-compatible agent settles here via algorand-usdc-x402 ────┘
 ```
+
+**Phase 1 — Infrastructure** *(complete)*
+AVM mandate contracts written. x402 settlement middleware updated. Client SDK updated.
+Sprint O remaining work: deploy contracts, update paywall, migrate agent registration.
+
+**Phase 2 — Ecosystem** *(current)*
+Seller SDK → API Registry → Aggregator MCP. Build the supply side. Let agents find and
+pay for APIs autonomously. AP2 adapter added small — as distribution, not architecture.
 
 ---
 
-## Current State (after Sprint N + UX unification)
+## Current State (after Sprint O — On-Chain Mandate Architecture)
 
 - Railway backend live: `https://api.ai-agentic-wallet.com`
 - Vercel frontend live: `https://ai-agentic-wallet.com`
 - Redis internal TCP active — p95 enqueue 1.53s, avg ~1.25s
 - Auth-addr cache (5-min TTL) eliminates algod round-trips
 - Nodely failover active (primary → fallback + recovery probe)
-- SDK `@algo-wallet/x402-client@0.2.0` — **published to npm ✅**
-- MCP server `@algo-wallet/x402-mcp@0.1.0` — **published to npm ✅**
-- Python SDK `algo-x402@0.1.0` — built, not yet published
+- SDK `@algo-wallet/x402-client@0.3.0` — **published to npm ✅** (Sprint 16A: `client.fetch()`, `parseGasInfo`, proof format fix)
+- MCP server `@algo-wallet/x402-mcp@0.2.0` — **published to npm ✅** (3 tools: pay, balance, mandates; signature bug fixed)
+- Python SDK `algo-x402@0.1.0` — **published to PyPI ✅**
 - CLI `@algo-wallet/x402-cli@0.1.0` — **published to npm ✅**
 - **Gas station removed** — replaced by ALGO-triggered activation poller
 - **Agent activation**: user sends 0.5 ALGO → server detects + opts-in + rekeys automatically
@@ -50,6 +74,7 @@ Claude discovers tool → pays → gets data → answers user
 - Multi-agent portfolio: one wallet → N agents, pending agents shown with amber dot
 - Admin portal: all pages built (dashboard, treasury, agents, security, logs, settings)
 - `tsc --noEmit` passes clean on backend + portal + x402-client + x402-cli
+- **On-chain mandate contracts written** — PyTEAL MandateFactory + MandateContract + server verifier + updated client (Sprint O, NOT yet deployed)
 
 ---
 
@@ -223,7 +248,7 @@ Env vars required:
 ## Sprint 15 — Publish SDKs *(planned)*
 
 - [x] Publish MCP server: `npm publish --access public` from `packages/x402-mcp/`
-- [ ] Publish Python SDK: `python -m build && twine upload dist/*` from `packages/algo-x402/`
+- [x] Publish Python SDK: `python -m build && twine upload dist/*` from `packages/algo-x402/`
 - [x] Update `DOCS_FOR_AGENTS.md` with published package names + install commands
 - [x] Update `/docs` page with MCP install instructions
 
@@ -475,10 +500,18 @@ All items below must be `[x]` before going live.
 
 # PHASE 2 — Ecosystem (The Marketplace)
 
-> **Why this matters:** The buyer side is built — an AI agent with a wallet, mandate-gated
-> spending, and a payment rail. Phase 2 builds the seller side and the discovery layer that
-> connects them. Claude and other LLMs do the matching automatically through MCP tool discovery.
-> This is the AI agent economy layer that EVM x402 cannot serve due to gas economics.
+> **The defensible core:** x402 + AVM mandate contracts. Non-custodial. On-chain enforcement.
+> Agent holds its own key. Nobody else built this on Algorand.
+>
+> **Phase 2 builds the supply side:** sellers list APIs, agents discover and pay autonomously.
+> Claude and other LLMs do the matching through MCP tool discovery.
+>
+> **AP2 is distribution, not architecture.** A thin adapter lets agents built on Google ADK,
+> LangChain, AutoGen — anything that speaks AP2 — settle payments here via `algorand-usdc-x402`.
+> The AVM contract does not change to accommodate AP2. AP2 adapts to the AVM.
+>
+> **Why Algorand beats EVM here:** ~$0.0002/txn vs $0.05–$5.00. 3.8s finality vs 12–60s.
+> Immediate confirmation. No gas auctions. Micropayments are economically viable.
 
 ---
 
@@ -561,7 +594,7 @@ current production behaviour since the environment has drifted.
 - [x] `assertSignerAddressMatch()` added to `src/protection/envGuard.ts` — derives address
       from `ALGO_SIGNER_MNEMONIC`, compares against `ALGO_SIGNER_ADDRESS`, throws on mismatch
       with clear remediation message. Called in signing service boot sequence.
-- [ ] Re-register speed-test-agent against the production signer (rekey on-chain from Cohort A → prod)
+- [x] Re-register speed-test-agent against the production signer — superseded by `weather-test-agent` (already rekeyed to prod signer, stress tests re-run 2026-03-24)
 - [x] Re-run Sprint 5 stress test against current production configuration
       (ran 2026-03-24 with `weather-test-agent` rekeyed to prod signer — 5/5 queued, p95 enqueue 2346ms, 5/5 confirmed)
 
@@ -576,7 +609,7 @@ the groupId, not whether the embedded transaction would pass Algorand validation
 passes middleware verification, but if the signed transaction were ever submitted on-chain it
 would be rejected.
 
-**Fix applied — Option A:**
+**Fix applied — Option A (temporary workaround):**
 
 - [x] `transactions` field removed from `buildPaymentProof` return in `packages/x402-client/src/interceptor.ts`
       — txn is still built internally to derive the `groupId`, but signed bytes are not included in the proof
@@ -585,6 +618,10 @@ would be rejected.
       `verifyGroupIntegrity` skips when transactions absent; error message updated
 - [x] Proof format is now `{ groupId, senderAddr, signature, timestamp, nonce }` — clean identity proof,
       no embedded on-chain-invalid transaction bytes
+
+> **Note:** Option A is a structural workaround, not a true x402 fix. The X-PAYMENT header still
+> does not contain a valid submittable transaction. The permanent solution is Sprint O (on-chain
+> mandate contracts) where agents sign real `ApplicationCallTxn` bytes and the server submits them as-is.
 
 ---
 
@@ -699,41 +736,193 @@ verify-env` passes clean.
 
 ---
 
-## Sprint 17 — x402-Algorand Formal Standard
+## Sprint 17 — MCP Discoverability ✅
 
-**Why:** The payment format is already built. Publishing it as a named, versioned spec
-lets other developers build compatible sellers and buyers without reading source code.
-Positions as "x402 on Algorand" — extending Coinbase's x402 brand rather than competing.
+**Why:** GoPlausible's algorand-mcp dominates Algorand MCP listings (7 registries, 100 tools).
+Competing on breadth is a losing strategy. The niche nobody owns: mandate-governed autonomous
+agent spending — human-set limits, on-chain audit trail, fail-closed safety. Sprint 17 owns
+that search intent and gets the MCP server in front of the right users.
 
-### 17.1 Spec Document
-- [ ] Create `docs/x402-algorand-spec.md` — the canonical spec:
-      - Payment request format (402 response body)
-      - Payment proof format (`X-PAYMENT` header)
-      - Network identifier: `algorand-mainnet` / `algorand-testnet`
-      - Asset: USDC (ASA 31566704 mainnet, 10458941 testnet)
-      - Replay protection: `expiresAt` Unix ms, nonce uniqueness
-      - Error codes and retry behaviour
-- [ ] Publish spec as public GitHub Gist or dedicated repo `x402-algorand-spec`
+**Niche positioning:** "The safety layer for autonomous AI agent spending on Algorand.
+Your owner sets limits. The agent operates within them. Every payment is on-chain."
 
-### 17.2 Discovery Headers
-- [ ] Add to 402 response: `X-Payment-Network: algorand-mainnet`
-- [ ] Add to 402 response: `X-Payment-Asset: USDC`
-- [ ] Add `GET /.well-known/x402` endpoint:
-      ```json
-      {
-        "version": "x402-algo-v1",
-        "networks": ["algorand-mainnet"],
-        "assets": ["USDC"],
-        "assetIds": { "algorand-mainnet": 31566704 }
-      }
-      ```
-- [ ] x402-client: auto-detect network from `X-Payment-Network` header before building proof
+### 17.1 — MCP Server: 3 Tools + Fixed Signature Bug ✅
+- [x] `pay_with_x402` — rewritten description: mandate-first, removed cross-chain noise,
+      now takes `endpoint` param (any x402-gated URL, not hardcoded to agent-action)
+- [x] `check_balance` — new: USDC + ALGO balance from indexer, gas status + remaining txns
+- [x] `check_mandates` — new: list active mandates with per-tx/daily caps + expiry
+- [x] **Bug fixed:** proof was signing `groupId:timestamp:nonce` but server verifies
+      signature over groupId bytes only — payments would have failed in production
+- [x] Removed `transactions` field from proof (Sprint 16A.3 fix, was missing from MCP)
+- [x] Published `@algo-wallet/x402-mcp@0.2.0` to npm ✅
 
-### 17.3 Package Positioning
-- [ ] Add `x402-algorand` as an npm alias for `@algo-wallet/x402-client` (discoverability)
-- [ ] Add `x402-algorand-middleware` as an alias for the server middleware
-- [ ] README: "x402 payment protocol implemented for Algorand USDC"
-- [ ] Update package keywords: `x402`, `algorand`, `usdc`, `micropayments`, `ai-agents`
+### 17.2 — Smithery Listing ✅
+- [x] `packages/x402-mcp/smithery.yaml` — auto-configures server in Claude Desktop
+      with guided env var setup (ALGO_MNEMONIC, X402_AGENT_ID, X402_PORTAL_KEY)
+- [ ] Submit to Smithery — **blocked: requires hosted HTTP endpoint** (Smithery publish only accepts remote HTTP servers, not stdio/npx). Deferred to Sprint 18 when HTTP transport is added.
+
+### 17.3 — mcp.so Listing
+- [x] Submit via GitHub issue: https://github.com/chatmcp/mcpso/issues/1330 ✓
+
+### 17.4 — Spec doc (deferred to Sprint 18)
+Discovery headers + `.well-known/x402` are useful for Sprint 18 seller SDK — deferred.
+
+### 17.5 — Public MCP repo + Registry Submissions *(todo)*
+
+**Why keep main repo private:** source exposes full security architecture (gate order,
+velocity thresholds, Redis key prefixes, signing flow) — gives attackers a meaningful
+head start. Keep private.
+
+**Approach:** create a separate minimal public repo with zero source code:
+
+- [x] Create `github.com/m-reynaldo35/x402-mcp` with 3 files (smithery.yaml, package.json, README.md) ✓
+- [ ] Submit to Smithery — blocked: requires hosted HTTP endpoint (deferred to Sprint 18)
+- [x] Submit to mcp.so via GitHub issue — https://github.com/chatmcp/mcpso/issues/1330 ✓
+
+---
+
+---
+
+## Sprint O — On-Chain Mandate Architecture *(in progress — contracts written, not yet deployed)*
+
+**Why:** The existing architecture is not true x402. Under the Rocca rekey model:
+- `X-PAYMENT` contains a phantom USDC transfer signed by the agent's original key (invalid on-chain for rekeyed accounts)
+- The server builds and signs every payment transaction server-side using one shared Rocca key
+- Mandate enforcement lives in Redis — not in the transaction itself
+- The agent does not hold its own signing key (non-self-sovereign)
+
+**The fix — on-chain AVM mandates:**
+- Each agent gets a `MandateContract` (stateful Algorand app) deployed via `MandateFactory`
+- Agent holds its own Ed25519 key — signs application calls directly (non-custodial)
+- `X-PAYMENT` = base64-encoded signed `MandateContract.pay()` app call — a real submittable transaction
+- The AVM enforces all mandate gates: per-tx cap, 10-min velocity window, 24h daily cap, recipient whitelist, halt flag
+- Server responsibility: decode + verify provenance + submit. No signing. No construction.
+- Toll (0.01 USDC) fires as an inner transaction on every pay() call — cannot be bypassed
+
+```
+Agent (own key)
+    │ signs MandateContract.pay(treasury, 10000)
+    ↓
+X-PAYMENT header  →  Server: decode + verify factory provenance + submit
+                                      ↓
+                             AVM enforces mandate gates atomically
+                                      ↓
+                  inner txn: treasury +10000 µUSDC (toll only, no double-toll)
+```
+
+---
+
+### O.1 — PyTEAL Contracts ✅
+
+- [x] `contracts/pyteal/constants.py` — all state keys (short: `ak`, `mw`, `tr`, `fi`, etc.), schema counts, network constants (USDC IDs, time windows)
+- [x] `contracts/pyteal/mandate_contract.py` — stateful per-agent MandateContract:
+      - `pay(address, uint64)` — 6 gates: halt check → agent identity → non-zero → per-tx cap → velocity window → daily cap → inner txns
+      - Recipient whitelist via box storage (32-byte address as box key)
+      - `Global.latest_timestamp()` for real wall-clock velocity windows (not round-based)
+      - Treasury payments skip double-toll: single inner txn when `recipient == treasury`
+      - Seller payments fire 2 inner txns: payment + toll atomically
+      - `update_mandate(max, vel, daily, version)` — master wallet only + anti-rollback version counter
+      - `add_recipient(addr)` / `remove_recipient(addr)` — box whitelist management
+      - `halt()` / `resume()` — emergency controls by master wallet
+      - `transfer_master(addr)` — transfer mandate authority
+      - `opt_in_usdc()` — app account opts in to USDC ASA
+- [x] `contracts/pyteal/mandate_factory.py` — operator-deployed factory:
+      - `set_programs(approval_bytes, clear_bytes)` — store compiled contract in boxes
+      - `create_agent(agent_key, master, max_per_tx, vel_cap, daily_cap)` — inner app-create, returns new app ID via log
+      - Treasury, toll, usdc_id taken from factory state — caller cannot override
+      - `factory_id` written into every child contract → provenance chain
+      - `update_toll()` / `update_treasury()` — affects new contracts only
+      - `pause()` / `unpause()` — block new deployments
+- [x] `contracts/pyteal/deploy.py` — deployment CLI:
+      - `python deploy.py deploy-factory` — one-time operator setup, prints `FACTORY_APP_ID`
+      - `python deploy.py set-programs` — upload compiled bytes to factory boxes, prints `MANDATE_CONTRACT_APPROVAL_HASH`
+      - `python deploy.py create-agent --agent-key X --master-key Y --max-per-tx N --velocity N --daily N`
+- [x] `contracts/pyteal/requirements.txt` — pyteal, algosdk, algokit-utils
+
+### O.2 — Server-Side Mandate Verifier ✅
+
+- [x] `src/services/mandateVerifier.ts` — `verifyMandateCall(signedTxnBase64)`:
+      - Decodes signed transaction (msgpack → algosdk.SignedTransaction)
+      - Verifies `type == appl`
+      - Verifies ARC-4 method selector == `pay(address,uint64)void`
+      - Decodes ABI args: recipient (32 bytes → address), amount (uint64 big-endian)
+      - Verifies toll parameters when `recipient == treasury`
+      - `checkFactoryProvenance(appId)`: reads `global-state["fi"]` from algod, compares against `MANDATE_FACTORY_APP_ID`
+      - Redis cache (1hr TTL) for provenance — avoids algod call on every request
+      - Fallback: SHA-256 hash of approval program when factory ID not set
+      - Returns `VerifiedMandateCall` with `appId`, `appAddress`, `agentAddress`, `recipient`, `amountMicroUsdc`
+
+### O.3 — Updated Settlement Middleware ✅
+
+- [x] `src/middleware/x402Settle.ts` — replaced construct-sign-submit pipeline with decode-verify-submit:
+      - Gates 5 (velocity), 7 (constructAtomicGroup), 8 (executePipeline) **removed**
+      - New Gate 5: `verifyMandateCall()` — ARC-4 selector + toll params + factory provenance
+      - New Gate 6: sender match — `appCall.sender == registered agent address`
+      - New Gate 7: per-agent concurrent-settlement lock (SETTLING_LOCK_TTL_S = 30s)
+      - New Gate 8: `algod.sendRawTransaction(signedBytes)` + `algosdk.waitForConfirmation(txid, 5)`
+      - AVM rejections → 402 with mandate error message
+      - Network errors → 502 + circuit breaker record
+      - Gas advisory headers now report MandateContract app account balance (not agent wallet)
+      - `X-Agent-Contract-Id` header added
+      - Removed: `constructAtomicGroup`, `executePipeline`, `enforceActiveMandate`, `rollbackMandateVelocity`, velocity reservation rollback
+      - `tsc --noEmit` passes clean
+
+### O.4 — Updated Client SDK ✅
+
+- [x] `packages/x402-client/src/interceptor.ts` — `buildMandatePayCall()` replaces phantom groupId builder:
+      - Builds real `ApplicationCallTxn` targeting `mandateAppId`
+      - ARC-4 args: `[PAY_SELECTOR, treasuryBytes(32), amountBuf(8)]`
+      - `fee = 3_000 µALGO` (covers outer + 2 inner transactions), `flatFee = true`
+      - Signs with agent's own key (`txn.signTxn(privateKey)`)
+      - Returns base64(msgpack(SignedTransaction)) — raw Algorand bytes, not JSON
+      - `requestWithPayment` now requires `mandateAppId: number` parameter
+      - `parseGasInfo` updated: reads `X-Agent-Contract-Id` header, returns `contractId` field
+      - 402 on retry classified as `POLICY_BREACH` (mandate gate fired)
+- [x] `.env.example` — added `MANDATE_FACTORY_APP_ID`, `MANDATE_CONTRACT_APPROVAL_HASH`, `MANDATE_APP_ID`
+
+---
+
+### O.5 — Remaining Work *(not started — must complete before mainnet deploy)*
+
+**Contract fix (do first):**
+- [ ] **Whitelist-optional mode** — update `mandate_contract.py` Gate 5: if no box entries exist,
+      skip the whitelist check and run cap-only mode. Enables AP2 open commerce without pre-approving
+      every merchant. Master wallet controls via `whitelist_enabled` flag or implicit zero-box check.
+      Three modes: open (no boxes = any recipient), strict (boxes set = whitelist enforced), DeFi
+      (protocol contract addresses whitelisted explicitly). AVM contract is the only place this lives.
+
+**Server wiring:**
+- [ ] **Update `src/middleware/x402.ts`** — paywall decodes app call, extracts `senderAddr` from
+      `txn.sender`. `X402PaymentProof` JSON format deprecated. Algorand validity rounds = replay protection.
+- [ ] **Simplify `replayGuard.ts`** — remove timestamp/nonce check; first-valid/last-valid window
+      on the Algorand txn is the replay guard. Keep infrastructure rate limiting only.
+- [ ] **Agent registration** — `POST /api/agents/create` calls `MandateFactory.create_agent()`,
+      stores returned `appId` in agent registry. ALGO-triggered activation includes `opt_in_usdc()`
+      on the MandateContract app account.
+- [ ] **Agent registry schema** — add `mandateAppId: number` to `AgentRecord`. Parallel support
+      for old Rocca-rekeyed agents until migrated.
+- [ ] **Update `src/middleware/validation.ts`** — Rule 3 `authAddr` check obsolete; agents no
+      longer rekey to Rocca. Replace with mandate contract existence check.
+
+**SDK + tooling:**
+- [ ] **`packages/x402-client/src/client.ts`** — add `mandateAppId` to `ClientConfig`.
+- [ ] **`packages/x402-mcp/`** — `pay_with_x402` tool uses new `mandateAppId`-based signing.
+- [ ] **`packages/x402-cli/`** — `mandate list` shows contract app ID + on-chain velocity state.
+
+**Dashboard:**
+- [ ] **Onboarding wizard** — Step 3: agent no longer rekeys to Rocca. Activation deposits
+      ALGO + USDC to MandateContract app account. Show app account address + QR.
+
+**Deploy + verify:**
+- [ ] **Deploy to testnet** — `cd contracts/pyteal && pip install -r requirements.txt`
+      → `python mandate_contract.py && python mandate_factory.py`
+      → `python deploy.py deploy-factory`
+      → `python deploy.py set-programs` (note `MANDATE_CONTRACT_APPROVAL_HASH`)
+      → `python deploy.py create-agent --agent-key X --master-key Y --max-per-tx N --velocity N --daily N`
+- [ ] **End-to-end test** — `scripts/buy-weather.ts` with mandate contract agent on testnet.
+      Confirm: payment goes through, velocity breach returns AVM error, daily cap enforced.
+- [ ] **Set env vars** — `MANDATE_FACTORY_APP_ID` + `MANDATE_CONTRACT_APPROVAL_HASH` in Railway.
+- [ ] **Mainnet deploy** — repeat deploy sequence on mainnet. Verify with real $0.01 USDC payment.
 
 ---
 
@@ -762,10 +951,71 @@ the faster the registry fills.
 - [ ] FastAPI adapter (Python): `@x402(price=1000, pay_to="ALGO_ADDRESS")`
 - [ ] Seller CLI: `npx x402-algorand register --tool get_weather --endpoint https://myapi.com`
 
+### 18.0 — HTTP Transport for MCP Server (unlocks Smithery listing) ✅
+- [x] `src/mcp/httpServer.ts` — stateless StreamableHTTP transport, credentials via headers, same 3 tools as stdio server
+- [x] `POST /mcp` mounted in `src/index.ts` — behind rateLimiter, no extra Railway service needed
+- [x] CORS updated: X-Algo-Mnemonic, X-Agent-Id, X-Api-Url headers added
+- [x] `smithery.yaml` updated: type http, url `https://api.ai-agentic-wallet.com/mcp`, headers mapped to config vars
+- [x] Public repo `github.com/m-reynaldo35/x402-mcp` updated with new smithery.yaml
+- [ ] Submit to Smithery: https://smithery.ai/new → point at `https://github.com/m-reynaldo35/x402-mcp` (deploy to Railway first)
+
 ### 18.2 Seller Documentation
 - [ ] Quickstart: "Add x402 payment to your API in 5 minutes"
 - [ ] Pricing guide: micro-USDC denomination, recommended price tiers
 - [ ] Security guide: replay protection, mandate-aware rate limiting
+
+---
+
+## Sprint Q — AP2 Adapter *(small, after Sprint O mainnet + Sprint 18 complete)*
+
+**Scope:** AP2 is a distribution channel, not an architecture driver. The AVM contract does
+not change to accommodate AP2. AP2 adapts to the AVM. This is a thin translation layer only.
+
+**What AP2 is:** Google's [Agent Payments Protocol](https://github.com/google-agentic-commerce/AP2).
+Three-stage mandate chain: `IntentMandate` → `CartMandate` (merchant-signed) → `PaymentMandate`
+(agent authorization). Framework-agnostic. Built on W3C Payment Request API + SD-JWT-VC.
+
+**The boundary:** AP2 handles commerce semantics (what to buy, from whom). Our AVM handles
+enforcement (caps, velocity, whitelist). AP2 mandate chain terminates in `MandateContract.pay()`.
+The AVM is the truth. AP2 is how external agents find their way here.
+
+**Architectural constraint:** Do not modify `mandate_contract.py` for AP2 compatibility.
+Do not add JWT verification to the AVM. Do not make the AVM aware of AP2 concepts.
+The adapter lives entirely outside the contract.
+
+---
+
+### Q.1 — Python Adapter (`packages/ap2-adapter/`)
+
+AP2 types are Python/Pydantic — adapter lives in the Python layer.
+
+- [ ] `ap2_algorand/payment_method.py` — `AlgorandUsdcMethodData(mandate_app_id, asset_id, network, x402_endpoint)` — the `algorand-usdc-x402` payment method data shape
+- [ ] `ap2_algorand/cart_adapter.py` — `cart_to_payment_args(CartMandate) → (app_id, amount_micro_usdc, recipient)` — extracts and validates the x402 payment params from a CartMandate
+- [ ] `ap2_algorand/settle.py` — `settle(CartMandate, private_key, algod_url) → PaymentReceipt`:
+      builds `MandateContract.pay()` ARC-4 app call, signs with agent key, submits,
+      returns AP2 `PaymentReceipt` with Algorand txid as all three confirmation ID fields
+- [ ] `pyproject.toml` — deps: `ap2 @ git+https://github.com/google-agentic-commerce/AP2`, `py-algorand-sdk`, `pydantic`
+- [ ] `README.md` — install + 10-line quickstart
+
+### Q.2 — Sample Scenario + PR
+
+The PR into `google-agentic-commerce/AP2` is the distribution play. Matches their sample structure exactly.
+
+- [ ] `samples/ap2-algorand/run.sh` + `README.md` — runnable end-to-end:
+      agent issues `IntentMandate` → our `/api/weather` returns `CartMandate` (payment_method: `algorand-usdc-x402`) → adapter fires `MandateContract.pay()` → `PaymentReceipt` with Pera Explorer link
+- [ ] Open PR to `google-agentic-commerce/AP2` — add `algorand-usdc-x402` as a payment method sample
+- [ ] `GET /.well-known/ap2` on Railway — discovery endpoint returning `mandate_factory_app_id`, `network`, `asset_id`
+
+### Q.3 — Reference Mapping
+
+| AP2 concept | Our equivalent |
+|---|---|
+| `IntentMandate` | Master wallet mandate config (caps set once at contract deploy) |
+| `CartMandate` | x402 402-response (merchant's price offer) |
+| `PaymentMandate` | Signed `MandateContract.pay()` app call |
+| `user_cart_confirmation_required: false` | Autonomous mode — AVM caps are the consent boundary |
+| `PaymentReceipt.network_confirmation_id` | Algorand txid — network IS the ledger |
+| `merchant_authorization` JWT | Seller's Algorand address + factory provenance check |
 
 ---
 
@@ -1223,10 +1473,10 @@ The ecosystem is live when all of the following work in a single uninterrupted f
 - [x] Mandate expiry required — past dates unselectable in date picker
 
 ## SDK & Integrations
-- [x] `@algo-wallet/x402-client@0.2.0` built (publish to npm pending)
-- [x] `@algo-wallet/x402-mcp@0.1.0` MCP server built (publish pending)
-- [x] `algo-x402@0.1.0` Python SDK built (publish pending)
-- [x] `@algo-wallet/x402-cli@0.1.0` CLI built (publish pending)
+- [x] `@algo-wallet/x402-client@0.3.0` published to npm ✅ (Sprint 16A: `client.fetch()`, `parseGasInfo`, proof format fix)
+- [x] `@algo-wallet/x402-mcp@0.1.0` published to npm ✅
+- [x] `algo-x402@0.1.0` Python SDK published to PyPI ✅
+- [x] `@algo-wallet/x402-cli@0.1.0` published to npm ✅
 - [x] API versioning: `/v1/api/*` canonical, `/api/*` legacy alias
 
 ## Payment Stress Testing (Sprint 5)

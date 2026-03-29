@@ -144,7 +144,7 @@ export default function GetStartedPage() {
               <span className="mt-0.5 w-6 h-6 rounded bg-emerald-900/50 border border-emerald-700 flex items-center justify-center text-emerald-400 text-xs font-bold shrink-0">A</span>
               <div>
                 <p className="text-white text-sm font-medium">Your agent wallet — AI payment funds</p>
-                <p className="text-zinc-500 text-xs mt-0.5 leading-relaxed">Holds the USDC your AI spends. Rekeyed to Rocca so it can pay autonomously within your mandate limits. You hold the signing key — the server never does.</p>
+                <p className="text-zinc-500 text-xs mt-0.5 leading-relaxed">Signs x402 payments autonomously. USDC lives in the agent&apos;s MandateContract — spend limits enforced on-chain by the AVM. You hold the signing key; the server never does.</p>
               </div>
             </div>
           </div>

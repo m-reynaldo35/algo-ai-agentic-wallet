@@ -1,20 +1,33 @@
 import algosdk from "algosdk";
 import crypto from "crypto";
-import type { PayJson, X402PaymentProof } from "./types.js";
+import type { PayJson } from "./types.js";
 import { X402ErrorCode } from "./types.js";
 
 /**
- * x402 Interceptor — Automatic Payment Handshake with Retry
+ * x402 Interceptor — On-Chain Mandate Payment Handshake
  *
  * Wraps any HTTP request to an x402-gated endpoint. If the server
  * bounces with 402 Payment Required, the interceptor:
  *   1. Parses the pay+json terms
- *   2. Builds an Algorand atomic group (toll payment)
- *   3. Signs the groupId with the agent's Ed25519 key
- *   4. Retries the original request with the X-PAYMENT proof header
+ *   2. Builds a MandateContract.pay() application call transaction
+ *   3. Signs it with the agent's own Ed25519 key
+ *   4. Retries the original request with the signed txn in X-PAYMENT
+ *
+ * Under this architecture:
+ *   - The agent holds its own private key (non-custodial)
+ *   - Mandate gates (velocity, caps, whitelist) are enforced by the AVM
+ *   - The server decodes, verifies provenance, and submits — does not sign
+ *   - Replay protection is provided by Algorand transaction validity windows
  *
  * The caller never sees the 402 — it's fully absorbed.
  */
+
+// ── ARC-4 helpers ───────────────────────────────────────────────
+
+/** ARC-4 method selector for MandateContract.pay(address,uint64)void */
+const PAY_SELECTOR = Buffer.from(
+  algosdk.ABIMethod.fromSignature("pay(address,uint64)void").getSelector(),
+);
 
 // ── Typed Error Class ───────────────────────────────────────────
 
@@ -27,7 +40,7 @@ export class X402Error extends Error {
     this.code = code;
   }
 
-  /** Returns true if the error is a TEAL policy breach (agent overspend) */
+  /** Returns true if the error is a mandate gate breach (AVM rejected) */
   isPolicyBreach(): boolean {
     return this.code === X402ErrorCode.POLICY_BREACH;
   }
@@ -45,13 +58,17 @@ export class X402Error extends Error {
 
 /**
  * Make an HTTP request, transparently absorbing any 402 challenge.
- * @param maxRetries - Number of times to retry transient failures (default 2)
+ *
+ * @param mandateAppId - The MandateContract application ID for this agent.
+ *                       Obtained when the agent's contract was deployed via MandateFactory.
+ * @param maxRetries   - Number of times to retry transient failures (default 2)
  */
 export async function requestWithPayment(
   url: string,
   init: RequestInit,
   privateKey: Uint8Array,
   senderAddress: string,
+  mandateAppId: number,
   maxRetries = 2,
 ): Promise<Response> {
   let lastError: X402Error | null = null;
@@ -86,20 +103,36 @@ export async function requestWithPayment(
 
       if (new Date(payJson.expires).getTime() < Date.now()) {
         throw new X402Error(
-          "402 offer has expired before proof could be built",
+          "402 offer has expired before payment could be built",
           X402ErrorCode.OFFER_EXPIRED,
         );
       }
 
-      // ── Build atomic toll proof ──────────────────────────────
-      const proof = await buildPaymentProof(payJson, privateKey, senderAddress);
+      // ── Build and sign MandateContract.pay() call ────────────
+      const signedTxnBase64 = await buildMandatePayCall(
+        payJson,
+        privateKey,
+        senderAddress,
+        mandateAppId,
+      );
 
-      // ── Retry original request with proof ────────────────────
-      const headerValue = Buffer.from(JSON.stringify(proof)).toString("base64");
+      // ── Retry original request with signed transaction ────────
       const retryHeaders = new Headers(init.headers);
-      retryHeaders.set("X-PAYMENT", headerValue);
+      retryHeaders.set("X-PAYMENT", signedTxnBase64);
 
-      return fetch(url, { ...init, headers: retryHeaders });
+      const retryResponse = await fetch(url, { ...init, headers: retryHeaders });
+
+      // Classify 402 responses on the retry as mandate rejections (AVM gate fired)
+      if (retryResponse.status === 402) {
+        let detail = "Mandate contract rejected payment";
+        try {
+          const body = await retryResponse.clone().json() as { error?: string };
+          if (body.error) detail = body.error;
+        } catch { /* ignore parse errors */ }
+        throw new X402Error(detail, X402ErrorCode.POLICY_BREACH);
+      }
+
+      return retryResponse;
 
     } catch (err) {
       if (err instanceof X402Error) {
@@ -116,13 +149,24 @@ export async function requestWithPayment(
   throw lastError ?? new X402Error("Max retries exceeded", X402ErrorCode.NETWORK_ERROR);
 }
 
-// ── Proof Builder ──────────────────────────────────────────────
+// ── Mandate Pay Call Builder ────────────────────────────────────
 
-async function buildPaymentProof(
+/**
+ * Build and sign a MandateContract.pay(treasury, amount) application call.
+ *
+ * The signed transaction bytes are returned as base64. The server decodes
+ * the transaction, verifies the method selector and toll parameters, checks
+ * factory provenance, then submits. The AVM enforces all mandate gates
+ * (velocity windows, per-tx cap, daily cap, recipient whitelist) at execution.
+ *
+ * X-PAYMENT = base64(msgpack(SignedTransaction))
+ */
+async function buildMandatePayCall(
   payJson: PayJson,
   privateKey: Uint8Array,
   senderAddress: string,
-): Promise<X402PaymentProof> {
+  mandateAppId: number,
+): Promise<string> {
   const algodUrl = resolveAlgodUrl(payJson.network.chain);
 
   let suggestedParams: algosdk.SuggestedParams;
@@ -137,32 +181,31 @@ async function buildPaymentProof(
     );
   }
 
-  const tollTxn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
-    sender: senderAddress,
-    receiver: payJson.payment.payTo,
-    amount: BigInt(payJson.payment.amount),
-    assetIndex: BigInt(payJson.payment.asset.id),
-    suggestedParams,
-    note: new Uint8Array(Buffer.from(payJson.memo)),
+  // ARC-4 encoding:
+  //   arg[0] = method selector (4 bytes)
+  //   arg[1] = recipient address (32 raw bytes — decoded from base32 Algorand address)
+  //   arg[2] = amount in micro-USDC (uint64 big-endian 8 bytes)
+  const treasuryBytes = algosdk.decodeAddress(payJson.payment.payTo).publicKey;
+  const amountBuf = Buffer.alloc(8);
+  amountBuf.writeBigUInt64BE(BigInt(payJson.payment.amount));
+
+  // AVM fires 2 inner asset transfers — budget outer + 2 inner txn fees.
+  // In algosdk v3, flatFee and fee are properties on suggestedParams.
+  const sp = { ...suggestedParams, fee: 3_000n, flatFee: true };
+
+  const txn = algosdk.makeApplicationCallTxnFromObject({
+    sender:          senderAddress,
+    appIndex:        mandateAppId,
+    onComplete:      algosdk.OnApplicationComplete.NoOpOC,
+    appArgs:         [PAY_SELECTOR, treasuryBytes, amountBuf],
+    suggestedParams: sp,
   });
 
-  const txns = [tollTxn];
-  algosdk.assignGroupID(txns);
+  // Agent signs the application call with their own key.
+  // This is a standard Algorand transaction — not a phantom groupId signature.
+  const signedTxn = txn.signTxn(privateKey);
 
-  const groupIdBytes = txns[0].group!;
-  const groupId = Buffer.from(groupIdBytes).toString("base64");
-  // Sign only the groupId bytes — this proves identity without embedding a
-  // transaction that would be invalid on-chain for custodially-managed (rekeyed)
-  // agents (whose auth-addr is the Rocca signer, not the original key).
-  const signature = algosdk.signBytes(groupIdBytes, privateKey);
-
-  return {
-    groupId,
-    senderAddr: senderAddress,
-    signature: Buffer.from(signature).toString("base64"),
-    timestamp: Math.floor(Date.now() / 1000) - 5, // 5s back-skew handles server clock lag
-    nonce: crypto.randomUUID(),
-  };
+  return Buffer.from(signedTxn).toString("base64");
 }
 
 // ── Gas Status Helpers ─────────────────────────────────────────
@@ -172,8 +215,10 @@ export type AgentGasStatus = "ok" | "low" | "critical";
 export interface AgentGasInfo {
   /** "ok" | "low" | "critical" — from X-Agent-Gas-Status header */
   status: AgentGasStatus;
-  /** Estimated remaining transactions — from X-Agent-Gas-Remaining header */
+  /** Estimated remaining fee transactions — from X-Agent-Gas-Remaining header */
   remaining: number;
+  /** MandateContract application ID — from X-Agent-Contract-Id header */
+  contractId?: number;
 }
 
 /**
@@ -181,12 +226,14 @@ export interface AgentGasInfo {
  * Returns null if the server did not include gas headers (e.g. on error paths).
  */
 export function parseGasInfo(response: Response): AgentGasInfo | null {
-  const status    = response.headers.get("X-Agent-Gas-Status") as AgentGasStatus | null;
-  const remaining = response.headers.get("X-Agent-Gas-Remaining");
+  const status     = response.headers.get("X-Agent-Gas-Status") as AgentGasStatus | null;
+  const remaining  = response.headers.get("X-Agent-Gas-Remaining");
+  const contractId = response.headers.get("X-Agent-Contract-Id");
   if (!status) return null;
   return {
     status,
-    remaining: remaining !== null ? parseInt(remaining, 10) : 0,
+    remaining:  remaining  !== null ? parseInt(remaining, 10)  : 0,
+    contractId: contractId !== null ? parseInt(contractId, 10) : undefined,
   };
 }
 
@@ -204,3 +251,8 @@ function resolveAlgodUrl(chain: string): string {
       return "https://testnet-api.4160.nodely.dev";
   }
 }
+
+// Re-export for consumers that reference the old phantom proof type.
+// The X402PaymentProof shape is no longer sent by this interceptor but
+// kept for reference and any external tooling that parses it.
+export type { X402PaymentProof } from "./types.js";

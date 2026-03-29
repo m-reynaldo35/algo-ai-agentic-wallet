@@ -180,7 +180,7 @@ export default function DocsPage() {
           {/* Registration */}
           <Section title="Agent Onboarding" id="registration">
             <p className="text-zinc-400 leading-relaxed mb-6">
-              Agents are activated by an on-chain ALGO deposit — no treasury spend, no manual opt-in. You create the agent, save the signing key, send ALGO to the address, and the server detects the deposit and automatically opts the wallet into USDC and rekeyed it to Rocca.
+              Agents are non-custodial. You generate your own keypair, the operator deploys a MandateContract with your spend limits, you register with the server, and fund the contract app account with ALGO (gas) and USDC (spending power). No rekeying. You hold the signing key forever.
             </p>
 
             <p className="text-white text-sm font-medium mb-2">Step 1 — Create the agent</p>
@@ -213,7 +213,7 @@ const { agentId, address, mnemonic } = await res.json();
             <p className="text-white text-sm font-medium mt-6 mb-2">Step 3 — Send 0.5 ALGO to activate</p>
             <p className="text-zinc-400 text-sm mb-3">
               Send at least <strong className="text-white">0.5 ALGO</strong> to the <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">address</code> returned above.
-              The server polls the Algorand indexer every 10 seconds. On detection it opts the wallet into USDC and rekeyed it to Rocca — the agent status changes to <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">active</code>.
+              The server polls the MandateContract app account every 10 seconds. When it detects USDC &gt; 0, the agent status changes to <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">active</code>.
             </p>
             <CodeBlock
               language="typescript"
@@ -250,8 +250,9 @@ import algosdk from "algosdk";
 const account = algosdk.mnemonicToSecretKey(process.env.ALGO_MNEMONIC!);
 
 const client = new AlgoAgentClient({
-  baseUrl:    "https://api.ai-agentic-wallet.com",
-  privateKey: account.sk,  // 64-byte Uint8Array
+  baseUrl:      "https://api.ai-agentic-wallet.com",
+  privateKey:   account.sk,               // 64-byte Uint8Array
+  mandateAppId: Number(process.env.MANDATE_APP_ID!),  // from register-mandate
 });
 
 const result = await client.executeTrade({
@@ -343,11 +344,12 @@ if (gas?.status === "critical") {
             <div className="space-y-4">
               <EndpointCard
                 method="POST"
-                path="/api/agents/register-existing"
-                description="Register an existing Algorand wallet as an x402 agent. Rekeyed to Rocca on-chain; your private key is never stored. Requires X-Portal-Key header."
+                path="/api/agents/register-mandate"
+                description="Register a non-custodial mandate agent. Provide your address and mandateAppId. The server stores the record — no on-chain ops, no rekeying. Requires X-Portal-Key header."
                 params={[
                   { name: "agentId", type: "string", required: true, desc: "Unique agent ID (alphanumeric + hyphens)" },
-                  { name: "mnemonic", type: "string", required: true, desc: "25-word Algorand mnemonic of funded wallet" },
+                  { name: "address", type: "string", required: true, desc: "Agent Algorand address (58-char base32)" },
+                  { name: "mandateAppId", type: "number", required: true, desc: "MandateContract application ID" },
                   { name: "platform", type: "string", required: false, desc: '"openai" | "anthropic" | "custom"' },
                 ]}
               />
@@ -363,7 +365,7 @@ if (gas?.status === "critical") {
               <EndpointCard
                 method="POST"
                 path="/api/execute"
-                description="Forwards a SandboxExport to the settlement pipeline. Rocca signs and submits the atomic group on-chain."
+                description="Forwards a SandboxExport to the settlement pipeline. The server verifies factory provenance and submits the signed atomic group on-chain."
                 params={[
                   { name: "sandboxExport", type: "SandboxExport", required: true, desc: "From agent-action 200 response" },
                   { name: "agentId", type: "string", required: true, desc: "Registered agent ID" },
@@ -395,6 +397,7 @@ if (gas?.status === "critical") {
                 params={[
                   ["baseUrl", "string", "Required", "x402 server URL"],
                   ["privateKey", "Uint8Array", "Required", "64-byte Algorand Ed25519 secret key"],
+                  ["mandateAppId", "number", "Required", "MandateContract application ID for this agent"],
                   ["slippageBips", "number", "Optional", "Slippage tolerance (default: 50 = 0.5%)"],
                   ["maxRetries", "number", "Optional", "Max handshake retries (default: 2)"],
                   ["onProgress", "function", "Optional", "Progress callback (stage, message)"],
@@ -430,7 +433,7 @@ if (gas?.status === "critical") {
           {/* Mandates */}
           <Section title="Mandates" id="mandates">
             <p className="text-zinc-400 leading-relaxed mb-4">
-              Mandates (AP2) allow recurring or autonomous payments without a repeated x402 handshake per request. A human operator authorises a mandate once (via Pera Connect QR scan), defining spend limits and expiry. Rocca then evaluates the mandate on every execution and signs automatically if within bounds.
+              MandateContracts are on-chain Algorand smart contracts that enforce spend limits at the AVM level — per-transaction cap, 10-minute velocity window, and a 24-hour daily cap. A human operator deploys the contract with the desired limits once. The agent then signs its own <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">pay()</code> calls; the AVM rejects anything that exceeds the caps.
             </p>
             <div className="grid sm:grid-cols-2 gap-4 mb-4">
               {[

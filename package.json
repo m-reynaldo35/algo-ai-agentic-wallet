@@ -30,6 +30,7 @@
   "dependencies": {
     "@algo-wallet/x402-client": "file:./packages/x402-client",
     "@anthropic-ai/sdk": "^0.78.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@sentry/node": "^9.20.0",
     "@simplewebauthn/server": "^13.2.3",
     "@types/cors": "^2.8.19",

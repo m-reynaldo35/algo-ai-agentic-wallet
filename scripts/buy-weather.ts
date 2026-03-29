@@ -1,15 +1,14 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  BUY-WEATHER — Sprint 16 End-to-End x402 Payment Test           ║
+ * ║  BUY-WEATHER — x402 Atomic Payment End-to-End Test              ║
  * ║                                                                  ║
- * ║  Demonstrates a complete x402 payment cycle:                     ║
+ * ║  Demonstrates atomic payment-then-deliver:                       ║
  * ║    1. Agent requests weather data                                ║
  * ║    2. Server bounces with 402 (payment required)                 ║
  * ║    3. Client builds payment proof, retries with X-PAYMENT        ║
- * ║    4. Server delivers weather data + unsigned payment sandbox     ║
- * ║    5. Client forwards sandbox to /api/execute                    ║
- * ║    6. Server signer signs + broadcasts USDC transfer on-chain    ║
- * ║    7. Payment confirmed — txnId logged + verified on explorer    ║
+ * ║    4. Server settles USDC toll inline (sign → enqueue)           ║
+ * ║    5. Weather data returned — payment already committed          ║
+ * ║    6. Client polls job to get confirmed on-chain txnId           ║
  * ║                                                                  ║
  * ║  Usage:                                                          ║
  * ║    npx tsx scripts/buy-weather.ts                                ║
@@ -18,33 +17,34 @@
  */
 
 import algosdk from "algosdk";
-import { requestWithPayment, X402Error } from "@algo-wallet/x402-client";
+import { AlgoAgentClient, X402Error } from "@algo-wallet/x402-client";
 import "dotenv/config";
 
 // ── Environment ────────────────────────────────────────────────
 
-const API_URL      = (process.env.API_URL ?? "https://api.ai-agentic-wallet.com").replace(/\/+$/, "");
-const MNEMONIC     = process.env.ALGO_MNEMONIC;
+const API_URL       = (process.env.API_URL ?? "https://api.ai-agentic-wallet.com").replace(/\/+$/, "");
+const MNEMONIC      = process.env.ALGO_MNEMONIC;
 const PORTAL_SECRET = process.env.PORTAL_API_SECRET;
-const AGENT_ID     = process.env.AGENT_ID;
-const CITY         = process.env.CITY ?? "Lagos";
+const CITY          = process.env.CITY ?? "Lagos";
 const EXPLORER_BASE = "https://explorer.perawallet.app/tx";
 
 if (!MNEMONIC) {
   console.error("[FATAL] ALGO_MNEMONIC is required.");
   process.exit(1);
 }
-if (!PORTAL_SECRET || !AGENT_ID) {
-  console.error("[FATAL] PORTAL_API_SECRET and AGENT_ID are required for /api/execute.");
+if (!PORTAL_SECRET) {
+  console.error("[FATAL] PORTAL_API_SECRET is required to poll job status.");
   process.exit(1);
 }
 
 const account = algosdk.mnemonicToSecretKey(MNEMONIC);
 const SENDER  = account.addr.toString();
 
+const client = new AlgoAgentClient({ baseUrl: API_URL, privateKey: account.sk });
+
 // ── Banner ─────────────────────────────────────────────────────
 
-const W = 68; // total box width including borders
+const W = 68;
 function row(label: string, value: string): string {
   const content = `  ${label.padEnd(10)}${value}`;
   return `║${content.padEnd(W - 2)}║`;
@@ -52,7 +52,7 @@ function row(label: string, value: string): string {
 
 console.log(`
 ╔${"═".repeat(W - 2)}╗
-║${"  BUY-WEATHER — Sprint 16 x402 End-to-End Test".padEnd(W - 2)}║
+║${"  BUY-WEATHER — x402 Atomic Payment Test".padEnd(W - 2)}║
 ╠${"═".repeat(W - 2)}╣
 ${row("Target:", API_URL)}
 ${row("Agent:", `${SENDER.slice(0, 12)}...${SENDER.slice(-6)}`)}
@@ -65,7 +65,7 @@ ${row("Toll:", "10,000 micro-USDC ($0.01)")}
 // ── Step 1: Health Check ───────────────────────────────────────
 
 async function healthCheck(): Promise<void> {
-  console.log(`[BUY-WEATHER] Step 1/4: Health check → GET ${API_URL}/health`);
+  console.log(`[BUY-WEATHER] Step 1/3: Health check → GET ${API_URL}/health`);
   const res = await fetch(`${API_URL}/health`);
   if (!res.ok) {
     console.error(`[BUY-WEATHER] ABORT — Health returned ${res.status}`);
@@ -81,7 +81,7 @@ async function healthCheck(): Promise<void> {
   console.log(`[BUY-WEATHER]   ✓ Server is live.\n`);
 }
 
-// ── Step 2+3: x402 Handshake + Weather Fetch ──────────────────
+// ── Step 2: x402 Handshake + Atomic Payment + Weather ─────────
 
 interface WeatherResponse {
   weather: {
@@ -92,28 +92,23 @@ interface WeatherResponse {
     weather_code:   number;
     timestamp:      string;
   };
-  export: Record<string, unknown>;
+  status:          string;
+  jobId:           string;
+  agentId:         string;
   toll_micro_usdc: number;
-  status: string;
+  pollUrl:         string;
 }
 
-async function fetchWeather(): Promise<WeatherResponse> {
-  const url = `${API_URL}/api/weather`;
-
-  console.log(`[BUY-WEATHER] Step 2/4: x402 handshake → POST /api/weather`);
+async function buyWeather(): Promise<WeatherResponse> {
+  console.log(`[BUY-WEATHER] Step 2/3: x402 handshake + atomic payment → POST /api/weather`);
   console.log(`[BUY-WEATHER]   City: ${CITY}`);
   console.log(`[BUY-WEATHER]   Sending request without X-PAYMENT (expecting 402 bounce)...`);
 
-  const response = await requestWithPayment(
-    url,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ city: CITY, senderAddress: SENDER }),
-    },
-    account.sk,
-    SENDER,
-  );
+  const response = await client.fetch("/api/weather", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ city: CITY }),
+  });
 
   if (!response.ok) {
     const errBody = await response.json().catch(() => ({ error: response.statusText })) as Record<string, string>;
@@ -123,50 +118,31 @@ async function fetchWeather(): Promise<WeatherResponse> {
 
   const body = await response.json() as WeatherResponse;
   console.log(`[BUY-WEATHER]   ✓ 402 absorbed — payment proof accepted.`);
+  console.log(`[BUY-WEATHER]   ✓ USDC toll committed on server (jobId: ${body.jobId}).`);
   console.log(`[BUY-WEATHER]   ✓ Weather data received.\n`);
   return body;
 }
 
-// ── Step 4: Settlement ─────────────────────────────────────────
-
-interface QueuedJob {
-  success: boolean;
-  queued:  boolean;
-  jobId:   string;
-  status:  string;
-  pollUrl: string;
-  agentId: string;
-  sandboxId: string;
-}
+// ── Step 3: Poll for on-chain confirmation ─────────────────────
 
 interface JobStatus {
-  jobId:     string;
-  status:    "queued" | "processing" | "confirmed" | "failed";
-  agentId:   string;
-  sandboxId: string;
-  txnId?:    string;
+  jobId:           string;
+  status:          "queued" | "processing" | "confirmed" | "failed";
+  agentId:         string;
+  sandboxId:       string;
+  txnId?:          string;
   confirmedRound?: number;
-  groupId?:  string;
-  txnCount?: number;
-  settledAt?: string;
-  error?:    string;
-  failedStage?: string;
-}
-
-interface DirectSettlement {
-  settlement?: {
-    txnId:          string;
-    confirmedRound: number;
-    groupId:        string;
-    txnCount:       number;
-    settledAt:      string;
-  };
-  agentId?: string;
-  failedStage?: string;
-  error?: string;
+  groupId?:        string;
+  txnCount?:       number;
+  settledAt?:      string;
+  error?:          string;
+  failedStage?:    string;
 }
 
 async function pollJob(jobId: string, maxWaitMs = 30_000): Promise<JobStatus> {
+  console.log(`[BUY-WEATHER] Step 3/3: Polling for on-chain confirmation...`);
+  process.stdout.write(`[BUY-WEATHER]   Waiting`);
+
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 1500));
@@ -183,72 +159,21 @@ async function pollJob(jobId: string, maxWaitMs = 30_000): Promise<JobStatus> {
   throw new Error(`Job ${jobId} did not complete within ${maxWaitMs}ms`);
 }
 
-async function settle(sandboxExport: Record<string, unknown>): Promise<JobStatus> {
-  console.log(`[BUY-WEATHER] Step 3/4: Settlement → POST /api/execute`);
-  console.log(`[BUY-WEATHER]   agentId: ${AGENT_ID}`);
-  console.log(`[BUY-WEATHER]   Forwarding sandbox to signer pipeline...`);
-
-  const res = await fetch(`${API_URL}/api/execute`, {
-    method: "POST",
-    headers: {
-      "Content-Type":  "application/json",
-      "Authorization": `Bearer ${PORTAL_SECRET}`,
-    },
-    body: JSON.stringify({ sandboxExport, agentId: AGENT_ID }),
-  });
-
-  const body = await res.json() as QueuedJob | DirectSettlement;
-
-  // Queued async job — poll until confirmed
-  if ((body as QueuedJob).queued) {
-    const queued = body as QueuedJob;
-    console.log(`[BUY-WEATHER]   Job queued: ${queued.jobId}`);
-    process.stdout.write(`[BUY-WEATHER]   Waiting for confirmation`);
-    return pollJob(queued.jobId);
-  }
-
-  // Direct settlement (synchronous path)
-  const direct = body as DirectSettlement;
-  if (direct.settlement?.txnId) {
-    return {
-      jobId: "",
-      status: "confirmed",
-      agentId: direct.agentId ?? "",
-      sandboxId: "",
-      txnId: direct.settlement.txnId,
-      confirmedRound: direct.settlement.confirmedRound,
-      groupId: direct.settlement.groupId,
-      txnCount: direct.settlement.txnCount,
-      settledAt: direct.settlement.settledAt,
-    };
-  }
-
-  // Failure
-  return {
-    jobId: "",
-    status: "failed",
-    agentId: direct.agentId ?? "",
-    sandboxId: "",
-    error: direct.error,
-    failedStage: direct.failedStage,
-  };
-}
-
 // ── Main ───────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   try {
     await healthCheck();
 
-    const { weather, export: sandbox, toll_micro_usdc } = await fetchWeather();
+    const { weather, jobId, agentId, toll_micro_usdc } = await buyWeather();
 
-    const result = await settle(sandbox);
+    const result = await pollJob(jobId);
 
     console.log();
     if (result.status === "confirmed" && result.txnId) {
       const explorerUrl = `${EXPLORER_BASE}/${result.txnId}`;
 
-      console.log(`[BUY-WEATHER] Step 4/4: COMPLETE`);
+      console.log(`[BUY-WEATHER] COMPLETE`);
       console.log(`[BUY-WEATHER] ════════════════════════════════════════════════════`);
       console.log(`[BUY-WEATHER]   WEATHER DELIVERED + PAYMENT CONFIRMED ON ALGORAND`);
       console.log(`[BUY-WEATHER] ════════════════════════════════════════════════════`);
@@ -264,14 +189,14 @@ async function main(): Promise<void> {
       console.log(`[BUY-WEATHER]      Txn ID      : ${result.txnId}`);
       console.log(`[BUY-WEATHER]      Round       : ${result.confirmedRound ?? "—"}`);
       console.log(`[BUY-WEATHER]      Settled At  : ${result.settledAt ?? "—"}`);
-      console.log(`[BUY-WEATHER]      Agent       : ${result.agentId}`);
+      console.log(`[BUY-WEATHER]      Agent       : ${agentId}`);
       console.log();
       console.log(`[BUY-WEATHER]   Verify on-chain:`);
       console.log(`[BUY-WEATHER]   ${explorerUrl}`);
       console.log();
-      console.log(`[BUY-WEATHER]   ✓ x402 end-to-end test PASSED.`);
+      console.log(`[BUY-WEATHER]   ✓ x402 atomic payment test PASSED.`);
     } else {
-      console.error(`[BUY-WEATHER] Step 4/4: SETTLEMENT FAILED`);
+      console.error(`[BUY-WEATHER] SETTLEMENT FAILED`);
       console.error(`[BUY-WEATHER]   Stage: ${result.failedStage ?? "unknown"}`);
       console.error(`[BUY-WEATHER]   Error: ${result.error ?? JSON.stringify(result)}`);
       process.exit(1);

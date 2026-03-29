@@ -5,6 +5,12 @@ export interface ClientConfig {
   baseUrl: string;
   /** Ed25519 private key (64-byte Algorand secret key) */
   privateKey: Uint8Array;
+  /**
+   * MandateContract application ID for this agent.
+   * Obtained after deploying via: python deploy.py create-agent
+   * Required for the on-chain AVM mandate payment flow.
+   */
+  mandateAppId: number;
   /** Slippage tolerance in basis points. Default: 50 (0.5%). Max: 500 */
   slippageBips?: number;
   /** Max retry attempts for transient network failures. Default: 2 */

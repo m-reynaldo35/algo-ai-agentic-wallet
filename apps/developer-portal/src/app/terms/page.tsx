@@ -46,8 +46,8 @@ export default function TermsPage() {
                 We cannot recover lost mnemonics.
               </li>
               <li>
-                Registered agents are rekeyed to our Rocca signing service. You retain the
-                original private key and may rekey back at any time.
+                Registered agents are non-custodial. You hold the private key and sign all
+                transactions directly. Spend limits are enforced on-chain by the MandateContract AVM.
               </li>
               <li>
                 You must not register agents for the purpose of fraud, money laundering, sanctions

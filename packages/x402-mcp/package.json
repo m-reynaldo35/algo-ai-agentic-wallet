@@ -1,7 +1,7 @@
 {
   "name": "@algo-wallet/x402-mcp",
-  "version": "0.1.0",
-  "description": "MCP server for x402 Algorand payments — one tool: pay_with_x402",
+  "version": "0.2.0",
+  "description": "Mandate-governed AI agent wallet for Algorand — pay for x402 APIs, check USDC/ALGO balance, inspect spending mandates",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -14,7 +14,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "smithery.yaml"
   ],
   "scripts": {
     "build": "tsc",
@@ -41,6 +42,10 @@
     "usdc",
     "payments",
     "ai-agent",
-    "claude"
+    "claude",
+    "mandate",
+    "spending-limits",
+    "autonomous-agent",
+    "wallet"
   ]
 }

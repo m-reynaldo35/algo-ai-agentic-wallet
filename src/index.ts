@@ -28,7 +28,6 @@ import { getRedis } from "./services/redis.js";
 import { getWebhookDeliveries } from "./services/webhook.js";
 import { registerSSEBroadcaster } from "./services/audit.js";
 import { requirePortalAuth } from "./middleware/portalAuth.js";
-import { registerExistingAgent } from "./services/agentRegistration.js";
 import { getOnboardingQuote, prepareOnboardingGroup, submitOnboardingGroup } from "./services/treasuryFunder.js";
 import { startActivationPoller, stopActivationPoller } from "./services/activationPoller.js";
 import { assertProductionAuthReady } from "./auth/liquidAuth.js";
@@ -38,8 +37,8 @@ import { isCircuitOpen, recordSuccess, recordFailure } from "./protection/circui
 import { logRejection } from "./protection/rejectionLogger.js";
 import {
   getAgent, listAgents, updateAgentStatus, updateAgentRecord,
+  storeAgent, assignCohort,
   setHalt, clearHalt, isHalted, getActiveRotation, getRotationBatch,
-  assertCustodyInvariant,
   storePendingAgent, getPendingAgent, validateAgentId,
   listAgentsByOwner, listPendingAgentsByOwner, listAgentsByWebAuthnOwner,
   claimAgentOwnership, transferAgentOwnership,
@@ -85,6 +84,7 @@ import { verifyMultiSigHalt, isMultiSigConfigured } from "./protection/multiSigH
 import helmet from "helmet";
 import cors from "cors";
 import { logger } from "./lib/logger.js";
+import { handleMcpRequest } from "./mcp/httpServer.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -111,6 +111,9 @@ app.use(cors({
     "X-Portal-Key",
     "x-api-key",
     "X-SLIPPAGE-BIPS",
+    "X-Algo-Mnemonic",
+    "X-Agent-Id",
+    "X-Api-Url",
   ],
   credentials: false,
 }));
@@ -1237,23 +1240,27 @@ app.get("/api/portal/stream", requirePortalAuth, (req, res) => {
 // ── Agent Registration ───────────────────────────────────────────
 //
 // USDC-native onboarding (no manual ALGO required):
+// ── Agent registration routes ─────────────────────────────────────────────────
+//
+// Mandate architecture (non-custodial, AVM-enforced):
+//   POST /api/agents/register-mandate  — register agent + MandateContract app ID
+//
+// USDC-native onboarding (operator-funded factory):
 //   GET  /api/agents/onboarding-quote   — live USDC fee for MBR funding (public)
 //   POST /api/agents/prepare-onboarding — build atomic group (treasury pre-signs ALGO tx)
-//   POST /api/agents/activate           — submit signed group + opt-in + rekey
+//   POST /api/agents/activate           — submit signed group + register agent
 //
-// Legacy / self-fund path (user provides their own ALGO):
-//   POST /api/agents/create            — generate keypair (no blockchain cost)
-//   POST /api/agents/register-existing — rekey an already-funded wallet to Rocca
+// Keypair generation (factory path):
+//   POST /api/agents/create            — generate keypair, show mnemonic once
 //
 // Management:
 //   GET  /api/agents                   — list registered agents
 //   GET  /api/agents/:agentId          — fetch a single agent record
 //   PATCH /api/agents/:agentId/suspend — suspend an agent
 
-// Agent creation — ALGO-triggered activation model.
-// Generates a keypair and stores a pending record in Redis (24h TTL).
-// The activation poller watches for an ALGO deposit ≥ 0.5 ALGO to the
-// returned address and completes on-chain registration automatically.
+// Agent creation — generates a keypair and returns the mnemonic once.
+// After saving the mnemonic, deploy a MandateContract via MandateFactory.create_agent(),
+// then register via POST /api/agents/register-mandate with the returned app ID.
 // Per-IP cap: max 10 per hour.
 app.post("/api/agents/create", requirePortalAuth, async (req, res) => {
   try {
@@ -1348,48 +1355,95 @@ app.post("/api/agents/create", requirePortalAuth, async (req, res) => {
   }
 });
 
-// Register an existing funded wallet by rekeying it to Rocca.
-app.post("/api/agents/register-existing", requirePortalAuth, async (req, res) => {
-  try {
-    const { agentId, mnemonic, platform } = req.body;
+// ── Mandate-Architecture Registration ───────────────────────────
+//
+// For non-custodial agents using the on-chain AVM mandate architecture.
+// The agent already holds their own Ed25519 key and has a MandateContract
+// deployed via `python deploy.py create-agent`. No on-chain operations are
+// needed here — we just record the agentId → address → mandateAppId mapping.
+//
+// Unlike register-existing, this route does NOT rekey the wallet to Rocca
+// and does NOT perform a USDC opt-in. The MandateContract holds the USDC.
+//
+// POST /api/agents/register-mandate
+//   Body: { agentId, address, mandateAppId }
+//   Returns: { status: "registered", agentId, address, mandateAppId }
 
+const ALGO_ADDR_RE_MANDATE = /^[A-Z2-7]{58}$/;
+
+app.post("/api/agents/register-mandate", requirePortalAuth, async (req, res) => {
+  try {
+    const { agentId, address, mandateAppId, platform, ownerAddress } = req.body as {
+      agentId:      unknown;
+      address:      unknown;
+      mandateAppId: unknown;
+      platform?:    string;
+      ownerAddress?: string;
+    };
+
+    // ── Validate inputs ──────────────────────────────────────────
     if (!agentId || typeof agentId !== "string") {
       res.status(400).json({ error: "Missing required field: agentId" });
       return;
     }
-    if (!mnemonic || typeof mnemonic !== "string") {
-      res.status(400).json({ error: "Missing required field: mnemonic (25-word Algorand mnemonic)" });
+    if (!address || typeof address !== "string" || !ALGO_ADDR_RE_MANDATE.test(address)) {
+      res.status(400).json({ error: "Missing or invalid field: address (must be a 58-char Algorand address)" });
+      return;
+    }
+    if (!mandateAppId || typeof mandateAppId !== "number" || !Number.isInteger(mandateAppId) || mandateAppId <= 0) {
+      res.status(400).json({ error: "Missing or invalid field: mandateAppId (must be a positive integer application ID)" });
       return;
     }
 
-    const result = await registerExistingAgent(agentId, mnemonic, platform);
+    try { validateAgentId(agentId); } catch (e) {
+      res.status(400).json({ error: e instanceof Error ? e.message : "Invalid agentId" });
+      return;
+    }
+
+    // ── Duplicate check ──────────────────────────────────────────
+    const existing = await getAgent(agentId);
+    if (existing) {
+      res.status(409).json({ error: `Agent already registered: ${agentId}` });
+      return;
+    }
+
+    // ── Store record ─────────────────────────────────────────────
+    // Non-custodial mandate agent: no Rocca signer, no rekey.
+    // custody = "user" — agent holds their own key.
+    // authAddr left as address (no rekey = auth-addr IS the address).
+    const record = {
+      agentId,
+      address,
+      cohort:            assignCohort(agentId),
+      authAddr:          address,  // no rekey — agent is their own auth
+      custody:           "user" as const,
+      custodyVersion:    0,
+      mandateAppId,
+      platform,
+      ownerAddress,
+      createdAt:         new Date().toISOString(),
+      registrationTxnId: "",       // no on-chain registration txn
+      status:            "active" as const,
+    };
+
+    await storeAgent(record);
 
     res.status(201).json({
-      status:             "registered",
-      agentId:            result.agentId,
-      address:            result.address,
-      cohort:             result.cohort,
-      authAddr:           result.authAddr,
-      registrationTxnId: result.registrationTxnId,
-      explorerUrl:        result.explorerUrl,
+      status:       "registered",
+      agentId,
+      address,
+      mandateAppId,
+      custody:      "user",
       instructions: [
-        `Agent ${result.agentId} is rekeyed to Rocca signer (auth-addr: ${result.authAddr}).`,
-        "Use the original mnemonic to sign x402 payment proofs.",
-        `Explorer: ${result.explorerUrl}`,
+        `Agent ${agentId} registered with MandateContract app ID ${mandateAppId}.`,
+        `The agent signs pay() calls with their own key — no Rocca rekeying required.`,
+        `Ensure the MandateContract is opted into USDC before making payments.`,
       ],
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    if (message.includes("already registered")) {
-      res.status(409).json({ error: message });
-      return;
-    }
-    if (message.includes("Invalid agentId")) {
-      res.status(400).json({ error: message });
-      return;
-    }
-    console.error("[agents/register-existing]", message);
-    res.status(500).json({ error: "Agent registration failed", detail: message });
+    console.error("[agents/register-mandate]", message);
+    res.status(500).json({ error: "Mandate agent registration failed", detail: message });
   }
 });
 
@@ -1485,18 +1539,18 @@ app.post("/api/agents/activate", requirePortalAuth, async (req, res) => {
     // Submit the atomic group — treasury ALGO arrives at agent wallet on confirmation
     const fundingTxId = await submitOnboardingGroup(signedUsdcTxB64, signedAlgoTxB64);
 
-    // Agent wallet now has ALGO — proceed with opt-in + rekey
-    const result = await registerExistingAgent(agentId, mnemonic, platform);
+    // Mandate architecture: return the funded address.
+    // The agent must now deploy a MandateContract via MandateFactory.create_agent()
+    // and register via POST /api/agents/register-mandate with the returned app ID.
+    const agentAccount = algosdk.mnemonicToSecretKey(mnemonic);
+    const agentAddress = agentAccount.addr.toString();
 
     res.status(201).json({
-      status:             "registered",
-      agentId:            result.agentId,
-      address:            result.address,
-      cohort:             result.cohort,
-      authAddr:           result.authAddr,
+      status:      "funded",
+      agentId,
+      address:     agentAddress,
       fundingTxId,
-      registrationTxnId: result.registrationTxnId,
-      explorerUrl:        result.explorerUrl,
+      nextStep:    "Deploy a MandateContract via MandateFactory.create_agent(), then call POST /api/agents/register-mandate with the returned mandateAppId.",
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -2861,6 +2915,20 @@ app.get("/api/portal/security-metrics", requirePortalAuth, async (_req, res) => 
   }
 });
 
+// ── MCP HTTP transport ───────────────────────────────────────────
+// Exposes the same 3 tools as @algo-wallet/x402-mcp (pay_with_x402,
+// check_balance, check_mandates) over HTTP for Smithery and HTTP-capable
+// MCP clients. Credentials are passed per-request via headers.
+app.post("/mcp", rateLimiter, async (req, res) => {
+  try {
+    await handleMcpRequest(req, res);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error({ err: message }, "[MCP] Unhandled error");
+    if (!res.headersSent) res.status(500).json({ error: "MCP handler error" });
+  }
+});
+
 // ── Global error handler ─────────────────────────────────────────
 // Must be registered after all routes (Express requires the 4-arg signature).
 // Catches any error passed to next(err) or thrown synchronously in a route.
@@ -2960,41 +3028,19 @@ const server = app.listen(port, "0.0.0.0", () => {
   );
 });
 
-// Async boot assertion: custody invariant.
-// Runs after listen() so Railway health checks pass during the Redis scan.
-// If violated, the server shuts down — registry drift must not go undetected.
-// Skipped when ROCCA_SIGNER_ADDRESS is unset (legacy / first deploy without custody fields).
-const roccaSignerAddress = config.rocca.signerAddress;
-if (roccaSignerAddress) {
-  assertCustodyInvariant(roccaSignerAddress)
-    .then(() => logger.info("[Boot] Custody invariant: OK"))
-    .catch((err: unknown) => {
-      logger.fatal({ err: err instanceof Error ? err.message : err }, "[Boot] FATAL: Custody invariant violated");
-      server.close(() => process.exit(1));
-    });
-}
-
 // Module 9 — Log mTLS activation status at boot
 logMtlsStatus("main-api");
 
-// Module 3 — Rekey sync: reconcile any dangling rekey-in-progress locks
-// against on-chain state before serving traffic. Runs after custody invariant
-// so a clean registry is confirmed first.
-runRekeySync()
-  .then(() => logger.info("[Boot] Rekey sync: OK"))
-  .catch((err: unknown) =>
-    logger.error({ err: err instanceof Error ? err.message : err }, "[Boot] Rekey sync error"),
-  );
-
-// Module 5 — Drift pulse: start 60s heartbeat that samples 5% of agents
-// and orphans any whose on-chain auth-addr no longer matches the registry.
+// Module 5 — Drift pulse: heartbeat that monitors on-chain agent state.
+// With mandate architecture, agents hold their own keys — no auth-addr drift.
+// Retained for monitoring contract balance health.
 startDriftPulse();
 
 // AP2 Module 5 — Recurring scheduler: 30s tick for due recurring mandates.
 startRecurringScheduler();
 
-// Activation poller — watches pending agent addresses for ALGO deposits.
-// When ≥ 0.5 ALGO is detected, performs USDC opt-in + Rocca rekey automatically.
+// Activation poller — watches MandateContract app accounts for USDC deposits.
+// When USDC > 0 is detected in a contract app account, confirms agent is funded.
 startActivationPoller();
 
 // Settlement worker — dequeues signed transactions and broadcasts to Algorand.

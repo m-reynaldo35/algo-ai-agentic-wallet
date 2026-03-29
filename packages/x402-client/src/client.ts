@@ -34,6 +34,7 @@ export class AlgoAgentClient {
   private readonly baseUrl: string;
   private readonly privateKey: Uint8Array;
   private readonly senderAddress: string;
+  private readonly mandateAppId: number;
   private readonly slippageBips: number;
   private readonly agentId: string;
   private readonly maxRetries: number;
@@ -49,16 +50,23 @@ export class AlgoAgentClient {
         X402ErrorCode.CONFIG_ERROR,
       );
     }
+    if (!config.mandateAppId || config.mandateAppId <= 0) {
+      throw new X402Error(
+        "mandateAppId is required — deploy a MandateContract first (python deploy.py create-agent)",
+        X402ErrorCode.CONFIG_ERROR,
+      );
+    }
 
-    this.baseUrl = config.baseUrl.replace(/\/+$/, "");
-    this.privateKey = config.privateKey;
-    this.slippageBips = config.slippageBips ?? DEFAULT_SLIPPAGE_BIPS;
-    this.maxRetries = config.maxRetries ?? 2;
-    this.onProgress = config.onProgress;
+    this.baseUrl       = config.baseUrl.replace(/\/+$/, "");
+    this.privateKey    = config.privateKey;
+    this.mandateAppId  = config.mandateAppId;
+    this.slippageBips  = config.slippageBips ?? DEFAULT_SLIPPAGE_BIPS;
+    this.maxRetries    = config.maxRetries ?? 2;
+    this.onProgress    = config.onProgress;
 
     // Derive Algorand address: sk is 64 bytes [seed(32) | pubkey(32)]
     this.senderAddress = algosdk.encodeAddress(config.privateKey.slice(32));
-    this.agentId = `sdk-${this.senderAddress.slice(0, 8)}`;
+    this.agentId       = `sdk-${this.senderAddress.slice(0, 8)}`;
   }
 
   // ── Single Trade ─────────────────────────────────────────────
@@ -107,6 +115,7 @@ export class AlgoAgentClient {
         },
         this.privateKey,
         params.senderAddress,
+        this.mandateAppId,
         this.maxRetries,
       );
     } catch (err) {
@@ -221,6 +230,7 @@ export class AlgoAgentClient {
         },
         this.privateKey,
         params.senderAddress,
+        this.mandateAppId,
         this.maxRetries,
       );
     } catch (err) {
@@ -263,7 +273,7 @@ export class AlgoAgentClient {
    */
   async fetch(path: string, init?: RequestInit): Promise<Response> {
     const url = `${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
-    return requestWithPayment(url, init ?? {}, this.privateKey, this.senderAddress, this.maxRetries);
+    return requestWithPayment(url, init ?? {}, this.privateKey, this.senderAddress, this.mandateAppId, this.maxRetries);
   }
 
   /** The Algorand address derived from this client's private key */

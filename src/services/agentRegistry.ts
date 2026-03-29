@@ -112,6 +112,13 @@ export interface AgentRecord {
   ownerAddress?: string;
   /** ISO timestamp of when ownerAddress was first set. */
   ownerLinkedAt?: string;
+  // ── Mandate contract (Sprint O, non-custodial AVM architecture) ──
+  /**
+   * Algorand application ID of the agent's MandateContract.
+   * Set at registration for non-custodial mandate-architecture agents.
+   * Absent for legacy Rocca custodial agents.
+   */
+  mandateAppId?: number;
 }
 
 // ── Rotation Batch ────────────────────────────────────────────────
