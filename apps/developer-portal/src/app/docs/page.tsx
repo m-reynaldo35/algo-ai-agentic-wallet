@@ -183,10 +183,10 @@ export default function DocsPage() {
               Agents are non-custodial. You generate your own keypair, the operator deploys a MandateContract with your spend limits, you register with the server, and fund the contract app account with ALGO (gas) and USDC (spending power). No rekeying. You hold the signing key forever.
             </p>
 
-            <p className="text-white text-sm font-medium mb-2">Step 1 — Create the agent</p>
+            <p className="text-white text-sm font-medium mb-2">Step 1 — Create the agent (deploys MandateContract)</p>
             <CodeBlock
               language="typescript"
-              code={`const res = await fetch("https://api.ai-agentic-wallet.com/api/agents/create", {
+              code={`const res = await fetch("https://api.ai-agentic-wallet.com/api/agents/create-mandate", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
@@ -199,9 +199,11 @@ export default function DocsPage() {
   }),
 });
 
-const { agentId, address, mnemonic } = await res.json();
-// address  → your agent's Algorand address (fund this)
-// mnemonic → 25-word signing key — save to ALGO_MNEMONIC in your .env`}
+const { agentId, address, mnemonic, mandateAppId, appAddress } = await res.json();
+// address      → agent's Algorand signing address
+// mnemonic     → 25-word signing key — save to ALGO_MNEMONIC in your .env
+// mandateAppId → MandateContract application ID — save to MANDATE_APP_ID in your .env
+// appAddress   → contract app account — fund this with ALGO + USDC`}
             />
 
             <p className="text-white text-sm font-medium mt-6 mb-2">Step 2 — Save the signing key</p>
@@ -210,10 +212,10 @@ const { agentId, address, mnemonic } = await res.json();
             </p>
             <CodeBlock language="bash" code={`ALGO_MNEMONIC="word1 word2 ... word25"  # in your .env file`} />
 
-            <p className="text-white text-sm font-medium mt-6 mb-2">Step 3 — Send 0.5 ALGO to activate</p>
+            <p className="text-white text-sm font-medium mt-6 mb-2">Step 3 — Fund the MandateContract app account with ALGO</p>
             <p className="text-zinc-400 text-sm mb-3">
-              Send at least <strong className="text-white">0.5 ALGO</strong> to the <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">address</code> returned above.
-              The server polls the MandateContract app account every 10 seconds. When it detects USDC &gt; 0, the agent status changes to <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">active</code>.
+              Send at least <strong className="text-white">0.5 ALGO</strong> to <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">appAddress</code> (the MandateContract app account, not the agent signing address).
+              The ALGO covers inner transaction gas. The server detects the deposit and opts the contract into USDC automatically.
             </p>
             <CodeBlock
               language="typescript"
@@ -230,11 +232,11 @@ do {
 console.log("Agent active:", agent.address);`}
             />
 
-            <p className="text-white text-sm font-medium mt-6 mb-2">Step 4 — Deposit USDC</p>
+            <p className="text-white text-sm font-medium mt-6 mb-2">Step 4 — Deposit USDC to the contract app account</p>
             <p className="text-zinc-400 text-sm">
               Send USDC (ASA <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">31566704</code> mainnet /{" "}
-              <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">10458941</code> testnet) to the same agent address.
-              The agent is already opted in — it can receive USDC immediately after activation.
+              <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">10458941</code> testnet) to <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">appAddress</code> — the MandateContract app account.
+              The server detects USDC &gt; 0 and sets the agent to <code className="text-emerald-400 text-xs bg-zinc-800 px-1 py-0.5 rounded">active</code>. USDC spending power lives in the contract, not the agent&apos;s signing address.
             </p>
           </Section>
 
@@ -273,17 +275,17 @@ if (result.success) {
           {/* 402 Handshake Flow */}
           <Section title="402 Handshake Flow" id="handshake">
             <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 font-mono text-sm leading-loose text-zinc-400">
-              <p className="text-white mb-2">executeTrade()</p>
+              <p className="text-white mb-2">executeTrade() — mandate architecture</p>
               <p>  ├─ <span className="text-emerald-400">POST</span> /api/agent-action &larr; Initial request (no proof)</p>
-              <p>  │&nbsp;&nbsp;&nbsp;↳ <span className="text-amber-400">402 Payment Required</span> &larr; Server responds with pay+json terms</p>
-              <p>  ├─ Parse 402 terms &larr; Extract USDC amount, payTo address, asset ID</p>
-              <p>  ├─ Build toll transaction &larr; ASA transfer to treasury</p>
-              <p>  ├─ Sign groupId &larr; Ed25519 signature with your key</p>
-              <p>  ├─ Retry with <span className="text-blue-400">X-PAYMENT</span> header injected</p>
-              <p>  │&nbsp;&nbsp;&nbsp;↳ <span className="text-emerald-400">200 SandboxExport</span> &larr; Unsigned group returned</p>
-              <p>  └─ <span className="text-emerald-400">POST</span> /api/execute &larr; Forward to settlement pipeline</p>
-              <p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↳ <span className="text-emerald-400">200 SettlementResult</span> &larr; On-chain confirmation</p>
-              <p className="mt-3 text-zinc-500 text-xs">Atomic endpoints (e.g. /api/weather) skip the separate /api/execute step — settlement is committed inline before data is returned.</p>
+              <p>  │&nbsp;&nbsp;&nbsp;↳ <span className="text-amber-400">402 Payment Required</span> &larr; Server returns payTo + toll amount</p>
+              <p>  ├─ Build <span className="text-violet-400">MandateContract.pay()</span> app call &larr; ARC-4 ApplicationCallTxn</p>
+              <p>  ├─ Sign with agent&apos;s own key &larr; real on-chain transaction</p>
+              <p>  ├─ Retry with <span className="text-blue-400">X-PAYMENT</span>: base64(signedTxn)</p>
+              <p>  │&nbsp;&nbsp;&nbsp;↳ Server decodes + verifies factory provenance + submits</p>
+              <p>  │&nbsp;&nbsp;&nbsp;↳ <span className="text-emerald-400">AVM enforces all caps atomically</span></p>
+              <p>  └─ <span className="text-emerald-400">200 + &#123; jobId &#125;</span> &larr; delivered after sendRawTransaction acceptance (~730ms)</p>
+              <p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↳ Poll <span className="text-emerald-400">/api/jobs/:jobId</span> for confirmed on-chain txnId (background ~3s)</p>
+              <p className="mt-3 text-zinc-500 text-xs">Atomic endpoints (e.g. /api/weather): same X-PAYMENT flow — server commits payment before returning data. No separate /api/execute step.</p>
             </div>
           </Section>
 
@@ -328,7 +330,11 @@ X-Agent-Gas-Remaining: 847   # estimated transactions remaining`}
               language="typescript"
               code={`import { AlgoAgentClient, parseGasInfo } from "@algo-wallet/x402-client";
 
-const client = new AlgoAgentClient({ baseUrl, privateKey: account.sk });
+const client = new AlgoAgentClient({
+  baseUrl,
+  privateKey:   account.sk,
+  mandateAppId: Number(process.env.MANDATE_APP_ID),
+});
 const response = await client.fetch("/api/your-endpoint", { method: "POST", body: ... });
 const gas = parseGasInfo(response);
 

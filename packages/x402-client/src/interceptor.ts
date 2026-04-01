@@ -110,10 +110,15 @@ export async function requestWithPayment(
 
       // ── Build and sign MandateContract.pay() call ────────────
       const signedTxnBase64 = await buildMandatePayCall(
-        payJson,
+        {
+          payTo:  payJson.payment.payTo,
+          amount: Number(payJson.payment.amount),
+          chain:  payJson.network.chain,
+        },
         privateKey,
         senderAddress,
         mandateAppId,
+        // No cached params — stateless path fetches fresh each time
       );
 
       // ── Retry original request with signed transaction ────────
@@ -149,53 +154,72 @@ export async function requestWithPayment(
   throw lastError ?? new X402Error("Max retries exceeded", X402ErrorCode.NETWORK_ERROR);
 }
 
+// ── Pay Terms ──────────────────────────────────────────────────
+
+/**
+ * The minimal fields needed to build a MandateContract.pay() call.
+ * Extracted from the 402 response and cached by AlgoAgentClient for
+ * speculative payments (Option C — skip the probe round-trip).
+ */
+export interface PayTerms {
+  /** Treasury address (payTo from the 402 response) */
+  payTo:  string;
+  /** Toll in micro-USDC */
+  amount: number;
+  /** "mainnet" | "testnet" — selects correct USDC ASA ID */
+  chain:  string;
+}
+
 // ── Mandate Pay Call Builder ────────────────────────────────────
 
 /**
  * Build and sign a MandateContract.pay(treasury, amount) application call.
  *
- * The signed transaction bytes are returned as base64. The server decodes
- * the transaction, verifies the method selector and toll parameters, checks
- * factory provenance, then submits. The AVM enforces all mandate gates
- * (velocity windows, per-tx cap, daily cap, recipient whitelist) at execution.
+ * Exported so AlgoAgentClient can call it directly with pre-fetched
+ * suggestedParams (Option A — cached params) and cached PayTerms
+ * (Option C — skip the 402 probe round-trip).
  *
+ * When cachedParams is provided the algod network call is skipped entirely.
  * X-PAYMENT = base64(msgpack(SignedTransaction))
  */
-async function buildMandatePayCall(
-  payJson: PayJson,
+export async function buildMandatePayCall(
+  terms: PayTerms,
   privateKey: Uint8Array,
   senderAddress: string,
   mandateAppId: number,
+  cachedParams?: algosdk.SuggestedParams,
 ): Promise<string> {
-  const algodUrl = resolveAlgodUrl(payJson.network.chain);
-
   let suggestedParams: algosdk.SuggestedParams;
-  try {
-    const algod = new algosdk.Algodv2("", algodUrl, "");
-    suggestedParams = await algod.getTransactionParams().do();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new X402Error(
-      `Failed to fetch Algorand params from ${algodUrl}: ${msg}`,
-      X402ErrorCode.NETWORK_ERROR,
-    );
+
+  if (cachedParams) {
+    suggestedParams = cachedParams;
+  } else {
+    const algodUrl = resolveAlgodUrl(terms.chain);
+    try {
+      const algod = new algosdk.Algodv2("", algodUrl, "");
+      suggestedParams = await algod.getTransactionParams().do();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new X402Error(
+        `Failed to fetch Algorand params from ${algodUrl}: ${msg}`,
+        X402ErrorCode.NETWORK_ERROR,
+      );
+    }
   }
 
   // ARC-4 encoding:
   //   arg[0] = method selector (4 bytes)
   //   arg[1] = recipient address (32 raw bytes — decoded from base32 Algorand address)
   //   arg[2] = amount in micro-USDC (uint64 big-endian 8 bytes)
-  const treasuryBytes = algosdk.decodeAddress(payJson.payment.payTo).publicKey;
+  const treasuryBytes = algosdk.decodeAddress(terms.payTo).publicKey;
   const amountBuf = Buffer.alloc(8);
-  amountBuf.writeBigUInt64BE(BigInt(payJson.payment.amount));
+  amountBuf.writeBigUInt64BE(BigInt(terms.amount));
 
   // AVM fires 2 inner asset transfers — budget outer + 2 inner txn fees.
-  // In algosdk v3, flatFee and fee are properties on suggestedParams.
   //
   // Tighten the validity window to 15 rounds (~53s). Algorand's default is
   // ~1000 rounds (~3500s) which would be a wide replay window. 15 rounds
-  // matches the old nonce-guard expiry and limits the replay surface to
-  // the settlement latency + reasonable clock skew.
+  // limits the replay surface to the settlement latency + reasonable clock skew.
   const sp = {
     ...suggestedParams,
     fee:       3_000n,
@@ -205,7 +229,7 @@ async function buildMandatePayCall(
 
   // MandateContract.pay() fires inner asset transfers — the outer txn must
   // declare the USDC ASA so the AVM can resolve it in the inner transactions.
-  const usdcAsaId = payJson.network.chain === "mainnet" ? 31_566_704 : 10_458_941;
+  const usdcAsaId = terms.chain === "mainnet" ? 31_566_704 : 10_458_941;
 
   // The AVM reads treasury from contract global state ("tr") and sets it as
   // AssetReceiver in the inner axfer. That account must be declared in the
@@ -217,14 +241,13 @@ async function buildMandatePayCall(
     appIndex:        mandateAppId,
     onComplete:      algosdk.OnApplicationComplete.NoOpOC,
     appArgs:         [PAY_SELECTOR, treasuryBytes, amountBuf],
-    accounts:        [payJson.payment.payTo],
+    accounts:        [terms.payTo],
     foreignAssets:   [usdcAsaId],
     note:            crypto.randomBytes(8),
     suggestedParams: sp,
   });
 
   // Agent signs the application call with their own key.
-  // This is a standard Algorand transaction — not a phantom groupId signature.
   const signedTxn = txn.signTxn(privateKey);
 
   return Buffer.from(signedTxn).toString("base64");
@@ -261,7 +284,7 @@ export function parseGasInfo(response: Response): AgentGasInfo | null {
 
 // ── Helpers ────────────────────────────────────────────────────
 
-function resolveAlgodUrl(chain: string): string {
+export function resolveAlgodUrl(chain: string): string {
   const override = typeof process !== "undefined" && process.env?.ALGO_CLIENT_NODE_URL;
   if (override) return override;
   switch (chain) {

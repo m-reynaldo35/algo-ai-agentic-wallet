@@ -52,30 +52,26 @@ pay for APIs autonomously. AP2 adapter added small — as distribution, not arch
 
 ---
 
-## Current State (after Sprint O.5.2 — Optimistic Broadcast)
+## Current State (after Sprint O.6 — Rocca Removal + Pera Upgrade)
 
 - Railway backend live: `https://api.ai-agentic-wallet.com`
 - Vercel frontend live: `https://ai-agentic-wallet.com`
 - Redis internal TCP active — p95 enqueue 1.53s, avg ~1.25s
-- Auth-addr cache (5-min TTL) eliminates algod round-trips
 - Nodely failover active (primary → fallback + recovery probe)
 - SDK `@algo-wallet/x402-client@0.3.0` — local package (publish pending)
-- MCP server `@algo-wallet/x402-mcp@0.2.0` — **published to npm ✅** (3 tools: pay, balance, mandates; signature bug fixed)
+- MCP server `@algo-wallet/x402-mcp@0.2.0` — **published to npm ✅**
 - Python SDK `algo-x402@0.1.0` — **published to PyPI ✅**
 - CLI `@algo-wallet/x402-cli@0.1.0` — **published to npm ✅**
-- **Gas station removed** — replaced by ALGO-triggered activation poller
-- **Agent activation**: user sends 0.5 ALGO → server detects + opts-in + rekeys automatically
-- **Gas warning headers**: `X-Agent-Gas-Status` + `X-Agent-Gas-Remaining` on every payment response
-- **Refuel UI**: WalletCard shows gas warnings (low/critical) + Refuel modal with deep links
-- **Guardian**: agent gas critical alerts firing via Telegram (30-min cooldown per agent)
-- **Unified sign-in** (`/sign-in`): single Pera Connect page smart-routes admin → `/dashboard`, customers → `/app/dashboard`; `/login` + `/app/login` are redirect aliases
-- `ADMIN_WALLET_ADDRESSES` set — admin wallet confirmed working, wrong wallet gets 403
+- **Unified sign-in** (`/sign-in`): single Pera Connect page smart-routes admin → `/dashboard`, customers → `/app/dashboard`
+- `ADMIN_WALLET_ADDRESSES` set — admin wallet confirmed working
 - Customer dashboard: mandates inline, revoked counts, wallet QR sidebar, agent status card
 - Multi-agent portfolio: one wallet → N agents, pending agents shown with amber dot
 - Admin portal: all pages built (dashboard, treasury, agents, security, logs, settings)
 - `tsc --noEmit` passes clean on backend + portal + x402-client + x402-cli
 - **AVM mandate contracts deployed on mainnet** — MandateFactory app_id=3498110794, approval hash set in Railway
 - **Optimistic broadcast active** — server delivers on `sendRawTransaction` acceptance (~730ms p50), confirmation runs in background worker (3.3s p50). Lock held for broadcast only (~200ms), not full confirmation. 5/5 burst test confirmed on-chain 2026-03-29.
+- **Rocca signing service removed** — Railway service deleted, all rekey/custody code purged. Architecture is mandate-only.
+- **`@perawallet/connect` upgraded** to 1.5.2 in developer portal (WalletConnect v2 stability)
 
 ---
 
@@ -977,6 +973,19 @@ the receipt — it can arrive asynchronously without changing the safety guarant
 
 **Post-O.5 tracked risks (not blockers, but must not be forgotten):**
 
+- **x402-client cold-start overhead (IN PROGRESS)** — On every `AlgoAgentClient.fetch()` the old code
+  created a new `Algodv2` instance (TCP+TLS cold start ~400ms) and made a 402 probe round-trip even when
+  payment terms were already known. Three optimizations implemented in `packages/x402-client` (code complete,
+  build clean, not yet committed or validated):
+  - **Option A**: `getParams()` caches `suggestedParams` for 4s TTL — skips algod call on consecutive payments
+  - **Option B**: Persistent `Algodv2` client + eager warm-up at construction — TCP connection pre-established
+  - **Option C**: Speculative payment — caches `PayTerms` (payTo/amount/chain) after first 402 probe; all
+    subsequent `fetch()` calls skip the probe entirely and send `X-PAYMENT` immediately (~150ms saved per call).
+    Safe because price is fixed at $0.01 — terms never change.
+  **Pending validation**: mandate contract needs ALGO top-up (appId=3498117490, needs ~0.2 ALGO sent to
+  7YYTJZTE6CLG3TX3LALBXGHE5J6HB57ON7ANBKQBMP4WBXPFURTVXEPQ6M from 2FBKPEID operator) and Open-Meteo
+  must be reachable from Railway. Once validated, commit and update version to `0.3.1`.
+
 - **Latency** — ~~`x402Settle.ts` calls `waitForConfirmation(txid, 5)`, blocking ~3–18s per payment.~~
   **RESOLVED by Sprint O.5.2 (optimistic broadcast).** Enqueue latency is now ~730ms p50.
   Confirmation is background-only. Residual failure rate ~0.001% at $0.01 toll (logged + alerted).
@@ -991,6 +1000,46 @@ the receipt — it can arrive asynchronously without changing the safety guarant
   operator mnemonic. Create a single `scripts/create-mandate-agent.ts` that chains: factory
   create-agent → fund contract → opt_in_usdc → register-mandate. Self-service onboarding is
   required before Phase 2 seller SDK launch.
+
+---
+
+## Sprint O.6 — Rocca Removal + Pera Upgrade ✅ *(completed 2026-03-30)*
+
+**Why:** All agents are on AVM mandate contracts (non-custodial). The Rocca signing service
+(a separate Railway microservice that held ALGO_SIGNER_MNEMONIC and signed on behalf of
+rekeyed agents) was dead code. Removing it reduces attack surface, infrastructure cost,
+and complexity.
+
+### O.6.1 — Rocca signing service deleted ✅
+
+- [x] Deleted `src/signing-service/` (server, client, signerRedis, signingAudit, signingRateLimiter — ~900 lines)
+- [x] Deleted `Dockerfile.signing` and `railway.signing.json`
+- [x] Removed `callSigningService` / `SIGNING_SERVICE_URL` branch from `src/executor.ts`
+- [x] Railway signing-service service deleted from dashboard
+
+### O.6.2 — Rocca custody model purged ✅
+
+- [x] Deleted `src/services/custodyManager.ts` — rekey-to-user / re-custody-to-Rocca flows
+- [x] Deleted `src/services/rekeySync.ts` — boot-time dangling rekey lock reconciliation
+- [x] Deleted `src/services/agentRegistration.ts` — Rocca rekey registration path
+- [x] Deleted `src/services/rotationEngine.ts` — signer key rotation batching
+- [x] Deleted `src/jobs/driftPulse.ts` — auth-addr drift detection (no-op for mandate agents)
+- [x] Removed `rocca` config block from `src/config.ts` (ROCCA_SIGNER_ADDRESS, ROCCA_API_KEY, etc.)
+- [x] Removed rekey/challenge, rekey/execute, recustody, approval-token routes from `src/index.ts`
+- [x] Removed `activeRotation` from `/api/system/halt-status` response
+- [x] Simplified `src/middleware/validation.ts` — Rule 1 (Rocca toll check) removed; only signer address check remains
+- [x] Cleaned `src/services/agentRegistry.ts`:
+  - Removed: `authAddr`, `custody`, `custodyVersion`, `prevAuthAddr`, `rotationBatchId` fields from `AgentRecord`
+  - Removed: `RotationBatch`, `DriftRecord` interfaces
+  - Removed: all rotation CRUD functions + distributed lock + drift CRUD + `assertCustodyInvariant`
+  - Status type no longer includes `"rotating"`
+- [x] `tsc --noEmit` passes clean after all removals
+
+### O.6.3 — Pera wallet upgrade ✅
+
+- [x] `@perawallet/connect` upgraded 1.5.1 → 1.5.2 in `apps/developer-portal`
+  - WalletConnect v2 stability improvements → fewer dropped QR sessions
+  - Rekeyed account `signData()` support (edge case — most agent owners don't have rekeyed wallets, but now supported)
 
 ---
 

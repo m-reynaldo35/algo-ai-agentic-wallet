@@ -11,6 +11,12 @@ export interface ClientConfig {
    * Required for the on-chain AVM mandate payment flow.
    */
   mandateAppId: number;
+  /**
+   * Algorand network. Default: "mainnet".
+   * Used to select the correct Algod endpoint for param fetching.
+   * Override entirely with ALGO_CLIENT_NODE_URL env var.
+   */
+  network?: "mainnet" | "testnet";
   /** Slippage tolerance in basis points. Default: 50 (0.5%). Max: 500 */
   slippageBips?: number;
   /** Max retry attempts for transient network failures. Default: 2 */

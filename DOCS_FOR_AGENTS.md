@@ -49,13 +49,13 @@ POST /v1/api/execute       →  HTTP 200  →  settlement confirmed on-chain
 # TypeScript / Node.js SDK (pending publish)
 npm install @algo-wallet/x402-client
 
-# MCP server for Claude Desktop / Claude Code (pending publish)
+# MCP server for Claude Desktop / Claude Code
 npx @algo-wallet/x402-mcp
 
-# Python SDK (pending publish to PyPI)
+# Python SDK
 pip install algo-x402
 
-# Developer CLI (pending publish)
+# Developer CLI
 npx @algo-wallet/x402-cli health
 ```
 
@@ -286,7 +286,7 @@ honda_v1|success|2026-02-19T12:34:56.789Z|algorand|10000musd
 ```typescript
 // Query the Algorand indexer for all our confirmed settlements
 const auditUrl = "https://mainnet-idx.algonode.cloud/v2/accounts/" +
-  "7PGFB4JI3GJGLYVUZ5666PI5UIXSNEC5TLM44UP2N4XL7WYA2OV2Y4YOUA" +
+  "C66AFZ3V5XN4ZHCXW6QQT4O6XDHMKSXITIWN4CRTMJUAKFCCH5QE4C2U74" +
   "/transactions?note-prefix=aG9uZGFfdjE%3D&limit=100";
 
 const response = await fetch(auditUrl);
@@ -374,9 +374,8 @@ const response = await fetch("https://api.ai-agentic-wallet.com/api/agents/regis
     platform:     "anthropic",       // optional
   }),
 });
-const { agentId, address, mandateAppId, custody } = await response.json();
-// custody === "user"  — server has no custody of the key
-// status  === "active"
+const { agentId, address, mandateAppId, status } = await response.json();
+// status  === "active"  — server has no custody of the key
 ```
 
 ### Step 4 — Fund the MandateContract app account
@@ -517,58 +516,27 @@ models. They share no code paths and cannot be used to bypass each other.
 
 ---
 
-### Layer 1 — Human Governance (mandate create/revoke, custody transitions)
+### Layer 1 — Human Governance (mandate create/revoke)
 
-Human operators authenticate before making any governance change to an agent's mandate or
-custody. Two equivalent options are offered — both result in a verified public key stored
-against the agent record.
-
-#### Option A — Standard WebAuthn (device passkeys)
-
-Web2-style biometric auth. Works with any FIDO2 authenticator: Touch ID, Face ID,
-Windows Hello, or a hardware key (YubiKey).
+Human operators authenticate via **Pera Connect (WalletConnect v2)** before making any
+governance change to an agent's mandate. The operator scans a WalletConnect QR with
+Pera, Defly, or any WalletConnect v2-compatible Algorand wallet and signs a challenge
+with their Algorand account private key.
 
 **Flow:**
-1. Browser calls `navigator.credentials.create(...)` to generate a passkey
-2. `PATCH /api/agents/:agentId/webauthn-pubkey` registers the credential:
-   ```json
-   {
-     "ownerWalletId": "your-wallet-id",
-     "credentialId":  "<base64url — from navigator.credentials.create()>",
-     "publicKeyCose": "<base64url COSE public key>",
-     "counter":       0
-   }
-   ```
-3. Future governance calls (mandate create/revoke) include a `webauthnAssertion` signed
-   by this credential — validated server-side by `@simplewebauthn/server`
+1. `POST /api/agents/:agentId/auth/pera-challenge` — backend generates a random challenge,
+   returns a `peraChallenge` token
+2. Frontend calls `PeraWalletConnect.signData()` — Pera displays the challenge and the
+   user approves with their wallet
+3. `POST /api/agents/:agentId/auth/pera-verify` — backend verifies the Ed25519 signature
+   against the operator's Algorand address (via `algosdk.verifyBytes`), returns `peraSessionId`
+4. Mandate create/revoke calls include `peraSessionId` — server validates the session
+   before making any on-chain change
 
-**Environment variables:**
+**Why this works:** Every Algorand address *is* an Ed25519 public key. Signature
+verification is a single `verifyBytes()` call. The wallet handles the UX.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FIDO2_RP_ID` | `api.ai-agentic-wallet.com` | Relying Party ID — must match your domain |
-| `FIDO2_RP_NAME` | `"Algo Wallet"` | Name shown in the passkey prompt |
-| `WEBAUTHN_ORIGIN` | `https://{FIDO2_RP_ID}` | Expected browser origin |
-
----
-
-#### Option B — Liquid Auth (Algorand wallet QR)
-
-Web3-style auth. The operator scans a QR code with their Algorand wallet app (Pera,
-Defly, or any wallet supporting the Liquid Auth protocol) and signs a challenge with their
-Algorand account private key. No browser passkey or biometric device required.
-
-**Flow:**
-1. `POST /api/agents/:agentId/auth/liquid-challenge` — backend generates a random challenge
-   and returns a QR code URL
-2. Operator opens Pera/Defly, scans the QR — wallet signs the challenge with their
-   Algorand account key
-3. `POST /api/agents/:agentId/auth/liquid-verify` — backend verifies the Ed25519 signature
-   against the operator's Algorand address (via `algosdk.verifyBytes`)
-4. Algorand address is stored as `ownerWalletId` — used to authorize future mandate changes
-
-**Why this works:** Every Algorand address *is* an Ed25519 public key. Signature verification
-is a single `verifyBytes()` call with no external server. The wallet handles the UX.
+**SDK:** `@perawallet/connect@1.5.2` (`npm install @perawallet/connect`)
 
 **No extra environment variables required** — verification is fully on-chain key math.
 
@@ -593,7 +561,7 @@ and submits it to the network. The AVM then enforces all spend limits on-chain.
 
 | # | Invariant |
 |---|-----------|
-| 1 | Only a WebAuthn- or Liquid Auth-authenticated human can create or modify a mandate |
+| 1 | Only a Pera Connect (WalletConnect v2) authenticated human can create or modify a mandate |
 | 2 | The AVM rejects `pay()` calls that violate per-tx cap, velocity cap, or daily cap |
 | 3 | The agent signs its own transactions — the server never holds a signing key |
 | 4 | No server-side configuration can override on-chain spend limits |

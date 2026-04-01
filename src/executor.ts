@@ -1,7 +1,6 @@
 import { validateSandboxExport } from "./middleware/validation.js";
 import { authenticateAgentIdentity } from "./auth/liquidAuth.js";
 import { signAtomicGroup } from "./signer/roccaWallet.js";
-import { callSigningService } from "./signing-service/client.js";
 import type { SettlementResult } from "./network/broadcaster.js";
 import { logExecutionFailure } from "./services/audit.js";
 import { extendReservationTTL } from "./services/executionIdempotency.js";
@@ -117,15 +116,9 @@ export async function executePipeline(
   }
 
   // ── Stage 3: Sign ─────────────────────────────────────────────
-  // PRODUCTION: SIGNING_SERVICE_URL set → call isolated signing microservice
-  // DEV:        SIGNING_SERVICE_URL absent → direct call (key in same process)
-  const signingMode = process.env.SIGNING_SERVICE_URL ? "microservice" : "direct";
-  console.log(`[Executor] Stage 3/4: Signing atomic group (${signingMode})...`);
+  console.log(`[Executor] Stage 3/4: Signing atomic group...`);
 
   // Extend the pending reservation TTL before entering the signing stage.
-  // Signing via a remote microservice can take several seconds; without this
-  // a slow signer could let the 5-min pending marker expire and open a
-  // double-spend window for a concurrent request.
   await extendReservationTTL(sandboxId);
 
   let signedGroup;
@@ -135,13 +128,9 @@ export async function executePipeline(
       (b64) => new Uint8Array(Buffer.from(b64, "base64")),
     );
 
-    if (process.env.SIGNING_SERVICE_URL) {
-      signedGroup = await callSigningService(unsignedBlobs, authToken, agentId);
-    } else {
-      const result = await signAtomicGroup(unsignedBlobs, authToken, agentId);
-      outflowReservationKey = result.outflowReservationKey;
-      signedGroup = result;
-    }
+    const result = await signAtomicGroup(unsignedBlobs, authToken, agentId);
+    outflowReservationKey = result.outflowReservationKey;
+    signedGroup = result;
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown signing error";
     console.error(`[Executor] ABORT at Stage 3 (sign): ${error}`);

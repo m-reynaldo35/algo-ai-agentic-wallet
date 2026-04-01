@@ -38,7 +38,7 @@ import { logRejection } from "./protection/rejectionLogger.js";
 import {
   getAgent, listAgents, updateAgentStatus, updateAgentRecord,
   storeAgent, assignCohort,
-  setHalt, clearHalt, isHalted, getActiveRotation, getRotationBatch,
+  setHalt, clearHalt, isHalted,
   storePendingAgent, getPendingAgent, validateAgentId,
   listAgentsByOwner, listPendingAgentsByOwner, listAgentsByWebAuthnOwner,
   claimAgentOwnership, transferAgentOwnership,
@@ -46,14 +46,8 @@ import {
   linkAlgorandRecovery,
   type PendingAgentRecord,
 } from "./services/agentRegistry.js";
-import {
-  issueRekeyChallenge, verifyRekeyChallenge, executeRekey,
-  executeRecustody, issueApprovalToken, decodeAxferTotal,
-} from "./services/custodyManager.js";
 import { checkAndReserveVelocity, rollbackVelocityReservation, recordGlobalOutflow, sumUsdcAxfers, getMassDrainStatus, clearMassDrain } from "./protection/velocityEngine.js";
 import { atomicReserve, completeReservation, releaseReservation, markTxIdSettled } from "./services/executionIdempotency.js";
-import { runRekeySync } from "./services/rekeySync.js";
-import { startDriftPulse }             from "./jobs/driftPulse.js";
 import { startRecurringScheduler }       from "./jobs/recurringScheduler.js";
 import { runWorker }                     from "./queue/settlementWorker.js";
 import { prewarmProvenance }             from "./services/mandateVerifier.js";
@@ -622,7 +616,13 @@ app.post("/api/batch-action", x402Paywall, async (req, res) => {
  *  state on Railway after network blips). Uses the stable `https` core module. */
 function httpsGetJson<T>(url: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { timeout: 10_000 }, (res) => {
+    const options = { timeout: 10_000, headers: { "User-Agent": "algo-wallet/1.0" } };
+    const req = https.get(url, options, (res) => {
+      if (res.statusCode && res.statusCode >= 400) {
+        res.resume();
+        reject(new Error(`HTTP ${res.statusCode} from ${url}`));
+        return;
+      }
       const chunks: Buffer[] = [];
       res.on("data", (c: Buffer) => chunks.push(c));
       res.on("end", () => {
@@ -689,7 +689,7 @@ app.post("/api/weather", x402Paywall, x402Settle, async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     logger.error({ err: message }, "[weather] Failed to fetch weather data");
-    res.status(500).json({ error: "Weather data unavailable" });
+    res.status(500).json({ error: "Weather data unavailable", detail: message });
   }
 });
 
@@ -1989,19 +1989,9 @@ app.patch("/api/agents/:agentId/suspend", requirePortalAuth, async (req, res) =>
 
 app.get("/api/system/halt-status", requirePortalAuth, async (_req, res) => {
   const haltRecord = await isHalted();
-  const batchId  = await getActiveRotation();
-  const batch    = batchId ? await getRotationBatch(batchId) : null;
   res.json({
-    halted:          !!haltRecord,
-    haltReason:      haltRecord?.reason ?? null,
-    activeRotation:  batch ? {
-      batchId:        batch.batchId,
-      cohort:         batch.cohort,
-      status:         batch.status,
-      confirmedCount: batch.confirmedCount,
-      totalAgents:    batch.totalAgents,
-      updatedAt:      batch.updatedAt,
-    } : null,
+    halted:     !!haltRecord,
+    haltReason: haltRecord?.reason ?? null,
   });
 });
 
@@ -2037,192 +2027,6 @@ app.post("/api/system/unhalt", requirePortalAuth, async (req, res) => {
   res.json({ halted: false });
 });
 
-// ── Custody Transition Routes ─────────────────────────────────────
-//
-// These endpoints implement the rekey-to-user and re-custody flows.
-// All require portal auth (same gate as agent management routes).
-//
-// Route summary:
-//   POST /api/agents/:agentId/rekey/challenge
-//     Issue a proof-of-control challenge. User signs the returned bytes
-//     with their destination key to prove they control it before any
-//     rekey transaction is constructed.
-//
-//   POST /api/agents/:agentId/rekey/execute
-//     Execute the rekey after challenge verification. Constructs an
-//     unsigned self-payment with rekey_to = destination, routes through
-//     the signing service admin path, broadcasts, and updates the registry
-//     post-confirmation.
-//
-//   POST /api/agents/:agentId/recustody
-//     Accept a user-signed rekey transaction returning custody to Rocca.
-//     Validates structure strictly (not a blind relay), broadcasts, and
-//     updates the registry post-confirmation.
-
-app.post("/api/agents/:agentId/rekey/challenge", requirePortalAuth, async (req, res) => {
-  const agentId = String(req.params.agentId || "");
-  const { destinationAddress, walletId } = req.body as {
-    destinationAddress?: string;
-    walletId?: string;
-  };
-
-  if (!destinationAddress || !walletId) {
-    res.status(400).json({ error: "Missing required fields: destinationAddress, walletId" });
-    return;
-  }
-
-  try {
-    const challenge = await issueRekeyChallenge(agentId, destinationAddress, walletId);
-    res.json({ challenge, agentId, destinationAddress });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const status = msg.includes("not found") ? 404 : 400;
-    res.status(status).json({ error: msg });
-  }
-});
-
-app.post("/api/agents/:agentId/rekey/execute", requirePortalAuth, async (req, res) => {
-  const agentId = String(req.params.agentId || "");
-  const { destinationAddress, signatureBase64, custodyVersion, walletId } = req.body as {
-    destinationAddress?: string;
-    signatureBase64?:    string;
-    custodyVersion?:     number;
-    walletId?:           string;
-  };
-
-  if (!destinationAddress || !signatureBase64 || typeof custodyVersion !== "number" || !walletId) {
-    res.status(400).json({
-      error: "Missing required fields: destinationAddress, signatureBase64, custodyVersion, walletId",
-    });
-    return;
-  }
-
-  try {
-    // Verify challenge before executing the rekey
-    await verifyRekeyChallenge(agentId, destinationAddress, signatureBase64, custodyVersion);
-    const result = await executeRekey(agentId, destinationAddress, custodyVersion);
-    res.json(result);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const status = msg.includes("not found") ? 404 : msg.includes("in progress") ? 409 : 400;
-    res.status(status).json({ error: msg });
-  }
-});
-
-app.post("/api/agents/:agentId/recustody", requirePortalAuth, async (req, res) => {
-  const agentId = String(req.params.agentId || "");
-  const { signedTxnBase64, walletId } = req.body as {
-    signedTxnBase64?: string;
-    walletId?:        string;
-  };
-
-  if (!signedTxnBase64 || !walletId) {
-    res.status(400).json({ error: "Missing required fields: signedTxnBase64, walletId" });
-    return;
-  }
-
-  try {
-    const result = await executeRecustody(agentId, signedTxnBase64, walletId);
-    res.json(result);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const status = msg.includes("not found") ? 404 : 400;
-    res.status(status).json({ error: msg });
-  }
-});
-
-// ── Tier 1 Approval Token ────────────────────────────────────────
-//
-// POST /api/agents/:agentId/approval-token
-//
-// Issues a single-use approval token for a transaction group that has
-// exceeded the agent's spend velocity threshold.
-//
-// FIDO2-bound: the caller must supply a fresh FIDO2 AuthToken proving
-// the wallet owner explicitly approved this specific action. The API
-// cannot manufacture an approval token without hardware user intent.
-//
-// Body:
-//   amount        number   — microUSDC ceiling the user is approving
-//   unsignedTxns  string[] — exact transaction blobs being approved
-//   walletId      string   — FIDO2 credential ID hash
-//   authToken     AuthToken — fresh FIDO2 assertion (expires in 5 min)
-
-app.post("/api/agents/:agentId/approval-token", requirePortalAuth, async (req, res) => {
-  const { agentId } = req.params;
-  const { amount, unsignedTxns, walletId, authToken } = req.body as {
-    amount?:       number;
-    unsignedTxns?: string[];
-    walletId?:     string;
-    authToken?:    { token: string; agentId: string; issuedAt: number; expiresAt: number; method: string };
-  };
-
-  if (typeof amount !== "number" || !Array.isArray(unsignedTxns) || !walletId || !authToken) {
-    res.status(400).json({
-      error: "Missing required fields: amount, unsignedTxns, walletId, authToken",
-    });
-    return;
-  }
-
-  // ── FIDO2 assertion validation ─────────────────────────────────
-  // The authToken must be a freshly issued FIDO2 credential for this agent.
-  // This ensures the wallet hardware device explicitly approved the action —
-  // the API cannot issue approval tokens on behalf of the user.
-  try {
-    await validateAuthToken(authToken as Parameters<typeof validateAuthToken>[0]);
-  } catch (authErr) {
-    const msg = authErr instanceof Error ? authErr.message : String(authErr);
-    res.status(401).json({ error: `FIDO2 assertion invalid: ${msg}` });
-    return;
-  }
-  if (authToken.agentId !== agentId) {
-    res.status(401).json({ error: "FIDO2 assertion agentId does not match :agentId param" });
-    return;
-  }
-
-  // ── Validate the proposed amount against decoded txn bytes ─────
-  // The stored ceiling must not be less than the actual group spend
-  // (callers cannot manufacture an inflated amount for future replays).
-  try {
-    const decodedTotal = decodeAxferTotal(unsignedTxns, "");  // address validated inside issueApprovalToken
-    if (BigInt(amount) < decodedTotal) {
-      res.status(400).json({
-        error: `Approved amount (${amount}) is less than decoded group total (${decodedTotal}) — ceiling cannot be below actual spend`,
-      });
-      return;
-    }
-  } catch {
-    // decodeAxferTotal with empty agentAddress will fail strict checks;
-    // the canonical validation happens inside consumeApprovalToken.
-    // Here we just use sumUsdcAxfers for a non-strict sanity check.
-    const looseTotalMicroUsdc = sumUsdcAxfers(unsignedTxns);
-    if (BigInt(amount) < looseTotalMicroUsdc) {
-      res.status(400).json({ error: "Approved amount is less than decoded group USDC total" });
-      return;
-    }
-  }
-
-  try {
-    const nonce = await issueApprovalToken(agentId, amount, unsignedTxns, walletId);
-
-    emitSecurityEvent({
-      type:    "TOKEN_ISSUED",
-      agentId,
-      walletId,
-      detail: {
-        amountMicroUsdc:  amount,
-        txnCount:         unsignedTxns.length,
-        fido2AgentId:     authToken.agentId,
-      },
-      timestamp: new Date().toISOString(),
-    });
-
-    res.json({ nonce, agentId, expiresInSeconds: 60 });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(400).json({ error: msg });
-  }
-});
 
 // ── AP2 Mandate Endpoints ─────────────────────────────────────────
 //
@@ -3163,11 +2967,6 @@ logMtlsStatus("main-api");
       "[Boot] Provenance pre-warm failed — first payment will take ~400ms longer");
   }
 })();
-
-// Module 5 — Drift pulse: heartbeat that monitors on-chain agent state.
-// With mandate architecture, agents hold their own keys — no auth-addr drift.
-// Retained for monitoring contract balance health.
-startDriftPulse();
 
 // AP2 Module 5 — Recurring scheduler: 30s tick for due recurring mandates.
 startRecurringScheduler();

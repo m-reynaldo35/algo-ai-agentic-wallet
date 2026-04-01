@@ -1,30 +1,17 @@
 import algosdk from "algosdk";
-import { config } from "../config.js";
 import type { SandboxExport } from "../services/transaction.js";
 
 /**
  * Pre-Flight Validation Gatekeeper
  *
  * Analyzes a SandboxExport AFTER it leaves the local sandbox
- * but BEFORE it reaches Liquid Auth and Rocca Wallet signing.
- *
- * This is the last line of defense: if a malicious or buggy sandbox
- * produced an invalid atomic group, the gatekeeper catches it here
- * and aborts the pipeline before any signing occurs.
+ * but BEFORE it reaches signing.
  *
  * Rules enforced:
- *   Rule 1: (Rocca custodial agents only — routing.authAddr present)
- *           Exactly one ASA transfer of the correct toll amount to
- *           TREASURY_ADDRESS exists in the group. Skipped for mandate
- *           agents: toll is already paid by the MandateContract inner
- *           txn before the SandboxExport is generated.
- *   Rule 2: All transactions in the group are from the declared
+ *   Rule 1: All transactions in the group are from the declared
  *           requiredSigner address.
  */
 
-const TREASURY_ADDRESS = config.x402.payToAddress;
-const USDC_ASSET_ID    = BigInt(config.x402.usdcAssetId);
-const EXPECTED_TOLL    = BigInt(config.x402.priceMicroUsdc);
 
 export interface ValidationResult {
   valid: boolean;
@@ -78,60 +65,7 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
     }
   }
 
-  // ── Rule 1: Verify the x402 Toll (Rocca custodial agents only) ───
-  // Only runs when routing.authAddr is present — that field is set by
-  // the Rocca constructAtomicGroup path and indicates the toll transfer
-  // must appear as an explicit transaction in the group.
-  //
-  // For mandate agents (Sprint O), the toll was already paid by the
-  // MandateContract.pay() inner transaction before this SandboxExport
-  // was generated. No toll transaction will exist in the group.
-  let tollVerified = true;
-
-  if (routing.authAddr) {
-    let tollVerifiedCount = 0;
-    let tollCount = 0;
-
-    for (let i = 0; i < transactions.length; i++) {
-      const txn = transactions[i];
-      if (txn.type !== algosdk.TransactionType.axfer) continue;
-
-      const axfer = txn.assetTransfer;
-      if (!axfer) continue;
-
-      if (axfer.assetIndex === USDC_ASSET_ID) {
-        tollCount++;
-
-        const receiverOk = axfer.receiver.toString() === TREASURY_ADDRESS;
-        const amountOk   = axfer.amount === EXPECTED_TOLL;
-
-        if (!receiverOk) {
-          errors.push(
-            `Rule 1: Toll receiver mismatch on txn [${i}]. Expected ${TREASURY_ADDRESS}, got ${axfer.receiver.toString()}`,
-          );
-        }
-        if (!amountOk) {
-          errors.push(
-            `Rule 1: Toll amount mismatch on txn [${i}]. Expected ${EXPECTED_TOLL} micro-USDC, got ${axfer.amount}`,
-          );
-        }
-        if (receiverOk && amountOk) {
-          tollVerifiedCount++;
-        }
-      }
-    }
-
-    tollVerified = tollVerifiedCount > 0 && tollVerifiedCount === tollCount;
-
-    const expectedTollCount = sandboxExport.batchSize ?? 1;
-    if (tollCount === 0) {
-      errors.push("Rule 1: No USDC ASA transfer found in atomic group");
-    } else if (tollCount !== expectedTollCount) {
-      errors.push(`Rule 1: Expected ${expectedTollCount} USDC toll transfer(s) for batch size ${expectedTollCount}, found ${tollCount}`);
-    }
-  }
-
-  // ── Rule 2: Verify all transactions are from the required signer ──
+  // ── Rule 1: Verify all transactions are from the required signer ──
   let signerVerified = true;
 
   for (let i = 0; i < transactions.length; i++) {
@@ -147,11 +81,11 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
   }
 
   // ── Verdict ───────────────────────────────────────────────────
-  const valid = tollVerified && signerVerified && errors.length === 0;
+  const valid = signerVerified && errors.length === 0;
 
   const result: ValidationResult = {
     valid,
-    rules: { tollVerified, signerVerified },
+    rules: { tollVerified: true, signerVerified },
     errors,
   };
 
@@ -162,6 +96,6 @@ export async function validateSandboxExport(sandboxExport: SandboxExport): Promi
     );
   }
 
-  console.log(`[Validation] PASSED: toll=${tollVerified} (${routing.authAddr ? "checked" : "skipped — mandate agent"}), signer=${signerVerified}`);
+  console.log(`[Validation] PASSED: signer=${signerVerified}`);
   return result;
 }
