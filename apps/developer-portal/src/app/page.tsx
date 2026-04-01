@@ -8,13 +8,14 @@ import algosdk from "algosdk";
 const account = algosdk.mnemonicToSecretKey(process.env.ALGO_MNEMONIC!);
 
 const client = new AlgoAgentClient({
-  baseUrl:    "https://api.ai-agentic-wallet.com",
-  privateKey: account.sk,
+  baseUrl:      "https://api.ai-agentic-wallet.com",
+  privateKey:   account.sk,
+  mandateAppId: Number(process.env.MANDATE_APP_ID), // from create-mandate
 });
 
-// Autonomous payment — zero human input
+// Autonomous payment — AVM enforces spend limits on-chain
 const result = await client.executeTrade({
-  senderAddress: agentAddress,
+  senderAddress: account.addr.toString(),
   amount:        10_000,   // 10,000 µUSDC = $0.01
 });`;
 
@@ -77,8 +78,7 @@ function Nav() {
     <nav className="flex items-center justify-between px-6 py-4 border-b border-zinc-800/60 max-w-6xl mx-auto w-full">
       <span className="font-semibold text-white tracking-tight">algo-wallet</span>
       <div className="flex items-center gap-4 text-sm">
-        <a href="/docs" className="text-zinc-400 hover:text-white transition-colors">Docs</a>
-        <Link href="/get-started" className="text-zinc-400 hover:text-white transition-colors">Get started</Link>
+        <a href="/docs" className="text-zinc-400 hover:text-white transition-colors">Read the docs</a>
         <Link
           href="/sign-in"
           className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1.5 rounded-md transition-colors font-medium"
@@ -114,6 +114,12 @@ function Hero() {
           className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-6 py-3 rounded-lg transition-colors text-sm"
         >
           Sign in with Pera →
+        </Link>
+        <Link
+          href="/get-started"
+          className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium px-6 py-3 rounded-lg transition-colors text-sm border border-zinc-700"
+        >
+          Get started
         </Link>
         <a
           href="/docs"
@@ -215,7 +221,7 @@ function Pricing() {
 
         <div className="mt-8 grid sm:grid-cols-3 gap-4 text-left">
           {[
-            ["No gas fees",        "We handle Algorand fees from the signing infrastructure."],
+            ["Near-zero gas",      "~$0.0002/tx Algorand network fees, paid from your agent's own ALGO reserve. No markup."],
             ["No chargebacks",     "On-chain settlement is final. No dispute risk."],
             ["No card rails",      "Direct USDC. Works anywhere in the world, instantly."],
           ].map(([label, desc]) => (
