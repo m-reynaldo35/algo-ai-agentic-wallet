@@ -58,10 +58,10 @@ const HOW_IT_WORKS = [
 ];
 
 const BENCHMARK_STATS = [
-  { label: "Success rate",       value: "100/100",  sub: "payments confirmed"       },
-  { label: "Throughput",         value: "126.6",    sub: "tx/min sustained"          },
-  { label: "Handshake p50",      value: "549ms",    sub: "x402 proof round-trip"     },
-  { label: "End-to-end p50",     value: "10.7s",    sub: "fire → on-chain confirmed" },
+  { label: "Multi-agent showcase", value: "100/100",  sub: "payments confirmed, 0 retries"     },
+  { label: "Enqueue p50",          value: "642ms",    sub: "fire → HTTP 200 (optimistic)"      },
+  { label: "Confirm p50",          value: "5.5s",     sub: "fire → on-chain confirmed"         },
+  { label: "Throughput",           value: "53 tx/min", sub: "5 agents × 20 payments, mainnet"  },
 ];
 
 const USE_CASES = [
@@ -144,25 +144,24 @@ function BenchmarkBar() {
       <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl px-8 py-6">
         <div className="flex flex-col sm:flex-row items-center justify-between gap-6">
           <div className="text-center sm:text-left">
-            <p className="text-xs text-emerald-400 font-mono uppercase tracking-widest mb-1">Verified on Algorand mainnet · 2026-03-22</p>
-            <p className="text-zinc-400 text-sm">100 real USDC payments, zero failures</p>
+            <p className="text-xs text-emerald-400 font-mono uppercase tracking-widest mb-1">Verified on Algorand mainnet · 2026-03-29</p>
+            <p className="text-zinc-400 text-sm">Hard mandate flow — AVM-enforced, non-custodial</p>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 sm:gap-10">
             {BENCHMARK_STATS.map(({ label, value, sub }) => (
               <div key={label} className="text-center">
                 <p className="text-2xl font-bold text-white tabular-nums">{value}</p>
                 <p className="text-zinc-500 text-xs mt-0.5">{sub}</p>
+                <p className="text-zinc-700 text-xs mt-0.5">{label}</p>
               </div>
             ))}
           </div>
-          <a
-            href="https://api.ai-agentic-wallet.com/api/benchmark"
-            target="_blank"
-            rel="noopener noreferrer"
+          <Link
+            href="/mandate-test"
             className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors whitespace-nowrap"
           >
-            Live stats →
-          </a>
+            View test →
+          </Link>
         </div>
       </div>
     </section>
