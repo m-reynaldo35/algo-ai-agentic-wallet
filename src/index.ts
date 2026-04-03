@@ -651,30 +651,50 @@ app.post("/api/weather", x402Paywall, x402Settle, async (req, res) => {
     if (cached && cached.expiresAt > Date.now()) {
       weatherPayload = cached.data as typeof weatherPayload;
     } else {
-      // Geocode city name → lat/lon
-      const geoData = await httpsGetJson<{
-        results?: Array<{ latitude: number; longitude: number; name: string; country: string }>;
-      }>(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`);
-      const loc = geoData.results?.[0];
-      if (!loc) {
-        res.status(404).json({ error: `City not found: ${city}` });
-        return;
+      try {
+        // Geocode city name → lat/lon
+        const geoData = await httpsGetJson<{
+          results?: Array<{ latitude: number; longitude: number; name: string; country: string }>;
+        }>(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`);
+        const loc = geoData.results?.[0];
+        if (!loc) {
+          res.status(404).json({ error: `City not found: ${city}` });
+          return;
+        }
+
+        // Fetch current conditions from Open-Meteo (free, no API key)
+        const weatherData = await httpsGetJson<{
+          current: { temperature_2m: number; wind_speed_10m: number; weather_code: number; time: string };
+        }>(`https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current=temperature_2m,wind_speed_10m,weather_code&timezone=auto`);
+
+        weatherPayload = {
+          city:           loc.name,
+          country:        loc.country,
+          temperature_c:  weatherData.current.temperature_2m,
+          wind_speed_kmh: weatherData.current.wind_speed_10m,
+          weather_code:   weatherData.current.weather_code,
+          timestamp:      weatherData.current.time,
+        };
+        _weatherCache.set(cacheKey, { data: weatherPayload, expiresAt: Date.now() + WEATHER_CACHE_TTL_MS });
+      } catch (fetchErr) {
+        // Open-Meteo flaked — return cached stale data or a graceful fallback so
+        // the toll settlement still yields a successful 200 response.
+        const stale = _weatherCache.get(cacheKey);
+        if (stale) {
+          weatherPayload = stale.data as typeof weatherPayload;
+        } else {
+          const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+          logger.warn({ city, err: msg }, "[weather] Open-Meteo unavailable — returning fallback");
+          weatherPayload = {
+            city,
+            country:        "N/A",
+            temperature_c:  null as unknown as number,
+            wind_speed_kmh: null as unknown as number,
+            weather_code:   0,
+            timestamp:      new Date().toISOString(),
+          };
+        }
       }
-
-      // Fetch current conditions from Open-Meteo (free, no API key)
-      const weatherData = await httpsGetJson<{
-        current: { temperature_2m: number; wind_speed_10m: number; weather_code: number; time: string };
-      }>(`https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current=temperature_2m,wind_speed_10m,weather_code&timezone=auto`);
-
-      weatherPayload = {
-        city:           loc.name,
-        country:        loc.country,
-        temperature_c:  weatherData.current.temperature_2m,
-        wind_speed_kmh: weatherData.current.wind_speed_10m,
-        weather_code:   weatherData.current.weather_code,
-        timestamp:      weatherData.current.time,
-      };
-      _weatherCache.set(cacheKey, { data: weatherPayload, expiresAt: Date.now() + WEATHER_CACHE_TTL_MS });
     }
 
     // Payment already executed by x402Settle — deliver data with settlement reference
@@ -1467,7 +1487,7 @@ app.post("/api/agents/create-mandate", requirePortalAuth, async (req, res) => {
       deployTxid,
       nextSteps: [
         `Send ≥0.5 ALGO to ${appAddress} (contract MBR + fee reserve).`,
-        `Server will call opt_in_usdc() automatically within ~10s of the deposit confirming.`,
+        `Call opt_in_usdc() on app ID ${mandateAppId} from any wallet once ALGO is confirmed.`,
         `Send USDC to ${appAddress} — agent activates automatically when USDC balance > 0.`,
       ],
     });
