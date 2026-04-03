@@ -130,6 +130,7 @@ pay for APIs autonomously. AP2 adapter added small — as distribution, not arch
 - [x] `DEV_SIGNER_ALLOWED` not set in Railway
 - [x] Error responses never leak stack traces
 - [x] Telegram alert channel tested end-to-end
+- [ ] **STRIDE 2026-04-03 findings addressed** — see Sprint S for full task list
 
 ### 6.2 Performance Audit
 - [x] p95 enqueue 1527ms (< 3s target)
@@ -1111,7 +1112,173 @@ mandate contract, its own per-agent lock, and its own ALGO fee reserve. No conte
   - Saves results to `public/mandate-test-report.json` (all txnIds + explorer URLs)
 - [x] **RUN the test** — 100/100 confirmed 2026-04-03
 - [x] Results: enqueue p50=642ms p95=2066ms, confirm p50=5506ms p95=5939ms, 0 retries, wall=113s
-- [ ] Update landing page `BenchmarkBar` with real 100/100 numbers
+- [x] Update landing page `BenchmarkBar` with real 100/100 numbers
+
+---
+
+## Sprint S — Security Hardening *(STRIDE 2026-04-03)*
+
+**Why:** Full STRIDE threat model run 2026-04-03 after Sprint O.8 completion. Three CRITICAL
+findings, four HIGH findings require action before ecosystem expansion (Sprint 18+). The
+non-custodial AVM architecture is sound — the gaps are all operational/infrastructure.
+
+**STRIDE summary:**
+- **Spoofing:** single shared portal secret — no operator identity, no audit trail
+- **Tampering:** Redis records unsigned — agent status, job records, velocity counters all mutable by any Redis writer
+- **Repudiation:** halt, mandate param changes, portal access all unattributed
+- **Information Disclosure:** mnemonics + tokens visible in `.env`; pending agent keys stored plaintext in Redis
+- **Denial of Service:** unilateral halt (1 person with shared secret); single global rate limit quota (no per-agent fairness); no job retry cap
+- **Elevation of Privilege:** master wallet compromise → all mandates mutable; `DEV_SIGNER_ALLOWED` bypass in `.env`
+
+---
+
+### S.1 — Secret Rotation & Vault *(CRITICAL)*
+
+- [ ] Rotate `PORTAL_API_SECRET` in Railway — current value visible in local `.env`
+- [ ] Rotate `UPSTASH_REDIS_REST_TOKEN` in Railway + Upstash console — visible in `.env`
+- [ ] Rotate `TELEGRAM_BOT_TOKEN` via @BotFather — visible in `.env`
+- [ ] Confirm `OPERATOR_MNEMONIC` is set only in Railway vault, not committed or in local `.env` long-term
+- [ ] Confirm `ALGO_TREASURY_MNEMONIC` similarly vaulted
+- [ ] Audit `git log --all -p -- .env` — confirm `.env` has never been committed to repo
+- [ ] Verify `.env` is in `.gitignore`
+
+---
+
+### S.2 — Per-Operator API Keys *(CRITICAL — replaces shared PORTAL_API_SECRET)*
+
+**Problem:** Single shared `PORTAL_API_SECRET` = no operator identity, no audit trail.
+Any leak compromises the entire portal. Anyone with the key can halt the system.
+
+**Design:**
+- Scoped API keys per operator: `pk_live_<32-byte-hex>`
+- Keys stored as HMAC-SHA256 hashes in Redis `x402:api-keys:{hash}` with `{ name, createdAt, lastUsedAt, scopes[] }`
+- Scopes: `portal:read`, `portal:write`, `agents:manage`, `system:halt`
+- `PORTAL_API_SECRET` retained as root key during transition, then deprecated
+- `POST /api/portal/api-keys` — create key (root key required; plaintext returned once)
+- `DELETE /api/portal/api-keys/:id` — revoke
+- `GET /api/portal/api-keys` — list (name + last used, never plaintext)
+- `portalAuth.ts` updated: hash-lookup + attach operator name to `req`
+- All portal logger calls include `operatorName` field
+
+- [ ] Design key schema + Redis layout (`x402:api-keys:*`)
+- [ ] `POST/GET/DELETE /api/portal/api-keys` routes with root-key guard
+- [ ] Update `portalAuth.ts` to hash-lookup + attach operator context
+- [ ] Add `operatorName` to all logger calls in portal route handlers
+- [ ] Portal UI: API Keys page (list, create, revoke)
+- [ ] Migrate Railway env: set new scoped key as `PORTAL_API_KEY_PRIMARY`, deprecate `PORTAL_API_SECRET`
+
+---
+
+### S.3 — Halt Approval Gate *(CRITICAL — unilateral DoS risk)*
+
+**Problem:** `POST /api/system/halt` requires only `PORTAL_API_SECRET`. One leaked
+credential takes the entire system offline instantly.
+
+**Design (Option B — two-key, simplest, zero new infra):**
+- Halt requires BOTH `PORTAL_API_SECRET` (or scoped key with `system:halt`) AND `HALT_OVERRIDE_KEY`
+- `HALT_OVERRIDE_KEY` already exists in Railway env — just enforce it at the route
+- Unhalt requires the same two keys
+- 403 with `{ error: "halt requires X-Halt-Override-Key header" }` if second key missing
+
+- [ ] Update `POST /api/system/halt` to require `X-Halt-Override-Key: <HALT_OVERRIDE_KEY>`
+- [ ] Update `POST /api/system/unhalt` to same requirement
+- [ ] Update runbook: halt now requires two independent credentials
+- [ ] Test: halt with one key → 403; halt with both → 200
+
+---
+
+### S.4 — Redis Record Integrity (HIGH — tampering)
+
+**Problem:** Agent records and settlement job records stored as unsigned JSON.
+Any Redis writer can modify agent status, job txid, or spend totals without detection.
+
+**Design:**
+- HMAC-SHA256 each record on write using new `REDIS_HMAC_SECRET` env var (32-byte random)
+- Verify on read; mismatch → `REDIS_INTEGRITY_VIOLATION` security event + treat record as missing (fail-closed)
+- Apply to: `x402:agents:*`, `x402:settlement:job:*`
+- Velocity sorted sets are self-verifying via Lua atomics — skip for now
+
+- [ ] Add `REDIS_HMAC_SECRET` to Railway (generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`)
+- [ ] `src/services/redis.ts` — add `hmacSign(key, value)` / `hmacVerify(key, value)` helpers
+- [ ] `src/services/agentRegistry.ts` — sign on write, verify on read; log + throw on mismatch
+- [ ] `src/queue/settlementQueue.ts` — sign job records on enqueue; worker verifies before processing
+- [ ] New `SecurityEventType.REDIS_INTEGRITY_VIOLATION` → Telegram alert + halt flag
+
+---
+
+### S.5 — Settlement Worker Poison Pill Protection (HIGH — DoS)
+
+**Problem:** Failing transactions stay in the queue indefinitely. Permanently-rejected
+transactions accumulate as stale jobs and could cause Redis memory pressure at scale.
+
+- [ ] Add `retryCount: number` and `maxRetries: number` (default 3) to job record schema
+- [ ] Worker: on `waitForConfirmation` failure, increment `retryCount`; if `>= maxRetries` set status `dead` + move to `x402:settlement:dead:{jobId}`
+- [ ] `GET /api/jobs/:jobId` returns `dead` status with last error message
+- [ ] `GET /api/portal/jobs/dead` — dead-letter queue view for ops
+- [ ] Dead-letter jobs: 7-day TTL (vs 24h normal) for inspection
+- [ ] Telegram alert when any job enters dead-letter queue
+
+---
+
+### S.6 — Rate Limit Fairness (HIGH — starvation DoS)
+
+**Problem:** 200 tx/60s global limit is shared across all agents. One high-volume
+agent can exhaust quota and starve all others.
+
+**Design:**
+- Per-agent minimum guarantee: `floor(200 / activeAgentCount)` tx/60s reserved per agent
+- Overflow pooled into shared bucket for agents that want more
+- Check per-agent bucket first → shared bucket → 429
+- Hard ceiling unchanged at 200 tx/60s global
+
+- [ ] `src/protection/executionLimiter.ts` — add per-agent minimum bucket
+- [ ] `src/services/agentRegistry.ts` — expose `activeAgentCount()` (60s cached)
+- [ ] Response header: `X-RateLimit-Agent-Remaining` (per-agent bucket remaining)
+- [ ] Stress test: verify no starvation under mixed-agent load
+
+---
+
+### S.7 — Pending Agent Key Hardening (MEDIUM — information disclosure)
+
+**Problem:** Pending agent secret keys stored as plaintext base64 in Redis with a 24-hour TTL.
+Redis compromise during that window exposes all pending agent keys.
+
+- [ ] Encrypt `secretKeyB64` at rest: AES-256-GCM, key derived from `REDIS_HMAC_SECRET`
+- [ ] `agentRegistry.ts` — encrypt on `storePendingAgent()`, decrypt on `getPendingAgent()`
+- [ ] Shorten pending key TTL: 24h → 4h (agent should fund + activate promptly)
+- [ ] Log access to pending agent records at DEBUG level (agentId + timestamp)
+
+---
+
+### S.8 — Admin Challenge Rate Limiting (MEDIUM)
+
+**Problem:** `POST /api/admin/auth/liquid-challenge` + `/pera-challenge` accept unlimited
+unauthenticated requests — could flood Redis with pending challenges.
+
+- [ ] Add IP-based rate limiter to challenge endpoints: 10 req/60s per IP
+- [ ] Confirm challenge TTL ≤ 5 min in Redis
+- [ ] Log WARN if > 5 challenges from same IP within 60s
+
+---
+
+### S.9 — Portal Audit Log (MEDIUM — repudiation)
+
+*Depends on S.2 (per-operator keys provide identity).*
+
+- [ ] `src/lib/auditLog.ts` — `logAuditEvent(operatorName, action, target, metadata)`
+  - Writes to Redis ring buffer `x402:audit:log` (1000 entries max) + pino logger
+- [ ] Instrument: agents/create, agents/suspend, system/halt, system/unhalt, api-keys/*
+- [ ] Audit fields: timestamp, operator name, IP hash, action, target id, result
+- [ ] `GET /api/portal/audit` — paginated audit log endpoint
+
+---
+
+### S.10 — Security Event & Health Consolidation (LOW)
+
+- [ ] New `SecurityEventType` values: `REDIS_INTEGRITY_VIOLATION`, `RATE_LIMIT_STARVATION`, `DEAD_LETTER_JOB`
+- [ ] Re-verify `DEV_SIGNER_ALLOWED` absent from all Railway env vars
+- [ ] `/health` response: add `redisIntegrity: "ok" | "degraded"` field
+- [ ] Audit 402 error response verbosity — redact contract-internal gate details from unauthenticated callers (return generic "payment rejected" instead of "gate 5 velocity exceeded")
 
 ---
 
