@@ -1043,6 +1043,78 @@ and complexity.
 
 ---
 
+## Sprint O.7 — Mandate Contract: Agent Self-Opt-In ✅ *(completed 2026-04-03)*
+
+**Why:** The `opt_in_usdc()` method on the MandateContract was restricted to master wallet
+OR agent key. This still required someone to pay a txn fee on the agent's behalf. Removing
+the auth check entirely makes it permissionless — anyone can trigger it — which is safe
+because opting into a USDC ASA only transfers 0 USDC from the contract to itself.
+
+### O.7.1 — Update MandateContract PyTeal/ARC-4 source ✅
+
+- [x] Removed `Assert(Or(master, agent_key))` guard from `do_opt_in_usdc()` — no auth check
+- [x] Recompile approval program → new hash `77147fde5623e80ffc85ebf7a3a7a56af41331797ee43beb83689aaa54a3e885`
+- [x] `MANDATE_CONTRACT_APPROVAL_HASH` updated in Railway + local `.env`
+
+### O.7.2 — Deploy updated contract via new factory ✅
+
+- [x] New MandateFactory deployed on mainnet — app_id=3504679786, txid `7QUJZRWMX46QMNNTCKQUNT5X5HUKG4TGZOIYED46KC5L4QZHZ4UQ`
+- [x] `set_programs` uploaded — txid `X36U7GTSWKHDR2QBAFAMV2T6FNK2OTG3K3OKBXZQ7X5HB35Q5NAQ`
+- [x] `MANDATE_FACTORY_APP_ID=3504679786` updated in Railway + local `.env`
+- [x] Existing mandate contracts unaffected (separate deployed instances)
+
+### O.7.3 — Update activation poller + onboarding flow ✅
+
+- [x] `src/services/activationPoller.ts` — `callOptInUsdc()` block removed; poller no longer
+  pays opt-in on the agent's behalf; advisory log updated
+- [x] `POST /api/agents/create-mandate` nextSteps updated — tells user to call `opt_in_usdc()`
+  from any wallet after funding with ALGO
+- [x] `src/services/agentRegistry.ts` — `mandateOperatorMaster` field comment updated
+- [x] `tsc --noEmit` passes clean
+
+### O.7.4 — Fix `mandateFactory.ts` inner-txn parsing ✅
+
+- [x] Already implemented (uses `waitForConfirmation` return value directly, not a separate
+  `pendingTransactionInformation` call) — deployed with O.7.2 factory push
+
+---
+
+## Sprint O.8 — Multi-Agent Showcase Test ✅ *(COMPLETE 2026-04-03)*
+
+**Why:** The single-agent showcase (`showcase-100-test.ts`) hit 95/100 confirmed due to
+per-agent lock contention — all 100 payments competed for one settling lock. In production
+many agents pay concurrently with no shared lock. This sprint builds a realistic multi-agent
+test that proves true throughput with zero contention.
+
+**Design:** 5 independent agents × 20 payments each = 100 total. Each agent has its own
+mandate contract, its own per-agent lock, and its own ALGO fee reserve. No contention.
+
+### O.8.1 — Provision 5 showcase agents ✅
+
+- [x] `scripts/setup-multi-agent-showcase.ts` — loops N_AGENTS times (default 5):
+  - Generates fresh keypair (no rekey, no Rocca)
+  - Funds agent wallet with 0.5 ALGO from operator (for tx fees)
+  - Calls `POST /api/agents/create-mandate` → deploys MandateContract
+  - Funds contract with 0.6 ALGO (MBR + fee reserve)
+  - Agent self-calls `opt_in_usdc()` (permissionless — no operator cost, O.7)
+  - Funds mandate contract with $0.22 USDC (20 × $0.01 + 10% buffer)
+  - Waits for agent active
+  - Saves all configs to `scripts/showcase-agents.json`
+- [x] `scripts/setup-showcase-agent.ts` updated — agent self-opts USDC instead of polling for server auto-opt-in
+
+### O.8.2 — Multi-agent showcase test script ✅
+
+- [x] `scripts/showcase-multi-agent-test.ts`:
+  - Loads agent configs from `scripts/showcase-agents.json`
+  - Runs N parallel streams, each making M sequential payments via `AlgoAgentClient`
+  - Per-agent + aggregate reporting: enqueue latency, confirm latency, TPS, tx/min
+  - Saves results to `public/mandate-test-report.json` (all txnIds + explorer URLs)
+- [x] **RUN the test** — 100/100 confirmed 2026-04-03
+- [x] Results: enqueue p50=642ms p95=2066ms, confirm p50=5506ms p95=5939ms, 0 retries, wall=113s
+- [ ] Update landing page `BenchmarkBar` with real 100/100 numbers
+
+---
+
 ## Sprint 18 — Seller SDK
 
 **Why:** The seller side is the missing half. Developers need to be able to add
@@ -1655,3 +1727,48 @@ Two distinct failure modes under 5-concurrent burst, both traced to Railway undi
 - [x] p50 enqueue 2086ms, **p95 enqueue 2346ms** (target < 5000ms ✅)
 - [x] p50 confirmation 6913ms, p95 confirmation 11543ms
 - [x] Ran with `weather-test-agent` rekeyed to prod signer `6RZV6XEP6...` — valid production test ✅
+
+## Mandate Flow — 100-Payment Mainnet Demonstration (TODO)
+
+Goal: replace the placeholder `/mandate-test` page with a credible, verifiable proof that uses
+the hard mandate flow (AVM-enforced, non-custodial). Minimum 100 on-chain payments so the
+sample size is statistically meaningful and matches the old 100/100 Sprint 16A benchmark.
+
+### What to do
+
+1. **Extend `scripts/mandate-burst-test.ts`** — add `BURST_SIZE=100` sequential mode support.
+   Current script already supports `--sequential` + arbitrary `BURST_SIZE`; just needs to be
+   run with the right env vars and enough funded agent balance.
+
+2. **Fund `speed-test-agent` with enough USDC** — 100 × $0.01 = $1.00 USDC + buffer.
+   Agent: `MERZZEJLQ3TNPGW3J7UXQFPNMDWBGOLUUZ7C5KA5KGP4DVMXINUQR56FFI`
+   mandateAppId: 3498113854
+
+3. **Run the test** — sequential mode ensures all 100 payments confirm cleanly:
+   ```
+   BURST_SIZE=100 npx tsx scripts/mandate-burst-test.ts --sequential
+   ```
+   This saves results (including all 100 txnIds + explorer URLs) to `public/mandate-test-report.json`.
+
+4. **Update landing page BenchmarkBar** (`apps/developer-portal/src/app/page.tsx`) with real numbers:
+   - Change `5/5` → `100/100`
+   - Update p50 latency values from real run
+   - Add throughput stat (payments/min) — replaces the "~6×" comparison which means nothing to customers
+
+5. **Fix the "vs sync baseline" stat** — replace with something meaningful:
+   - Option A: payments/min throughput (e.g. "X tx/min")
+   - Option B: "3.3s p50 confirm vs 3.8s raw Algorand block time" (shows optimistic broadcast value)
+   - Do NOT compare to our own old broken architecture
+
+6. **Add concurrent agent data if possible** — run a separate smaller test with 2–3 agents
+   paying simultaneously to show multi-agent throughput. This answers the #1 enterprise question:
+   "what happens when 10 of my agents are paying simultaneously?"
+
+7. **Verify `public/mandate-test-report.json` has all 100 `txnId` + `explorerUrl` fields populated**
+   before deploying — the empty transaction table actively destroys credibility.
+
+### Definition of done
+- [ ] 100 txnIds present in `mandate-test-report.json`, all verifiable on Pera Explorer
+- [ ] BenchmarkBar shows 100/100 with real p50/throughput numbers
+- [ ] No placeholder / "run the script" messaging on the public page
+- [ ] `~6× vs sync baseline` stat replaced with a customer-meaningful metric
