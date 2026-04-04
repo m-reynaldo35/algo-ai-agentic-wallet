@@ -1,7 +1,7 @@
 {
   "name": "@algo-wallet/x402-mcp",
-  "version": "0.2.0",
-  "description": "Mandate-governed AI agent wallet for Algorand — pay for x402 APIs, check USDC/ALGO balance, inspect spending mandates",
+  "version": "0.3.0",
+  "description": "x402 Algorand payment SDK — buyer MCP server (pay_with_x402) + seller middleware (x402express, x402tool)",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -11,6 +11,10 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./seller": {
+      "import": "./dist/seller/index.js",
+      "types": "./dist/seller/index.d.ts"
     }
   },
   "files": [
@@ -26,8 +30,18 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "algosdk": "^3.2.0"
   },
+  "peerDependencies": {
+    "express": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "express": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@types/express": "^4.17.25",
     "@types/node": "^22.0.0",
+    "express": "^4.22.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.3"
   },
