@@ -316,6 +316,14 @@ export async function handleMcpRequest(req: Request, res: Response): Promise<voi
     return;
   }
 
+  // StreamableHTTP transport requires Accept: application/json, text/event-stream.
+  // Smithery and some MCP clients omit text/event-stream — inject it so the
+  // transport doesn't reject valid requests with 406 Not Acceptable.
+  const accept = req.headers["accept"] ?? "";
+  if (!accept.includes("text/event-stream")) {
+    req.headers["accept"] = "application/json, text/event-stream";
+  }
+
   const server    = createMcpServer(agentId, portalKey, apiUrl);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
