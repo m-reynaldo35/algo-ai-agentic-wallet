@@ -1282,40 +1282,33 @@ unauthenticated requests — could flood Redis with pending challenges.
 
 ---
 
-## Sprint 18 — Seller SDK
+## Sprint 18 — Seller SDK ✅ *(completed 2026-04-04)*
 
-**Why:** The seller side is the missing half. Developers need to be able to add
-x402-Algorand payment to their API in one import. The easier it is to become a seller,
-the faster the registry fills.
+### 18.0 — HTTP Transport + Smithery Listing ✅
+- [x] `src/mcp/httpServer.ts` — stateless StreamableHTTP transport, read-only tools (non-custodial boundary: mnemonic never leaves device)
+- [x] `POST /mcp` mounted in `src/index.ts` — behind rateLimiter
+- [x] `GET /.well-known/mcp/server-card.json` — Smithery capability discovery endpoint (3 tools)
+- [x] Query param auth: `?X402_AGENT_ID=...&X402_PORTAL_KEY=...` (Smithery passes config as query params)
+- [x] Accept header injection — fixes StreamableHTTP 406 for clients that omit `text/event-stream`
+- [x] Security: `ALGO_MNEMONIC` removed from HTTP transport entirely — `pay_with_x402` redirects to STDIO
+- [x] `smithery.yaml` updated: no mnemonic, only `X402_AGENT_ID` + `X402_PORTAL_KEY`
+- [x] Public repo `github.com/m-reynaldo35/x402-mcp` updated
+- [x] **Listed on Smithery: `smithery.ai/server/algo-wallet/x402mcp`** — public, 3 tools discovered ✅
 
-### 18.1 x402-mcp Seller SDK (complete the existing package)
-- [ ] Single import API:
-      ```typescript
-      import { x402tool } from "@algo-wallet/x402-mcp";
+### 18.1 — Seller SDK (`@algo-wallet/x402-mcp@0.3.0` `/seller` subpath) ✅
+- [x] `packages/x402-mcp/src/seller/verifier.ts` — decode X-PAYMENT, verify recipient+amount, submit to algod
+- [x] `packages/x402-mcp/src/seller/middleware.ts` — `x402express({ price, payTo })` Express middleware
+- [x] `packages/x402-mcp/src/seller/tool.ts` — `x402tool()` + `mountX402Tools()` for MCP servers
+- [x] `packages/x402-mcp/src/seller/index.ts` — re-exports via `@algo-wallet/x402-mcp/seller`
+- [x] **Published: `@algo-wallet/x402-mcp@0.3.0`** on npm ✅
 
-      x402tool({
-        name:        "get_weather",
-        description: "Current weather for any city. Costs $0.001 USDC.",
-        price:       1000,         // micro-USDC
-        payTo:       "ALGO_ADDRESS",
-        input:       { city: "string" },
-        handler:     async ({ city }) => fetchWeather(city),
-      });
-      ```
-- [ ] Handles: 402 response generation, payment proof verification, mandate enforcement check
-- [ ] Express adapter: `app.use(x402express({ price, payTo }))` — one-line middleware
-- [ ] FastAPI adapter (Python): `@x402(price=1000, pay_to="ALGO_ADDRESS")`
-- [ ] Seller CLI: `npx x402-algorand register --tool get_weather --endpoint https://myapi.com`
+### 18.2 — Python Seller SDK (`algo-x402@0.2.0`) ✅
+- [x] `packages/algo-x402/src/algo_x402/seller.py` — `@x402(price, pay_to)` FastAPI decorator (async + sync)
+- [x] `x402_flask(price, pay_to)` Flask decorator; `g.x402_payment` set on success
+- [x] Both implement x402-v1 pay+json 402 format — compatible with `AlgoAgentClient.fetch()` on buyer side
+- [x] **Published: `algo-x402@0.2.0`** on PyPI ✅
 
-### 18.0 — HTTP Transport for MCP Server (unlocks Smithery listing) ✅
-- [x] `src/mcp/httpServer.ts` — stateless StreamableHTTP transport, credentials via headers, same 3 tools as stdio server
-- [x] `POST /mcp` mounted in `src/index.ts` — behind rateLimiter, no extra Railway service needed
-- [x] CORS updated: X-Algo-Mnemonic, X-Agent-Id, X-Api-Url headers added
-- [x] `smithery.yaml` updated: type http, url `https://api.ai-agentic-wallet.com/mcp`, headers mapped to config vars
-- [x] Public repo `github.com/m-reynaldo35/x402-mcp` updated with new smithery.yaml
-- [ ] Submit to Smithery: https://smithery.ai/new → point at `https://github.com/m-reynaldo35/x402-mcp` (deploy to Railway first)
-
-### 18.2 Seller Documentation
+### 18.3 — Seller Documentation
 - [ ] Quickstart: "Add x402 payment to your API in 5 minutes"
 - [ ] Pricing guide: micro-USDC denomination, recommended price tiers
 - [ ] Security guide: replay protection, mandate-aware rate limiting
