@@ -190,6 +190,45 @@ app.get("/api/info", (_req, res) => {
   });
 });
 
+// ── Smithery server-card (skip MCP scan) ────────────────────────
+// https://smithery.ai/docs/build/publish#troubleshooting
+app.get("/.well-known/mcp/server-card.json", (_req, res) => {
+  res.json({
+    name:        "x402-wallet",
+    version:     "0.3.0",
+    description: "Check your AI agent wallet balance and spending mandates on Algorand mainnet. Non-custodial x402 payment infrastructure — AVM-enforced spending limits.",
+    tools: [
+      {
+        name:        "check_balance",
+        description: "Check USDC and ALGO balances for your agent wallet and mandate contract.",
+        inputSchema: { type: "object", properties: {}, required: [] },
+      },
+      {
+        name:        "check_mandates",
+        description: "List active spending mandates — per-tx cap, daily cap, expiry.",
+        inputSchema: { type: "object", properties: {}, required: [] },
+      },
+      {
+        name:        "pay_with_x402",
+        description: "Pay for x402-gated APIs. Requires STDIO transport for non-custodial signing.",
+        inputSchema: {
+          type:       "object",
+          properties: { endpoint: { type: "string", description: "x402-gated API endpoint" } },
+          required:   ["endpoint"],
+        },
+      },
+    ],
+    configSchema: {
+      type:     "object",
+      required: ["X402_AGENT_ID", "X402_PORTAL_KEY"],
+      properties: {
+        X402_AGENT_ID:   { type: "string", description: "Your agent ID from ai-agentic-wallet.com" },
+        X402_PORTAL_KEY: { type: "string", description: "pk_live_... Portal API key from your dashboard" },
+      },
+    },
+  });
+});
+
 // ── Health ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
   const [node, haltRecord, circuitState] = await Promise.all([

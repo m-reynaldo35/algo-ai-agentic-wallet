@@ -305,13 +305,17 @@ function createMcpServer(
 // ── Express handler ────────────────────────────────────────────────────────
 
 export async function handleMcpRequest(req: Request, res: Response): Promise<void> {
-  const agentId   = req.headers["x-agent-id"]   as string | undefined;
-  const portalKey = req.headers["x-portal-key"] as string | undefined;
-  const apiUrl    = ((req.headers["x-api-url"]  as string | undefined) ?? DEFAULT_API_URL).replace(/\/+$/, "");
+  // Credentials can arrive as headers (direct clients) or query params (Smithery).
+  // Query params take precedence when present so Smithery's config schema works.
+  const q = req.query as Record<string, string>;
+
+  const agentId   = (q["X402_AGENT_ID"]   ?? req.headers["x-agent-id"])   as string | undefined;
+  const portalKey = (q["X402_PORTAL_KEY"] ?? req.headers["x-portal-key"]) as string | undefined;
+  const apiUrl    = ((q["X402_API_URL"]   ?? req.headers["x-api-url"] ?? DEFAULT_API_URL) as string).replace(/\/+$/, "");
 
   if (!agentId || !portalKey) {
     res.status(400).json({
-      error: "X-Agent-Id and X-Portal-Key headers are required",
+      error: "X402_AGENT_ID and X402_PORTAL_KEY are required (query params or headers)",
     });
     return;
   }
@@ -319,7 +323,7 @@ export async function handleMcpRequest(req: Request, res: Response): Promise<voi
   // StreamableHTTP transport requires Accept: application/json, text/event-stream.
   // Smithery and some MCP clients omit text/event-stream — inject it so the
   // transport doesn't reject valid requests with 406 Not Acceptable.
-  const accept = req.headers["accept"] ?? "";
+  const accept = (req.headers["accept"] as string) ?? "";
   if (!accept.includes("text/event-stream")) {
     req.headers["accept"] = "application/json, text/event-stream";
   }
