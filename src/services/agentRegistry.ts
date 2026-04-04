@@ -1,4 +1,4 @@
-import { getRedis } from "./redis.js";
+import { getRedis, hmacSign, hmacVerify, HmacIntegrityError } from "./redis.js";
 import crypto, { randomUUID } from "crypto";
 
 // ── Instance identity (for halt audit trail) ──────────────────────
@@ -84,8 +84,8 @@ export interface AgentRecord {
   /**
    * True when the server's operator wallet is the MandateContract master wallet.
    * Set for agents created via POST /api/agents/create-mandate.
-   * Allows the activation poller to call opt_in_usdc() automatically once
-   * the contract has been funded with ALGO.
+   * Allows operator-only contract methods (update_mandate, halt, etc.) to be
+   * called server-side. opt_in_usdc() is permissionless and does not require this.
    */
   mandateOperatorMaster?: boolean;
 }
@@ -125,8 +125,10 @@ export async function storeAgent(record: AgentRecord): Promise<void> {
   const redis = getRedis();
   if (!redis) throw new Error("Redis not available — cannot store agent record");
 
+  const key     = `${AGENTS_PREFIX}${record.agentId}`;
+  const payload = JSON.stringify(record);
   const ops: Promise<unknown>[] = [
-    redis.set(`${AGENTS_PREFIX}${record.agentId}`, JSON.stringify(record)),
+    redis.set(key, hmacSign(payload)),
     redis.set(`${ADDR_IDX_PREFIX}${record.address}`, record.agentId),
   ];
 
@@ -141,9 +143,27 @@ export async function getAgent(agentId: string): Promise<AgentRecord | null> {
   const redis = getRedis();
   if (!redis) return null;
 
-  // @upstash/redis auto-deserialises JSON on read — get<T>() returns the
-  // parsed object directly. Do NOT JSON.parse() the result.
-  return redis.get<AgentRecord>(`${AGENTS_PREFIX}${agentId}`);
+  const key = `${AGENTS_PREFIX}${agentId}`;
+  // RedisShim auto-parses JSON — if HMAC is active the envelope is an object;
+  // stringify it back so hmacVerify can unwrap it.
+  const raw = await redis.get<unknown>(key);
+  if (raw === null) return null;
+
+  const rawStr = typeof raw === "string" ? raw : JSON.stringify(raw);
+  try {
+    const payload = hmacVerify(rawStr, key);
+    return typeof payload === "string" ? JSON.parse(payload) as AgentRecord : payload as unknown as AgentRecord;
+  } catch (err) {
+    if (err instanceof HmacIntegrityError) {
+      console.error(`[AgentRegistry] HMAC integrity violation for agent ${agentId} — treating as missing`);
+      // Emit async so we don't block the caller
+      import("./securityAudit.js").then(({ emitSecurityEvent }) => {
+        emitSecurityEvent({ type: "SECURITY_ALERT", agentId, detail: { error: "REDIS_INTEGRITY_VIOLATION", key }, timestamp: new Date().toISOString() });
+      }).catch(() => {});
+      return null;
+    }
+    throw err;
+  }
 }
 
 export async function getAgentByAddress(address: string): Promise<AgentRecord | null> {
@@ -160,8 +180,10 @@ export async function getAgentByAddress(address: string): Promise<AgentRecord | 
 export async function updateAgentRecord(record: AgentRecord): Promise<void> {
   const redis = getRedis();
   if (!redis) throw new Error("Redis not available");
+  const key     = `${AGENTS_PREFIX}${record.agentId}`;
+  const payload = JSON.stringify(record);
   const ops: Promise<unknown>[] = [
-    redis.set(`${AGENTS_PREFIX}${record.agentId}`, JSON.stringify(record)),
+    redis.set(key, hmacSign(payload)),
   ];
   if (record.ownerAddress) {
     ops.push(redis.sadd(`${OWNER_PREFIX}${record.ownerAddress}`, record.agentId));
@@ -180,7 +202,8 @@ export async function updateAgentStatus(
   if (!record) throw new Error(`Agent not found: ${agentId}`);
 
   record.status = status;
-  await redis.set(`${AGENTS_PREFIX}${agentId}`, JSON.stringify(record));
+  const key = `${AGENTS_PREFIX}${agentId}`;
+  await redis.set(key, hmacSign(JSON.stringify(record)));
 }
 
 export async function listAgents(limit = 50, offset = 0): Promise<AgentRecord[]> {
@@ -270,8 +293,9 @@ export async function listAgentsByOwner(ownerAddress: string): Promise<AgentReco
         await Promise.all(
           toMigrate.map(async (r) => {
             const updated: AgentRecord = { ...r, ownerAddress };
-            await Promise.all([
-              redis.set(`${AGENTS_PREFIX}${r.agentId}`, JSON.stringify(updated)),
+            const mKey = `${AGENTS_PREFIX}${r.agentId}`;
+          await Promise.all([
+              redis.set(mKey, hmacSign(JSON.stringify(updated))),
               redis.sadd(`${OWNER_PREFIX}${ownerAddress}`, r.agentId),
             ]);
           }),
@@ -353,8 +377,9 @@ export async function claimAgentOwnership(agentId: string, ownerAddress: string)
   agent.ownerAddress = ownerAddress;
   agent.ownerLinkedAt = new Date().toISOString();
 
+  const key = `${AGENTS_PREFIX}${agentId}`;
   await Promise.all([
-    redis.set(`${AGENTS_PREFIX}${agentId}`, JSON.stringify(agent)),
+    redis.set(key, hmacSign(JSON.stringify(agent))),
     redis.sadd(`${OWNER_PREFIX}${ownerAddress}`, agentId),
   ]);
 }
@@ -381,8 +406,9 @@ export async function transferAgentOwnership(
   agent.ownerAddress = toAddress;
   agent.ownerLinkedAt = new Date().toISOString();
 
+  const key = `${AGENTS_PREFIX}${agentId}`;
   await Promise.all([
-    redis.set(`${AGENTS_PREFIX}${agentId}`, JSON.stringify(agent)),
+    redis.set(key, hmacSign(JSON.stringify(agent))),
     redis.srem(`${OWNER_PREFIX}${prev}`, agentId),
     redis.sadd(`${OWNER_PREFIX}${toAddress}`, agentId),
   ]);
@@ -504,7 +530,46 @@ export { crypto };
 
 const PENDING_PREFIX       = "x402:pending:";
 const PENDING_OWNER_PREFIX = "x402:pending-owner:";
-const PENDING_TTL_S        = 86_400; // 24 hours
+const PENDING_TTL_S        = 4 * 3_600; // 4 hours (S.7: reduced from 24h)
+
+// ── Pending agent key encryption (S.7) ─────────────────────────────────
+// Secret keys are encrypted at rest using AES-256-GCM with a key derived
+// from REDIS_HMAC_SECRET. When REDIS_HMAC_SECRET is not set, keys are
+// stored plaintext (backward compatible for dev, warn in prod).
+
+function getPendingEncKey(): Buffer | null {
+  const secret = process.env.REDIS_HMAC_SECRET;
+  if (!secret) return null;
+  // Derive a 32-byte AES key from the HMAC secret using SHA-256
+  return crypto.createHash("sha256").update(secret).update("pending-agent-key-v1").digest();
+}
+
+function encryptSecretKey(plaintext: string): string {
+  const encKey = getPendingEncKey();
+  if (!encKey) return plaintext; // dev: plaintext fallback
+  const iv         = crypto.randomBytes(12); // 96-bit IV for GCM
+  const cipher     = crypto.createCipheriv("aes-256-gcm", encKey, iv);
+  const encrypted  = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const authTag    = cipher.getAuthTag();
+  // Format: base64(iv + authTag + ciphertext) prefixed with "enc:"
+  const envelope   = Buffer.concat([iv, authTag, encrypted]);
+  return `enc:${envelope.toString("base64")}`;
+}
+
+function decryptSecretKey(stored: string): string {
+  if (!stored.startsWith("enc:")) return stored; // legacy plaintext
+  const encKey = getPendingEncKey();
+  if (!encKey) {
+    throw new Error("REDIS_HMAC_SECRET not set — cannot decrypt pending agent key");
+  }
+  const envelope  = Buffer.from(stored.slice(4), "base64");
+  const iv        = envelope.subarray(0, 12);
+  const authTag   = envelope.subarray(12, 28);
+  const encrypted = envelope.subarray(28);
+  const decipher  = crypto.createDecipheriv("aes-256-gcm", encKey, iv);
+  decipher.setAuthTag(authTag);
+  return decipher.update(encrypted) + decipher.final("utf8");
+}
 
 export interface PendingAgentRecord {
   agentId:        string;
@@ -522,10 +587,15 @@ export interface PendingAgentRecord {
 export async function storePendingAgent(record: PendingAgentRecord): Promise<void> {
   const redis = getRedis();
   if (!redis) throw new Error("Redis not available — cannot store pending agent");
+  // S.7: Encrypt the secret key before storing
+  const stored: PendingAgentRecord = {
+    ...record,
+    secretKeyB64: encryptSecretKey(record.secretKeyB64),
+  };
   const ops: Promise<unknown>[] = [
     redis.set(
       `${PENDING_PREFIX}${record.agentId}`,
-      JSON.stringify(record),
+      JSON.stringify(stored),
       { ex: PENDING_TTL_S },
     ),
   ];
@@ -574,7 +644,15 @@ export async function listPendingAgentsByOwner(ownerAddress: string): Promise<Pe
 export async function getPendingAgent(agentId: string): Promise<PendingAgentRecord | null> {
   const redis = getRedis();
   if (!redis) return null;
-  return redis.get<PendingAgentRecord>(`${PENDING_PREFIX}${agentId}`);
+  const record = await redis.get<PendingAgentRecord>(`${PENDING_PREFIX}${agentId}`);
+  if (!record) return null;
+  // S.7: Decrypt secret key on read
+  try {
+    return { ...record, secretKeyB64: decryptSecretKey(record.secretKeyB64) };
+  } catch (err) {
+    console.error(`[AgentRegistry] Failed to decrypt pending agent key for ${agentId}:`, err instanceof Error ? err.message : err);
+    return null;
+  }
 }
 
 export async function deletePendingAgent(agentId: string): Promise<void> {
@@ -606,6 +684,32 @@ export async function scanAllPendingAgents(): Promise<PendingAgentRecord[]> {
   } while (cursor !== 0);
 
   return records;
+}
+
+// ── Active agent count (S.6 — rate limit fairness) ────────────────────
+let _agentCountCache: number | null = null;
+let _agentCountExpiry = 0;
+const AGENT_COUNT_TTL_MS = 60_000;
+
+/**
+ * Return the count of active agents. Cached for 60s to avoid full KEYS scan
+ * on every rate-limit check. Used by executionLimiter for per-agent fairness.
+ */
+export async function activeAgentCount(): Promise<number> {
+  const now = Date.now();
+  if (_agentCountCache !== null && now < _agentCountExpiry) return _agentCountCache;
+
+  const redis = getRedis();
+  if (!redis) return 1;
+
+  const keys = await redis.keys(`${AGENTS_PREFIX}*`);
+  // Only count active agents — suspended/orphaned don't need quota
+  const raws = await Promise.all(keys.map((k) => redis.get<AgentRecord>(k)));
+  const count = raws.filter((r): r is AgentRecord => r?.status === "active").length;
+
+  _agentCountCache = Math.max(count, 1);
+  _agentCountExpiry = now + AGENT_COUNT_TTL_MS;
+  return _agentCountCache;
 }
 
 /**

@@ -32,7 +32,10 @@ interface MandateTestReport {
   oldBaselineMs?: number;
   speedupMultiple?: number;
   throughputTxPerMin?: number;
+  /** legacy single-agent burst field */
   slots?: SlotResult[];
+  /** multi-agent showcase field (same shape as slots) */
+  payments?: SlotResult[];
 }
 
 // ── Data fetch ─────────────────────────────────────────────────────────────
@@ -301,13 +304,13 @@ export default async function MandateTestPage() {
         <div className="mb-12">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-white">Per-payment results</h2>
-            {report && (report.slots?.length ?? 0) > 0 && (
+            {report && ((report.slots ?? report.payments)?.length ?? 0) > 0 && (
               <span className="text-xs text-zinc-600 font-mono">{report.network}</span>
             )}
           </div>
           <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl px-6 py-4">
             {report ? (
-              <TxTable slots={report.slots ?? []} />
+              <TxTable slots={report.slots ?? report.payments ?? []} />
             ) : (
               <p className="text-zinc-600 text-sm text-center py-4">Report unavailable</p>
             )}

@@ -1,4 +1,5 @@
 import { Redis as IORedis } from "ioredis";
+import crypto from "crypto";
 
 /**
  * Thin compatibility shim over ioredis that exposes the same method
@@ -305,3 +306,69 @@ export function _setRedisForTest(mock: RedisShim | null): void {
   redis = mock;
   checked = true;
 }
+
+// ── HMAC record integrity (S.4) ──────────────────────────────────────────────
+//
+// Protects agent records and settlement jobs from tampering by any Redis writer.
+// Uses HMAC-SHA256 with REDIS_HMAC_SECRET. When the secret is not configured,
+// sign/verify are no-ops (backward compatible with existing deployments).
+//
+// Envelope stored as JSON: { d: <payload JSON>, h: <hmac hex> }
+
+const HMAC_SECRET = process.env.REDIS_HMAC_SECRET;
+
+/**
+ * Wrap a JSON payload in an HMAC envelope.
+ * Returns the payload unchanged when REDIS_HMAC_SECRET is not set.
+ */
+export function hmacSign(payload: string): string {
+  if (!HMAC_SECRET) return payload;
+  const h = crypto
+    .createHmac("sha256", HMAC_SECRET)
+    .update(payload)
+    .digest("hex");
+  return JSON.stringify({ d: payload, h });
+}
+
+/**
+ * Verify and unwrap an HMAC envelope.
+ * Returns the inner payload string on success.
+ * Throws `HmacIntegrityError` on verification failure.
+ * Returns the value unchanged when REDIS_HMAC_SECRET is not set.
+ */
+export class HmacIntegrityError extends Error {
+  constructor(key: string) {
+    super(`HMAC integrity check failed for key: ${key}`);
+    this.name = "HmacIntegrityError";
+  }
+}
+
+export function hmacVerify(raw: string, redisKey: string): string {
+  if (!HMAC_SECRET) return raw;
+
+  let envelope: { d: string; h: string } | null = null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.d === "string" && typeof parsed.h === "string") {
+      envelope = parsed as { d: string; h: string };
+    }
+  } catch {
+    // Not a JSON envelope — could be a legacy record written before HMAC was enabled.
+    // Accept it silently to avoid breaking existing data during rollout.
+    return raw;
+  }
+
+  if (!envelope) return raw; // legacy plain record — accept during rollout
+
+  const expected = crypto
+    .createHmac("sha256", HMAC_SECRET)
+    .update(envelope.d)
+    .digest("hex");
+
+  if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(envelope.h))) {
+    throw new HmacIntegrityError(redisKey);
+  }
+
+  return envelope.d;
+}
+

@@ -11,8 +11,8 @@
  */
 
 import algosdk from "algosdk";
-import { dequeueJob }                   from "./settlementQueue.js";
-import { getJob, updateJob, SettlementJob } from "./jobStore.js";
+import { dequeueJob }                              from "./settlementQueue.js";
+import { getJob, updateJob, moveToDeadLetter, SettlementJob } from "./jobStore.js";
 import { getAlgodClient }               from "../network/nodely.js";
 import { extendReservationTTL }         from "../services/executionIdempotency.js";
 import { rollbackOutflow }              from "../protection/treasuryOutflowGuard.js";
@@ -84,16 +84,25 @@ async function confirmMandateTxn(job: SettlementJob): Promise<void> {
     );
 
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
+    const error    = err instanceof Error ? err.message : String(err);
+    const retries  = (job.retryCount ?? 0) + 1;
+    const maxRetries = job.maxRetries ?? 3;
 
-    await updateJob(job.jobId, { status: "failed", error });
     logExecutionFailure(job.agentId, "broadcast", error);
 
-    // Data was already delivered — this is a revenue loss event
-    logger.error(
-      { jobId: job.jobId, txid, agentId: job.agentId, error },
-      "[Worker] ✗ Mandate txn FAILED TO CONFIRM — data delivered without payment",
-    );
+    if (retries >= maxRetries) {
+      await moveToDeadLetter(job.jobId, error);
+      logger.error(
+        { jobId: job.jobId, txid, agentId: job.agentId, error, retries },
+        "[Worker] ✗ Mandate txn DEAD — max retries exhausted, data delivered without payment",
+      );
+    } else {
+      await updateJob(job.jobId, { status: "failed", error, retryCount: retries });
+      logger.error(
+        { jobId: job.jobId, txid, agentId: job.agentId, error, retries },
+        "[Worker] ✗ Mandate txn FAILED TO CONFIRM — data delivered without payment",
+      );
+    }
   }
 }
 
@@ -165,16 +174,23 @@ async function processJob(jobId: string): Promise<void> {
   } catch (err) {
     clearInterval(ttlHeartbeat);
 
-    const error = err instanceof Error ? err.message : String(err);
-    console.error(`[Worker] ✗ Failed    job=${jobId}  error=${error}`);
+    const error      = err instanceof Error ? err.message : String(err);
+    const retries    = (job.retryCount ?? 0) + 1;
+    const maxRetries = job.maxRetries ?? 3;
+    console.error(`[Worker] ✗ Failed    job=${jobId}  error=${error}  retry=${retries}/${maxRetries}`);
 
     // Roll back treasury outflow reservation — nothing settled
     if (job.outflowReservationKey) {
       rollbackOutflow(job.outflowReservationKey).catch(() => {});
     }
 
-    await updateJob(jobId, { status: "failed", error });
     logExecutionFailure(job.agentId, "broadcast", error);
+
+    if (retries >= maxRetries) {
+      await moveToDeadLetter(jobId, error);
+    } else {
+      await updateJob(jobId, { status: "failed", error, retryCount: retries });
+    }
   }
 }
 

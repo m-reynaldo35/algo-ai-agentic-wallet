@@ -1,59 +1,90 @@
 import type { Request, Response, NextFunction } from "express";
 import crypto from "crypto";
+import { lookupApiKey } from "../services/apiKeyService.js";
+import type { ApiKeyScope } from "../services/apiKeyService.js";
 
 /**
- * Portal Authentication Middleware
+ * Portal Authentication Middleware (updated for S.2)
  *
- * Protects all /api/portal/* endpoints with a shared portal API secret.
+ * Two authentication paths (checked in order):
  *
- * Auth methods (checked in order):
- *   1. Bearer token in Authorization header:   Authorization: Bearer <PORTAL_API_SECRET>
- *   2. X-Portal-Key header:                    X-Portal-Key: <PORTAL_API_SECRET>
+ *   1. Scoped API key  — `pk_live_<hex>` issued via POST /api/portal/api-keys
+ *      Stored as HMAC-SHA256 in Redis with name + scopes.
+ *      Preferred for all new integrations.
  *
- * The PORTAL_API_SECRET env var must be set in production. In development
- * (NODE_ENV !== "production"), portal auth is bypassed with a warning.
+ *   2. Root secret     — PORTAL_API_SECRET env var.
+ *      Retained as a root key during transition. Grants all scopes.
+ *      Deprecated — rotate out once scoped keys are provisioned.
  *
- * The developer portal proxy passes the secret as a bearer token on all
- * /api/live/* → /api/portal/* rewrites using the PORTAL_SECRET env var.
+ * On success, `req.operatorName` is set for downstream audit logging.
+ *
+ * Auth header forms (checked in order):
+ *   Authorization: Bearer <key>
+ *   X-Portal-Key: <key>
  */
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    interface Request {
+      operatorName?: string;
+      operatorScopes?: ApiKeyScope[];
+    }
+  }
+}
 
 const PORTAL_SECRET = process.env.PORTAL_API_SECRET;
 
+function extractToken(req: Request): string {
+  const authHeader = req.header("Authorization") ?? "";
+  const xPortalKey = req.header("X-Portal-Key") ?? "";
+  if (authHeader.startsWith("Bearer ")) return authHeader.slice(7).trim();
+  if (xPortalKey) return xPortalKey.trim();
+  return "";
+}
+
 export function requirePortalAuth(req: Request, res: Response, next: NextFunction): void {
-  // Explicit dev bypass — only when DISABLE_PORTAL_AUTH=true is set AND no secret configured.
-  // Never active in production (requires deliberate opt-in, not the default).
+  // Explicit dev bypass — only when DISABLE_PORTAL_AUTH=true AND no secret configured.
   if (process.env.DISABLE_PORTAL_AUTH === "true" && !PORTAL_SECRET) {
     console.warn("[PortalAuth] WARNING: Auth bypassed via DISABLE_PORTAL_AUTH=true — never use in production");
+    req.operatorName   = "dev-bypass";
+    req.operatorScopes = ["portal:read", "portal:write", "agents:manage", "system:halt"];
     next();
     return;
   }
 
-  if (!PORTAL_SECRET) {
-    // Secret not configured and bypass not explicitly enabled — fail closed
-    res.status(503).json({ error: "Portal authentication not configured" });
-    return;
-  }
-
-  // Extract token from Authorization header or X-Portal-Key header
-  const authHeader = req.header("Authorization") ?? "";
-  const xPortalKey = req.header("X-Portal-Key") ?? "";
-
-  let provided = "";
-  if (authHeader.startsWith("Bearer ")) {
-    provided = authHeader.slice(7).trim();
-  } else if (xPortalKey) {
-    provided = xPortalKey.trim();
-  }
-
+  const provided = extractToken(req);
   if (!provided) {
     res.status(401).json({ error: "Portal authentication required" });
     return;
   }
 
-  // Constant-time comparison to prevent timing attacks
-  const secretBuf = Buffer.from(PORTAL_SECRET);
-  const providedBuf = Buffer.from(provided);
+  // ── Path 1: scoped API key (pk_live_...) ─────────────────────────
+  if (provided.startsWith("pk_live_")) {
+    lookupApiKey(provided)
+      .then((record) => {
+        if (!record) {
+          res.status(403).json({ error: "Invalid or revoked API key" });
+          return;
+        }
+        req.operatorName   = record.name;
+        req.operatorScopes = record.scopes;
+        next();
+      })
+      .catch(() => {
+        res.status(503).json({ error: "Auth service unavailable" });
+      });
+    return;
+  }
 
+  // ── Path 2: root PORTAL_API_SECRET ───────────────────────────────
+  if (!PORTAL_SECRET) {
+    res.status(503).json({ error: "Portal authentication not configured" });
+    return;
+  }
+
+  const secretBuf  = Buffer.from(PORTAL_SECRET);
+  const providedBuf = Buffer.from(provided);
   if (
     secretBuf.length !== providedBuf.length ||
     !crypto.timingSafeEqual(secretBuf, providedBuf)
@@ -62,5 +93,22 @@ export function requirePortalAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
 
+  req.operatorName   = "root";
+  req.operatorScopes = ["portal:read", "portal:write", "agents:manage", "system:halt"];
   next();
+}
+
+/**
+ * Scope guard — wrap around routes that require a specific scope.
+ * Must be used AFTER requirePortalAuth in the middleware chain.
+ */
+export function requireScope(scope: ApiKeyScope) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const scopes = req.operatorScopes ?? [];
+    if (!scopes.includes(scope)) {
+      res.status(403).json({ error: `Insufficient scope — requires ${scope}` });
+      return;
+    }
+    next();
+  };
 }

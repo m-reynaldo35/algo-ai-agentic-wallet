@@ -24,11 +24,28 @@ import { logger }         from "../lib/logger.js";
 
 // MANDATE_CONTRACT_APPROVAL_HASH is the primary provenance check — SHA-256 of
 // the compiled approval program bytes. Required in production.
+// Supports a comma-separated list so multiple contract versions (e.g. after an
+// upgrade that doesn't touch the payment path) can coexist. All hashes represent
+// legitimate MandateContract deployments.
 // MANDATE_FACTORY_APP_ID is an optional belt-and-braces secondary check. Do NOT
 // use it as the primary: the fi global state field is self-reported (any caller
 // can pass any value as application_args[9] at create time).
-const APPROVAL_HASH  = process.env.MANDATE_CONTRACT_APPROVAL_HASH ?? "";
-const FACTORY_APP_ID = Number(process.env.MANDATE_FACTORY_APP_ID ?? "0");
+const APPROVAL_HASHES: Set<string> = new Set(
+  (process.env.MANDATE_CONTRACT_APPROVAL_HASH ?? "")
+    .split(",")
+    .map((h) => h.trim())
+    .filter(Boolean),
+);
+// MANDATE_FACTORY_APP_ID supports a comma-separated list so agents created by
+// older factory versions continue to pass provenance after a factory upgrade.
+const FACTORY_APP_IDS: Set<number> = new Set(
+  (process.env.MANDATE_FACTORY_APP_ID ?? "0")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => n > 0),
+);
+// Keep single-value alias for backward-compat log messages
+const FACTORY_APP_ID = FACTORY_APP_IDS.size === 1 ? [...FACTORY_APP_IDS][0] : 0;
 
 // Cache TTL for factory-membership lookups (app state doesn't change often)
 const PROVENANCE_CACHE_TTL_S = 60 * 60; // 1 hour
@@ -286,7 +303,7 @@ interface ProvenanceResult {
  * payments are rejected. Set it from `python deploy.py set-programs` output.
  */
 async function checkFactoryProvenance(appId: number): Promise<ProvenanceResult> {
-  const cacheKey = `x402:mandate:provenance:v3:${appId}`;
+  const cacheKey = `x402:mandate:provenance:v5:${appId}`;
   const redis    = getRedis();
 
   // Check Redis cache first
@@ -299,7 +316,7 @@ async function checkFactoryProvenance(appId: number): Promise<ProvenanceResult> 
   }
 
   // ── Primary: SHA-256 approval program hash ─────────────────────────────
-  if (!APPROVAL_HASH) {
+  if (APPROVAL_HASHES.size === 0) {
     // Fail closed — operator must set MANDATE_CONTRACT_APPROVAL_HASH
     return {
       valid: false,
@@ -325,31 +342,32 @@ async function checkFactoryProvenance(appId: number): Promise<ProvenanceResult> 
     }
     const hash = createHash("sha256").update(programBytes).digest("hex");
 
-    if (hash !== APPROVAL_HASH) {
+    if (!APPROVAL_HASHES.has(hash)) {
       await cacheProvenance(redis, cacheKey, false);
       return { valid: false, error: `App ${appId} approval program hash mismatch — not a recognised MandateContract` };
     }
 
     // ── Secondary (optional): factory_id global state ─────────────────────
     // Belt-and-braces only. Hash already confirmed the bytecode is correct.
-    if (FACTORY_APP_ID) {
+    // Accepts any factory ID in FACTORY_APP_IDS so agents created before a
+    // factory upgrade continue to pass without needing contract migration.
+    if (FACTORY_APP_IDS.size > 0) {
       const globalState = appInfo?.params?.globalState ?? [];
-      // In algosdk v3, keys are Uint8Array; decode to string for lookup
       const fiEntry = globalState.find((e) =>
         Buffer.from(e.key).toString() === "fi"
       );
       const storedFactoryId = Number(fiEntry?.value?.uint ?? 0);
 
-      if (storedFactoryId !== FACTORY_APP_ID) {
+      if (!FACTORY_APP_IDS.has(storedFactoryId)) {
         logger.warn(
-          { appId, storedFactoryId, expectedFactoryId: FACTORY_APP_ID },
-          "[MandateVerifier] app hash matches but factory_id mismatch — contract may have been deployed manually",
+          { appId, storedFactoryId, acceptedFactoryIds: [...FACTORY_APP_IDS] },
+          "[MandateVerifier] app hash matches but factory_id not in accepted set — contract may have been deployed manually",
         );
-        // Fail closed: correct bytecode but wrong factory lineage is suspicious
+        // Fail closed: correct bytecode but unknown factory lineage is suspicious
         await cacheProvenance(redis, cacheKey, false);
         return {
           valid: false,
-          error: `App ${appId} factory_id ${storedFactoryId} ≠ expected ${FACTORY_APP_ID}`,
+          error: `App ${appId} factory_id ${storedFactoryId} not in accepted factory set`,
         };
       }
     }

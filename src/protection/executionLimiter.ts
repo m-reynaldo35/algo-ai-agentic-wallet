@@ -35,6 +35,7 @@
 
 import { getRedis } from "../services/redis.js";
 import type { RedisShim } from "../services/redis.js";
+import { activeAgentCount } from "../services/agentRegistry.js";
 
 // ── Violation codes ────────────────────────────────────────────────
 
@@ -166,9 +167,26 @@ export async function checkExecutionLimits(
       }
     }
 
-    // ── Layer 3: Global signer window ─────────────────────────────
-    // Protects the master signer from aggregate overload regardless
-    // of how many agents are active simultaneously.
+    // ── Layer 3: Per-agent fairness minimum + global ceiling (S.6) ──────
+    //
+    // Design: floor(GLOBAL_MAX / activeAgentCount) tx/window is reserved
+    // per agent. If the agent is within its guaranteed minimum, allow
+    // immediately (don't check the shared global bucket). Only when the agent
+    // wants MORE than its minimum does the shared global bucket apply.
+    //
+    // This prevents one high-volume agent from starving all others.
+    const agentCount  = await activeAgentCount();
+    const perAgentMin = Math.max(1, Math.floor(GLOBAL_MAX / agentCount));
+
+    const fairKey   = `x402:rate:fair:${publicAddress}`;
+    const fairCheck = await checkWindow(redis, fairKey, GLOBAL_WIN_MS, perAgentMin);
+
+    if (fairCheck.allowed) {
+      // Within guaranteed minimum — allowed, do not consume from shared bucket
+      return { allowed: true };
+    }
+
+    // Above minimum — compete for shared overflow quota
     const globalKey = "x402:rate:global:signer";
     const global = await checkWindow(redis, globalKey, GLOBAL_WIN_MS, GLOBAL_MAX);
     if (!global.allowed) {

@@ -171,6 +171,78 @@ const BYPASS_PATHS = (
   process.env.RATE_LIMIT_BYPASS_PATHS ?? "/api/weather,/api/execute,/api/jobs"
 ).split(",").map((p) => p.trim()).filter(Boolean);
 
+/**
+ * IP-based rate limiter for unauthenticated challenge endpoints (S.8).
+ * 10 requests per 60 seconds per IP. Uses sliding window via sorted set
+ * (same pattern as executionLimiter) — no Upstash dependency.
+ * Falls back to in-memory token bucket when Redis is unavailable.
+ */
+const CHALLENGE_MAX    = parseInt(process.env.CHALLENGE_RATE_MAX ?? "10", 10);
+const CHALLENGE_WIN_MS = 60_000;
+
+const _challengeFallback = new Map<string, { tokens: number; lastRefill: number }>();
+
+function getClientIp(req: Request): string {
+  const forwarded = req.header("X-Forwarded-For");
+  if (forwarded) {
+    const hops = forwarded.split(",").map((h) => h.trim()).filter(Boolean);
+    // Use same trusted-hop logic as main rateLimiter
+    const trustedHops = parseInt(process.env.TRUSTED_PROXY_HOPS ?? "1", 10);
+    const idx = Math.max(0, hops.length - trustedHops);
+    if (hops[idx]) return hops[idx];
+  }
+  return req.socket?.remoteAddress ?? req.ip ?? "unknown";
+}
+
+export async function challengeRateLimiter(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const ip      = getClientIp(req);
+  const redisKey = `x402:rate:challenge:${ip}`;
+  const redis   = getRedis();
+
+  if (!redis) {
+    // In-memory fallback
+    const now    = Date.now();
+    let bucket   = _challengeFallback.get(ip);
+    if (!bucket || now - bucket.lastRefill > CHALLENGE_WIN_MS) {
+      bucket = { tokens: CHALLENGE_MAX, lastRefill: now };
+    }
+    if (bucket.tokens <= 0) {
+      _challengeFallback.set(ip, bucket);
+      res.status(429).json({ error: "Too many challenge requests — try again later" });
+      return;
+    }
+    bucket.tokens--;
+    _challengeFallback.set(ip, bucket);
+    next();
+    return;
+  }
+
+  try {
+    const now         = Date.now();
+    const windowStart = now - CHALLENGE_WIN_MS;
+    await redis.zremrangebyscore(redisKey, 0, windowStart);
+    const count = await redis.zcard(redisKey) as number;
+
+    if (count >= CHALLENGE_MAX) {
+      if (count > CHALLENGE_MAX + 5) {
+        // Log sustained abuse attempts
+        console.warn(`[ChallengeRL] IP ${ip} exceeded challenge rate limit (count=${count})`);
+      }
+      res.setHeader("Retry-After", Math.ceil(CHALLENGE_WIN_MS / 1000));
+      res.status(429).json({ error: "Too many challenge requests — try again later" });
+      return;
+    }
+
+    const member = `${now}:${Math.random().toString(36).slice(2, 8)}`;
+    await redis.zadd(redisKey, { score: now, member });
+    await redis.expire(redisKey, Math.ceil(CHALLENGE_WIN_MS / 1000) + 1);
+    next();
+  } catch {
+    // Redis error — fail open (don't block auth)
+    next();
+  }
+}
+
 export async function rateLimiter(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (SKIP_X402 && req.header("X-PAYMENT")) {
     next();

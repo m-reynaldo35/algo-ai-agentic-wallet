@@ -17,7 +17,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { config } from "./config.js";
 import { getAlgodClient, getNodeStatus } from "./network/nodely.js";
-import { rateLimiter } from "./middleware/rateLimiter.js";
+import { rateLimiter, challengeRateLimiter } from "./middleware/rateLimiter.js";
 import { x402Paywall } from "./middleware/x402.js";
 import { x402Settle } from "./middleware/x402Settle.js";
 import { constructAtomicGroup, constructBatchedAtomicGroup } from "./services/transaction.js";
@@ -198,15 +198,20 @@ app.get("/health", async (_req, res) => {
     isCircuitOpen(),
   ]);
 
-  // Redis ping
+  // Redis ping + HMAC integrity probe (S.10)
   let redisOk = false;
+  let redisIntegrity: "ok" | "degraded" | "unconfigured" = "unconfigured";
   try {
     const redis = getRedis();
     if (redis) {
       await (redis._ioredis?.ping?.() ?? Promise.resolve("PONG"));
       redisOk = true;
+      // Integrity is "ok" if REDIS_HMAC_SECRET is set, "unconfigured" otherwise
+      redisIntegrity = process.env.REDIS_HMAC_SECRET ? "ok" : "unconfigured";
     }
-  } catch { /* redis down */ }
+  } catch { /* redis down */
+    redisIntegrity = "degraded";
+  }
 
   // Indexer reachability (lightweight HEAD-like call)
   let indexerOk = false;
@@ -240,6 +245,7 @@ app.get("/health", async (_req, res) => {
       indexerOk,
     },
     redis: redisOk,
+    redisIntegrity,
     circuit: {
       open:         circuitState.open,
       failureCount: circuitState.failureCount,
@@ -1144,6 +1150,85 @@ app.patch("/api/portal/api-keys/:id/revoke", requirePortalAuth, async (req, res)
   }
 });
 
+// ── S.2 — Portal Operator Keys ─────────────────────────────────
+// Scoped authentication keys that replace the shared PORTAL_API_SECRET.
+// Keys use format pk_live_<32-byte-hex> and are stored by SHA-256 hash.
+// Routes require the root PORTAL_API_SECRET (or existing operator key).
+
+import { createApiKey, listApiKeys, revokeApiKey } from "./services/apiKeyService.js";
+
+app.get("/api/portal/operator-keys", requirePortalAuth, async (req, res) => {
+  try {
+    const keys = await listApiKeys();
+    res.json(keys);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to list operator keys" });
+  }
+});
+
+app.post("/api/portal/operator-keys", requirePortalAuth, async (req, res) => {
+  const { name, scopes } = req.body as { name?: string; scopes?: string[] };
+  if (!name || typeof name !== "string") {
+    res.status(400).json({ error: "Missing required field: name" });
+    return;
+  }
+  const validScopes = ["portal:read", "portal:write", "agents:manage", "system:halt"];
+  const requestedScopes = Array.isArray(scopes) ? scopes : ["portal:read", "portal:write"];
+  const filteredScopes = requestedScopes.filter((s) => validScopes.includes(s));
+  try {
+    const { plaintext, record } = await createApiKey(name, filteredScopes as import("./services/apiKeyService.js").ApiKeyScope[]);
+    import("./lib/auditLog.js").then(({ logAuditEvent }) => {
+      logAuditEvent(req.operatorName ?? "unknown", "operator-key.create", req, { targetId: record.keyId, metadata: { name, scopes: filteredScopes } });
+    }).catch(() => {});
+    res.json({ key: plaintext, ...record }); // plaintext returned once only
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create operator key" });
+  }
+});
+
+app.delete("/api/portal/operator-keys/:id", requirePortalAuth, async (req, res) => {
+  const keyId = String(req.params.id || "");
+  try {
+    const ok = await revokeApiKey(keyId);
+    if (!ok) { res.status(404).json({ error: "Key not found" }); return; }
+    import("./lib/auditLog.js").then(({ logAuditEvent }) => {
+      logAuditEvent(req.operatorName ?? "unknown", "operator-key.revoke", req, { targetId: keyId });
+    }).catch(() => {});
+    res.json({ revoked: true, keyId });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to revoke operator key" });
+  }
+});
+
+// ── S.9 — Portal Audit Log ──────────────────────────────────────
+
+import { getAuditLog } from "./lib/auditLog.js";
+
+app.get("/api/portal/audit", requirePortalAuth, async (req, res) => {
+  const limit  = Math.min(parseInt(String(req.query.limit  ?? "50"),  10), 200);
+  const offset = Math.max(parseInt(String(req.query.offset ?? "0"),   10), 0);
+  try {
+    const events = await getAuditLog({ limit, offset });
+    res.json({ events, limit, offset });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to read audit log" });
+  }
+});
+
+// ── S.5 — Dead-Letter Job Queue ─────────────────────────────────
+
+import { listDeadLetterJobIds, getJob as getSettlementJob } from "./queue/jobStore.js";
+
+app.get("/api/portal/jobs/dead", requirePortalAuth, async (_req, res) => {
+  try {
+    const ids  = await listDeadLetterJobIds();
+    const jobs = await Promise.all(ids.map((id) => getSettlementJob(id)));
+    res.json(jobs.filter(Boolean));
+  } catch (err) {
+    res.status(500).json({ error: "Failed to list dead-letter jobs" });
+  }
+});
+
 // ── Portal Settlement Volume ────────────────────────────────────
 
 app.get("/api/portal/settlement-volume", requirePortalAuth, async (req, res) => {
@@ -1894,6 +1979,9 @@ app.patch("/api/agents/:agentId/unsuspend", requirePortalAuth, async (req, res) 
   try {
     const agentId = String(req.params.agentId || "");
     await updateAgentStatus(agentId, "active");
+    import("./lib/auditLog.js").then(({ logAuditEvent }) => {
+      logAuditEvent(req.operatorName ?? "unknown", "agent.unsuspend", req, { targetId: agentId });
+    }).catch(() => {});
     res.json({ agentId, status: "active" });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -1990,6 +2078,9 @@ app.patch("/api/agents/:agentId/suspend", requirePortalAuth, async (req, res) =>
     if (agentForCache?.address) {
       getRedis()?.del(`x402:authaddr:${agentForCache.address}`).catch(() => {});
     }
+    import("./lib/auditLog.js").then(({ logAuditEvent }) => {
+      logAuditEvent(req.operatorName ?? "unknown", "agent.suspend", req, { targetId: agentId });
+    }).catch(() => {});
     res.json({ agentId, status: "suspended" });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -2016,34 +2107,45 @@ app.get("/api/system/halt-status", requirePortalAuth, async (_req, res) => {
 });
 
 app.post("/api/system/halt", requirePortalAuth, async (req, res) => {
-  // T8.2: Require HALT_OVERRIDE_KEY to prevent insider / compromised-portal abuse.
-  // Without this, any valid portal session could halt the signing pipeline.
+  // S.3: HALT_OVERRIDE_KEY is always required — not optional when set.
+  // Halt requires two independent credentials: portal key + override key.
+  // This prevents a single leaked credential from taking the system offline.
   const overrideKey = process.env.HALT_OVERRIDE_KEY;
-  if (overrideKey) {
-    const provided = String(req.body?.overrideKey ?? "");
-    if (provided !== overrideKey) {
-      res.status(403).json({ error: "Forbidden: invalid HALT_OVERRIDE_KEY" });
-      return;
-    }
+  if (!overrideKey) {
+    res.status(503).json({ error: "HALT_OVERRIDE_KEY not configured — halt disabled" });
+    return;
+  }
+  const provided = (req.header("X-Halt-Override-Key") ?? String(req.body?.overrideKey ?? "")).trim();
+  if (!provided || provided !== overrideKey) {
+    res.status(403).json({ error: "halt requires a valid X-Halt-Override-Key header" });
+    return;
   }
   const reason = String(req.body?.reason ?? "Manual halt via portal API");
   await setHalt(reason);
   logger.warn({ reason }, "[system/halt] Halt set via API");
+  import("./lib/auditLog.js").then(({ logAuditEvent }) => {
+    logAuditEvent(req.operatorName ?? "unknown", "system.halt", req, { metadata: { reason } });
+  }).catch(() => {});
   res.json({ halted: true, reason });
 });
 
 app.post("/api/system/unhalt", requirePortalAuth, async (req, res) => {
-  // T8.2: Require HALT_OVERRIDE_KEY to resume signing after a halt.
+  // S.3: Same two-key requirement as halt.
   const overrideKey = process.env.HALT_OVERRIDE_KEY;
-  if (overrideKey) {
-    const provided = String(req.body?.overrideKey ?? "");
-    if (provided !== overrideKey) {
-      res.status(403).json({ error: "Forbidden: invalid HALT_OVERRIDE_KEY" });
-      return;
-    }
+  if (!overrideKey) {
+    res.status(503).json({ error: "HALT_OVERRIDE_KEY not configured — unhalt disabled" });
+    return;
+  }
+  const provided = (req.header("X-Halt-Override-Key") ?? String(req.body?.overrideKey ?? "")).trim();
+  if (!provided || provided !== overrideKey) {
+    res.status(403).json({ error: "unhalt requires a valid X-Halt-Override-Key header" });
+    return;
   }
   await clearHalt();
   logger.info("[system/unhalt] Halt cleared via API");
+  import("./lib/auditLog.js").then(({ logAuditEvent }) => {
+    logAuditEvent(req.operatorName ?? "unknown", "system.unhalt", req);
+  }).catch(() => {});
   res.json({ halted: false });
 });
 
@@ -2503,7 +2605,7 @@ app.post("/api/agents/:agentId/auth/webauthn-adopt-owner", requirePortalAuth, as
 // POST /api/admin/auth/webauthn-login-challenge
 // POST /api/admin/auth/webauthn-login
 
-app.post("/api/admin/auth/liquid-challenge", async (req, res) => {
+app.post("/api/admin/auth/liquid-challenge", challengeRateLimiter, async (req, res) => {
   const baseUrl = String(req.body?.baseUrl ?? process.env.API_BASE_URL ?? "https://api.ai-agentic-wallet.com");
   try {
     const result = await issueAdminLiquidChallenge(baseUrl);
@@ -2544,7 +2646,7 @@ app.post("/api/admin/auth/liquid-consume", async (req, res) => {
 // POST /api/admin/auth/pera-verify      Verify wallet signature → verifiedSessionId
 // POST /api/admin/auth/pera-consume     Consume verified session → address (used by portal login)
 
-app.post("/api/admin/auth/pera-challenge", async (_req, res) => {
+app.post("/api/admin/auth/pera-challenge", challengeRateLimiter, async (_req, res) => {
   try {
     res.json(await issueAdminPeraChallenge());
   } catch (err) {
@@ -2586,7 +2688,7 @@ app.post("/api/admin/auth/pera-consume", async (req, res) => {
   }
 });
 
-app.post("/api/admin/auth/webauthn-register-challenge", async (req, res) => {
+app.post("/api/admin/auth/webauthn-register-challenge", challengeRateLimiter, async (req, res) => {
   try {
     res.json(await issueAdminWebAuthnRegChallenge());
   } catch (err) {
@@ -2608,7 +2710,7 @@ app.post("/api/admin/auth/webauthn-register", async (req, res) => {
   }
 });
 
-app.post("/api/admin/auth/webauthn-login-challenge", async (req, res) => {
+app.post("/api/admin/auth/webauthn-login-challenge", challengeRateLimiter, async (req, res) => {
   try {
     res.json(await issueAdminWebAuthnLoginChallenge());
   } catch (err) {

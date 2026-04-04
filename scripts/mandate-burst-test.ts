@@ -25,6 +25,8 @@
 import algosdk from "algosdk";
 import { AlgoAgentClient } from "@algo-wallet/x402-client";
 import "dotenv/config";
+import fs from "fs";
+import path from "path";
 
 // ── Config ─────────────────────────────────────────────────────────
 
@@ -384,6 +386,46 @@ async function main(): Promise<void> {
     }
   }
 
+  // ── Save report ────────────────────────────────────────────────────
+  const report = {
+    schema: "mandate-burst-v1",
+    generatedAt: new Date().toISOString(),
+    testType: "mandate-optimistic-burst",
+    mandateFactoryAppId: MANDATE_APP_ID,
+    network: healthBody.network ?? "mainnet",
+    burstSize: BURST_SIZE,
+    confirmed: confirmed.length,
+    failed: failed.length,
+    enqueueLatencyMs: {
+      p50: pct(enqueueTimes, 50),
+      p95: pct(enqueueTimes, 95),
+      p99: pct(enqueueTimes, 99),
+      avg: Math.round(enqueueTimes.reduce((a, b) => a + b, 0) / enqueueTimes.length),
+    },
+    confirmLatencyMs: confirmTimes.length > 0 ? {
+      p50: pct(confirmTimes, 50),
+      p95: pct(confirmTimes, 95),
+      p99: pct(confirmTimes, 99),
+      min: confirmTimes[0],
+      max: confirmTimes[confirmTimes.length - 1],
+    } : null,
+    wallTimeMs: wallEnqueueMs,
+    oldBaselineMs: BURST_SIZE * 7000,
+    speedupMultiple: Math.round((BURST_SIZE * 7000) / wallEnqueueMs),
+    slots: slotResults.map((r) => ({
+      slot: r.slot,
+      enqueueMs: r.enqueueMs,
+      confirmMs: r.confirmMs,
+      confirmedRound: r.confirmedRound ?? null,
+      txnId: r.txnId || null,
+      explorerUrl: r.txnId ? `https://explorer.perawallet.app/tx/${r.txnId}` : null,
+      status: r.status,
+    })),
+  };
+
+  const reportPath = path.join(process.cwd(), "public", "mandate-test-report.json");
+  fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  console.log(`  ${D}Report saved → ${reportPath}${R}`);
   console.log();
 }
 

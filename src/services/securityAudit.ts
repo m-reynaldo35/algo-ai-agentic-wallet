@@ -53,7 +53,11 @@ export type SecurityEventType =
   | "SWEEP_ADDR_TAMPER"         // cold wallet sweep address mismatch detected
   // ── On-chain monitor events (Module 9) ───────────────────────
   | "SIGNER_KEY_COMPROMISE"     // on-chain outflows exceed Gate 5 authorized total — key compromise suspected
-  | "WEBAUTHN_OWNER_ADOPTED";   // existing passkey adopted for a new agent (master account link)
+  | "WEBAUTHN_OWNER_ADOPTED"    // existing passkey adopted for a new agent (master account link)
+  // ── S.10 additions ────────────────────────────────────────────────
+  | "REDIS_INTEGRITY_VIOLATION" // HMAC mismatch on an agent or job record (S.4)
+  | "RATE_LIMIT_STARVATION"     // per-agent fairness bucket exhausted (S.6)
+  | "DEAD_LETTER_JOB";          // settlement job moved to dead-letter queue (S.5)
 
 // ── Event shape ────────────────────────────────────────────────────
 

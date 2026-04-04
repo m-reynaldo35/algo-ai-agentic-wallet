@@ -5,16 +5,16 @@
  * When a registered agent's contract account holds any USDC, the agent
  * is marked active — payment capability is confirmed.
  *
- * No server-side signing. No USDC opt-in. No Rocca rekey.
- * The MandateContract handles USDC opt-in via `opt_in_usdc()`.
- * The agent holds their own key; the AVM enforces all mandate gates.
+ * No server-side signing. No Rocca rekey.
+ * The agent (or any caller) calls opt_in_usdc() on the contract directly
+ * after funding it with ALGO. The server never pays on the agent's behalf.
  *
  * Activation flow:
- *   1. Agent is registered via POST /api/agents/register-mandate
- *      (status = "active", but contract may not yet be funded)
- *   2. Operator deploys MandateContract via MandateFactory.create_agent()
- *   3. Agent funds the contract app account with ALGO (gas) + USDC (spending)
- *   4. This poller detects USDC > 0 → confirms agent is ready to pay
+ *   1. Operator deploys MandateContract via POST /api/agents/create-mandate
+ *   2. User sends ≥0.5 ALGO to the contract app account (MBR + fee reserve)
+ *   3. User (or agent) calls opt_in_usdc() on the contract — no auth required
+ *   4. User sends USDC to the contract app account
+ *   5. This poller detects USDC > 0 → marks agent active
  *
  * For pending agents (registered without mandateAppId — CLI pre-factory path):
  *   - Pending records expire via Redis TTL (24h); no activation attempted.
@@ -29,7 +29,6 @@ import {
   updateAgentRecord,
   isHalted,
 } from "./agentRegistry.js";
-import { callOptInUsdc } from "./mandateFactory.js";
 import { config } from "../config.js";
 import { logger } from "../lib/logger.js";
 
@@ -77,37 +76,11 @@ async function checkMandateContracts(): Promise<void> {
         );
       }
 
-      // Contract has ALGO but USDC not yet opted in — auto-call opt_in_usdc()
-      // Only when the server is the master wallet (mandateOperatorMaster === true).
-      // Requires ~0.2 ALGO MBR for the ASA opt-in. Guard against calling if ALGO
-      // is too low (< 300_000 µALGO) to avoid burning fees on a doomed txn.
-      const MBR_THRESHOLD = 300_000n; // µALGO — enough for MBR + a few fee txns
-      if (
-        agent.mandateOperatorMaster &&
-        !usdcOptedIn &&
-        algoBalance >= MBR_THRESHOLD
-      ) {
-        try {
-          const optTxid = await callOptInUsdc(agent.mandateAppId!);
-          logger.info(
-            { agentId: agent.agentId, appId: agent.mandateAppId, txid: optTxid },
-            "[ActivationPoller] opt_in_usdc confirmed — contract ready to receive USDC",
-          );
-        } catch (optErr) {
-          const msg = optErr instanceof Error ? optErr.message : String(optErr);
-          logger.warn(
-            { agentId: agent.agentId, appId: agent.mandateAppId, err: msg },
-            "[ActivationPoller] opt_in_usdc call failed — will retry next cycle",
-          );
-        }
-        return; // skip further logging this cycle; re-check next cycle
-      }
-
-      // Advisory: contract exists but not yet funded with ALGO
-      if (!usdcOptedIn && algoBalance < MBR_THRESHOLD) {
+      // Advisory: contract exists but USDC not yet present
+      if (!usdcOptedIn) {
         logger.debug(
           { agentId: agent.agentId, appId: agent.mandateAppId, algoBalance: algoBalance.toString() },
-          "[ActivationPoller] Contract has insufficient ALGO — awaiting user deposit",
+          "[ActivationPoller] Contract awaiting opt_in_usdc() + USDC deposit",
         );
       }
     } catch (err) {

@@ -5,8 +5,10 @@
  * MandateContract instance for an agent. Signed by the operator wallet
  * (OPERATOR_MNEMONIC), which is also set as the contract's master wallet.
  *
- * Also provides callOptInUsdc() — used by the activation poller to opt
- * the deployed contract into USDC once the user has funded it with ALGO.
+ * Also provides callOptInUsdc() — available for tooling/scripts to opt
+ * a deployed contract into USDC (e.g. setup-showcase-agent.ts).
+ * The activation poller no longer calls this — opt_in_usdc() is
+ * permissionless on the contract; the agent self-opts after funding.
  *
  * Requires env vars:
  *   OPERATOR_MNEMONIC      — 25-word mnemonic of the operator Algorand account
@@ -111,12 +113,14 @@ export async function createMandateAgent(
   const submitResult = await algod.sendRawTransaction(signedBytes).do() as { txid: string };
   const txid = submitResult.txid;
 
-  await algosdk.waitForConfirmation(algod, txid, 5);
+  const confirmed = await algosdk.waitForConfirmation(algod, txid, 5);
 
-  // Extract new app ID from inner transaction (factory fires one inner app-create)
-  const pending = await algod.pendingTransactionInformation(txid).do() as unknown as Record<string, unknown>;
-  const innerTxns = (pending["inner-txns"] as Array<Record<string, unknown>> | undefined) ?? [];
-  const mandateAppId = Number((innerTxns[0]?.["application-index"] as number | bigint | undefined) ?? 0);
+  // Extract new app ID from inner transaction (factory fires one inner app-create).
+  // algosdk v3 returns camelCase: innerTxns[0].applicationIndex (BigInt).
+  // Use the waitForConfirmation return value — a separate pendingTransactionInformation
+  // call made after confirmation may return no inner-txns if the node has already pruned them.
+  const innerTxns = (confirmed as unknown as { innerTxns?: Array<{ applicationIndex?: bigint }> }).innerTxns ?? [];
+  const mandateAppId = Number(innerTxns[0]?.applicationIndex ?? 0n);
 
   if (!mandateAppId) {
     throw new Error(`Factory transaction ${txid} did not produce a new app ID in inner-txns`);

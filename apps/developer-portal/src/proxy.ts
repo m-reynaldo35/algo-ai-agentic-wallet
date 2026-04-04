@@ -28,6 +28,7 @@ const PUBLIC_PATHS = new Set([
   "/api/customer/auth/login",
   "/api/customer/auth/logout",
   "/docs",
+  "/mandate-test", // public proof page — no auth required
   "/monitoring", // Sentry tunnel
   "/favicon.ico",
 ]);
