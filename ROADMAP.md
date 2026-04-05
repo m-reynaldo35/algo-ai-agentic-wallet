@@ -1368,115 +1368,94 @@ The PR into `google-agentic-commerce/AP2` is the distribution play. Matches thei
 
 ---
 
-## Sprint 19 — API Registry
+## Sprint 19 — API Registry ✅ COMPLETE
 
 **Why:** Discovery without a registry is impossible. The registry is the catalogue that
 agents query to find what's available to buy. It also creates the flywheel: more sellers
 → more useful APIs for agents → more agents → more revenue for sellers.
 
-### 19.1 Backend Registry
-- [ ] `POST /api/registry/list` — register a new tool:
-      ```json
-      {
-        "name":        "get_weather",
-        "description": "Current weather for any city",
-        "endpoint":    "https://myapi.com/weather",
-        "price":       1000,
-        "category":    "data",
-        "network":     "algorand-mainnet"
-      }
-      ```
-- [ ] `GET /api/registry` — list all verified tools (JSON + optional category filter)
-- [ ] Verification: server pings `endpoint/.well-known/x402` — only verified endpoints listed
-- [ ] Add weather endpoint (`/api/weather`) as entry #1 automatically at boot
+### 19.1 Backend Registry ✅
+- [x] `POST /api/registry/list` — register a tool (portal key auth, pings /.well-known/x402)
+- [x] `GET /api/registry` — list all verified tools (JSON + optional `?category=` filter)
+- [x] `GET /api/registry/:toolId` — single entry
+- [x] `DELETE /api/registry/:toolId` — owner or admin removal
+- [x] Verification: server pings `endpoint/.well-known/x402` — sets `verified` flag
+- [x] `seedFirstPartyTools()` — idempotent boot-time seeding of 4 first-party APIs
 
 ### 19.2 Registry Frontend Page
-- [ ] New public page at `ai-agentic-wallet.com/registry`:
-      - Card grid of listed APIs: name, description, price, category
-      - Filter by category (data, compute, finance, AI, utility)
-      - "List your API" button → seller registration form
-      - Copy MCP endpoint URL button per listing
-- [ ] No auth required to browse — public discovery page
+- [ ] New public page at `ai-agentic-wallet.com/registry` (developer-portal, Sprint 19.2)
 
 ### 19.3 Registry in DOCS_FOR_AGENTS.md
-- [ ] Section: "Discoverable APIs" — lists all registry entries with endpoint + price
-- [ ] Agents reading the docs can find what's available to buy without querying the API
+- [ ] Section: "Discoverable APIs" — lists registry entries with endpoint + price
 
 ---
 
-## Sprint 20 — Aggregator MCP Server (The Bazaar)
+## Sprint 20 — Aggregator MCP Server (The Bazaar) ✅ COMPLETE
 
 **Why:** This is the highest-leverage piece. Instead of users adding one MCP server per API,
 they add one aggregator MCP server and instantly get access to every listed API.
 Claude picks the right tool for the task. Payment fires automatically. The human's mandate covers it.
 
-### 20.1 Aggregator Architecture
+### 20.1 Aggregator Architecture ✅
 ```
 User → "check the weather in Lagos"
     ↓
-Claude scans available tools via aggregator MCP
+Claude scans available tools via x402-bazaar MCP
     ↓
 Finds: get_weather (costs $0.001 USDC, via x402-Algorand)
     ↓
-Claude calls tool → aggregator fires x402 payment from agent wallet
+Claude calls tool → aggregator probes endpoint → 402 → signs MandateContract.pay()
     ↓
 Mandate check passes → USDC paid → weather data returned
     ↓
 Claude answers user
 ```
 
-### 20.2 Implementation
-- [ ] `packages/x402-mcp/src/aggregator.ts` — MCP server that:
-      - Polls `/api/registry` on start + every 5 min
-      - Exposes each registry entry as an MCP tool dynamically
-      - Handles x402 payment on tool call using agent wallet credentials
-      - Returns tool result to the calling LLM
-- [ ] Tool schema auto-generated from registry entry `input` schema
-- [ ] Payment credentials: agent provides `AGENT_MNEMONIC` + `AGENT_ID` env vars
-- [ ] Mandate enforcement: aggregator checks mandate before every payment
-- [ ] Publish: `npx @algo-wallet/x402-mcp` — one command starts the aggregator
+### 20.2 Implementation ✅
+- [x] `packages/x402-mcp/src/aggregator.ts` — STDIO MCP server
+  - Polls `/api/registry` at start + every 5 min (`REGISTRY_POLL_MS`)
+  - Only exposes verified listings within `MAX_PER_CALL_MICROUSDC` cap
+  - Dynamic tool schema from registry `inputSchema`
+  - Per-tool x402 payment: probe → 402 → sign MandateContract.pay() → replay
+- [x] Published: `npx @algo-wallet/x402-mcp` starts wallet MCP; `npx x402-bazaar` starts aggregator
 
-### 20.3 Configuration
+### 20.3 Configuration ✅
 ```bash
-# .env for the aggregator MCP server
-X402_REGISTRY_URL=https://api.ai-agentic-wallet.com/api/registry
-AGENT_ID=my-agent-001
-AGENT_MNEMONIC=<25 words>
-MAX_PER_CALL_USDC=1.00   # hard ceiling per tool call
+# Claude Desktop config for the aggregator
+{
+  "mcpServers": {
+    "x402-bazaar": {
+      "command": "npx",
+      "args": ["-y", "@algo-wallet/x402-mcp", "bazaar"],
+      "env": {
+        "ALGO_MNEMONIC":         "word1 word2 ... word25",
+        "MANDATE_APP_ID":        "123456789",
+        "X402_AGENT_ID":         "my-agent",
+        "X402_PORTAL_KEY":       "pk_live_...",
+        "MAX_PER_CALL_MICROUSDC": "10000"
+      }
+    }
+  }
+}
 ```
 
-### 20.4 Claude Desktop Integration
-- [ ] `claude_desktop_config.json` snippet in docs:
-      ```json
-      {
-        "mcpServers": {
-          "x402-marketplace": {
-            "command": "npx",
-            "args": ["@algo-wallet/x402-mcp"],
-            "env": {
-              "AGENT_ID": "my-agent-001",
-              "AGENT_MNEMONIC": "..."
-            }
-          }
-        }
-      }
-      ```
+### 20.4 Remaining
 - [ ] Submit to Anthropic MCP integrations directory
-- [ ] Submit to `mcp.so` and `smithery.ai` registries
+- [ ] Submit to `mcp.so` listing
 
 ---
 
-## Sprint 21 — Seller Acquisition & Registry Growth
+## Sprint 21 — Seller Acquisition & Registry Growth *(partial)*
 
 **Why:** A marketplace with one listing is not a marketplace. Need to seed the registry
 with enough variety that agents have real choices. Target: 10 listed APIs across 5 categories.
 
-### 21.1 First-Party APIs (build these on the backend — dogfood the seller SDK)
-- [ ] `GET /api/weather?city=` — current weather via Open-Meteo ($0.001)
-- [ ] `GET /api/fx?from=USD&to=NGN` — FX rates via Open Exchange Rates ($0.002)
+### 21.1 First-Party APIs ✅ (built 2026-04-05, dogfood the seller SDK)
+- [x] `GET /api/weather?city=` — current weather via Open-Meteo ($0.001)
+- [x] `GET /api/fx?from=USD&to=NGN` — FX rates via ExchangeRate-API ($0.002)
+- [x] `GET /api/geocode?address=` — address → lat/lng via Nominatim ($0.001)
+- [x] `GET /api/crypto/price?symbol=ALGO` — crypto price via CoinGecko ($0.001)
 - [ ] `GET /api/news?topic=` — headlines via NewsData.io free tier ($0.005)
-- [ ] `GET /api/geocode?address=` — address → lat/lng via Nominatim ($0.001)
-- [ ] `GET /api/crypto/price?symbol=ALGO` — crypto price via CoinGecko free ($0.001)
 
 ### 21.2 Third-Party Seller Outreach
 - [ ] Write "Become a Seller" landing page at `/sell`:
@@ -1960,8 +1939,8 @@ sample size is statistically meaningful and matches the old 100/100 Sprint 16A b
 | `network_confirmation_id` | Algorand txid (same — Algorand is the network) |
 | OTP challenge | skipped (AVM mandate enforces limits) |
 
-### Next: publish to PyPI + PR to AP2 repo
+### Next steps
 
-- [ ] `pip build && twine upload` — publish `ap2-algorand@0.1.0` to PyPI
+- [x] `pip build && twine upload` — published `ap2-algorand@0.1.0` to PyPI ✅ (2026-04-05)
 - [ ] Open PR to `google-agentic-commerce/AP2` with sample scenario + adapter reference
 - [ ] Update `samples/python/scenarios/a2a/human-present/x402/README.md` — remove "coming soon" placeholder
