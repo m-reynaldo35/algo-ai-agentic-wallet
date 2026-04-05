@@ -145,6 +145,73 @@ function verifyGroupIntegrity(proof: X402PaymentProof): boolean {
   }
 }
 
+// ── Per-endpoint paywall factory ──────────────────────────────────
+
+interface X402PaywallOptions {
+  priceMicro:  number;
+  payTo:        string;
+  description?: string;
+}
+
+/**
+ * Creates a per-endpoint x402 paywall middleware with a custom price and
+ * pay-to address. Use this for multi-priced endpoints (e.g. data APIs).
+ * The global `x402Paywall` uses `config.x402.*` for all endpoints.
+ */
+export function makeX402Paywall(opts: X402PaywallOptions) {
+  return async function x402PaywallMiddleware(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    const paymentHeader = req.header("X-PAYMENT");
+
+    if (!paymentHeader) {
+      // Return custom pay+json with per-endpoint price
+      const expiry = new Date(Date.now() + 5 * 60 * 1000);
+      res.status(402).contentType("application/pay+json").json({
+        version: "x402-v1",
+        status: 402,
+        network: { protocol: "algorand", chain: config.algorand.network },
+        payment: {
+          asset: { type: "ASA", id: config.x402.usdcAssetId, symbol: "USDC", decimals: 6 },
+          amount: opts.priceMicro.toString(),
+          payTo: opts.payTo,
+        },
+        expires: expiry.toISOString(),
+        memo: opts.description ?? `x402:${req.path}`,
+        error: "Missing X-PAYMENT header.",
+      });
+      return;
+    }
+
+    // Reuse the same signature/mandate verification logic
+    try {
+      const bytes  = new Uint8Array(Buffer.from(paymentHeader, "base64"));
+      const signed = algosdk.decodeSignedTransaction(bytes);
+      req.x402 = { paymentProof: paymentHeader, verified: false, senderAddr: signed.txn.sender.toString() };
+      return next();
+    } catch { /* fall through to legacy */ }
+
+    const proof = parsePaymentHeader(paymentHeader);
+    if (!proof) {
+      res.status(402).contentType("application/pay+json").json({ error: "Malformed X-PAYMENT" });
+      return;
+    }
+    if (!verifySignature(proof) || !verifyGroupIntegrity(proof)) {
+      res.status(402).contentType("application/pay+json").json({ error: "Invalid signature" });
+      return;
+    }
+    const replayCheck = await enforceReplayProtection(proof.timestamp, proof.nonce);
+    if (!replayCheck.valid) {
+      res.status(401).json({ error: "Signature replay detected", detail: replayCheck.error });
+      return;
+    }
+    req.x402 = { paymentProof: paymentHeader, verified: true, senderAddr: proof.senderAddr, groupId: proof.groupId };
+    next();
+  };
+}
+
 // ── Middleware ────────────────────────────────────────────────────
 
 export async function x402Paywall(

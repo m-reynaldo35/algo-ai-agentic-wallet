@@ -1,11 +1,12 @@
 {
   "name": "@algo-wallet/x402-mcp",
-  "version": "0.3.0",
-  "description": "x402 Algorand payment SDK — buyer MCP server (pay_with_x402) + seller middleware (x402express, x402tool)",
+  "version": "0.4.0",
+  "description": "x402 Algorand payment SDK — buyer MCP server, aggregator MCP (The Bazaar), seller middleware",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "x402-mcp": "dist/index.js"
+    "x402-mcp":    "dist/index.js",
+    "x402-bazaar": "dist/aggregator.js"
   },
   "exports": {
     ".": {
@@ -15,6 +16,10 @@
     "./seller": {
       "import": "./dist/seller/index.js",
       "types": "./dist/seller/index.d.ts"
+    },
+    "./aggregator": {
+      "import": "./dist/aggregator.js",
+      "types": "./dist/aggregator.d.ts"
     }
   },
   "files": [

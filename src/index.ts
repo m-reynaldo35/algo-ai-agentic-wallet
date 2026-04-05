@@ -74,6 +74,9 @@ import {
 import { evaluateMandate }               from "./services/mandateEngine.js";
 import { createMandateAgent }            from "./services/mandateFactory.js";
 import a2aRouter                         from "./routes/a2a.js";
+import registryRouter                    from "./routes/registry.js";
+import dataApisRouter                    from "./routes/dataApis.js";
+import { seedFirstPartyTools }           from "./services/apiRegistry.js";
 import { getRecentSecurityEvents, emitSecurityEvent, querySecurityEvents } from "./services/securityAudit.js";
 import { validateAuthToken } from "./auth/liquidAuth.js";
 import { logMtlsStatus } from "./protection/mtlsConfig.js";
@@ -167,6 +170,14 @@ app.get("/.well-known/agent-card.json", (_req, res) => {
 
 // ── A2A Agent-to-Agent endpoint (open — mandate/velocity gated internally) ──
 app.use("/a2a", a2aRouter);
+
+// ── API Registry (Sprint 19) ─────────────────────────────────────────────
+app.use("/api/registry", registryRouter);
+
+// ── First-party x402-gated data APIs (Sprint 21.1) ──────────────────────
+// Each endpoint charges 1,000–2,000 µUSDC via MandateContract and is auto-
+// registered in the registry at boot. These dogfood the seller SDK.
+app.use("/api", dataApisRouter);
 
 // ── Rate Limiting (Upstash sliding window — all routes including /health, /a2a) ─
 app.use(rateLimiter);
@@ -3151,6 +3162,15 @@ logMtlsStatus("main-api");
       "[Boot] Provenance pre-warm failed — first payment will take ~400ms longer");
   }
 })();
+
+// API Registry — seed first-party tools (idempotent, fire-and-forget)
+const _apiBase = (process.env["PUBLIC_API_URL"] ?? `https://api.ai-agentic-wallet.com`).replace(/\/+$/, "");
+const _payTo   = process.env["X402_PAY_TO_ADDRESS"] ?? "";
+if (_payTo) {
+  seedFirstPartyTools(_apiBase, _payTo).catch((err: unknown) =>
+    logger.warn({ err }, "[Boot] Registry seed failed"),
+  );
+}
 
 // AP2 Module 5 — Recurring scheduler: 30s tick for due recurring mandates.
 startRecurringScheduler();
