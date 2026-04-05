@@ -241,6 +241,22 @@ export async function seedFirstPartyTools(apiBase: string, payTo: string): Promi
         required: ["address"],
       },
     },
+    {
+      name:        "get_news",
+      description: "Latest news headlines for any topic. Returns top 5 articles with title, summary, and URL.",
+      endpoint:    `${apiBase}/api/news`,
+      priceMicro:  5_000,     // $0.005
+      category:    "data",
+      network:     "algorand-mainnet",
+      payTo,
+      inputSchema: {
+        type:       "object",
+        properties: {
+          topic: { type: "string", description: "News topic or keywords, e.g. 'Algorand', 'AI payments'" },
+        },
+        required: ["topic"],
+      },
+    },
   ];
 
   for (const tool of tools) {

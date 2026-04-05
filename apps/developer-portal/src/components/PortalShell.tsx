@@ -14,7 +14,7 @@ export default function PortalShell({ children }: { children: React.ReactNode })
   const isLandingPage = pathname === "/";
   const isLegalPage = pathname === "/privacy" || pathname === "/terms" || pathname === "/security";
   const isDocsPage = pathname === "/docs" || pathname.startsWith("/docs/");
-  const isPublicPage = pathname === "/get-started" || pathname === "/mandate-test";
+  const isPublicPage = pathname === "/get-started" || pathname === "/mandate-test" || pathname === "/registry";
 
   if (isAuthPage || isCustomerApp || isLandingPage || isLegalPage || isDocsPage || isPublicPage) {
     return <>{children}</>;

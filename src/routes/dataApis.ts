@@ -5,16 +5,18 @@
  * GET /api/crypto/price?symbol=  — crypto price (CoinGecko, free)
  * GET /api/fx?from=USD&to=NGN    — FX rate (exchangerate-api, free)
  * GET /api/geocode?address=      — lat/lng (Nominatim, free)
+ * GET /api/news?topic=           — news headlines (NewsData.io, free tier)
  *
- * Each endpoint is protected by x402Paywall — callers must pay 1,000 µUSDC
- * ($0.001) per call via an Algorand MandateContract. These serve as dogfood
- * for the seller SDK and seed listings #1–4 in the API registry.
+ * Each endpoint is protected by makeX402Paywall — callers must pay µUSDC
+ * per call via an Algorand MandateContract. These serve as dogfood
+ * for the seller SDK and seed listings #1–5 in the API registry.
  *
  * Prices (all in micro-USDC):
  *   weather:      1,000
  *   crypto price: 1,000
  *   fx rate:      2,000
  *   geocode:      1,000
+ *   news:         5,000
  */
 
 import { Router, type Request, type Response } from "express";
@@ -168,6 +170,57 @@ router.get(
       lat:     Number(lat),
       lon:     Number(lon),
       source:  "Nominatim / OpenStreetMap (nominatim.openstreetmap.org)",
+    });
+  },
+);
+
+// ── GET /api/news ─────────────────────────────────────────────────────────
+
+router.get(
+  "/news",
+  makeX402Paywall({ priceMicro: 5_000, payTo: TREASURY, description: "news headlines lookup" }),
+  async (req: Request, res: Response) => {
+    const topic = (req.query["topic"] as string | undefined)?.trim();
+    if (!topic) {
+      res.status(400).json({ error: "topic query parameter required" });
+      return;
+    }
+
+    // NewsData.io free tier — 200 requests/day, no key needed for basic search
+    // If NEWSDATA_API_KEY is set, use it for higher limits
+    const apiKey = process.env["NEWSDATA_API_KEY"] ?? "";
+    const params = new URLSearchParams({ q: topic, language: "en", size: "5" });
+    if (apiKey) params.set("apikey", apiKey);
+
+    const url = `https://newsdata.io/api/1/news?${params}`;
+    const data = await fetchJson<{
+      status: string;
+      results?: Array<{
+        title:       string;
+        description: string | null;
+        link:        string;
+        pubDate:     string;
+        source_id:   string;
+      }>;
+      message?: string;
+    }>(url);
+
+    if (data.status !== "success" || !data.results?.length) {
+      res.status(404).json({ error: data.message ?? `No news found for: ${topic}` });
+      return;
+    }
+
+    res.json({
+      topic,
+      count:    data.results.length,
+      articles: data.results.map((a) => ({
+        title:       a.title,
+        summary:     a.description,
+        url:         a.link,
+        published:   a.pubDate,
+        source:      a.source_id,
+      })),
+      source: "NewsData.io (newsdata.io)",
     });
   },
 );
