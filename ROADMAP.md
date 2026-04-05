@@ -1932,3 +1932,36 @@ sample size is statistically meaningful and matches the old 100/100 Sprint 16A b
 - [ ] BenchmarkBar shows 100/100 with real p50/throughput numbers
 - [ ] No placeholder / "run the script" messaging on the public page
 - [ ] `~6× vs sync baseline` stat replaced with a customer-meaningful metric
+
+---
+
+## Sprint Q — AP2 Adapter (Google Agent Payments Protocol) ✅ COMPLETE
+
+**Goal:** Publish `ap2-algorand` Python package bridging the [Google AP2 protocol](https://github.com/google-agentic-commerce/AP2) to Algorand x402 payments.
+
+### Completed
+
+- [x] `packages/ap2-adapter/` — `ap2-algorand@0.1.0` Python package
+  - [x] `AlgorandUsdcMethodData` — Pydantic model for `PaymentMethodData.data` with `supported_methods="https://www.x402.org/"`
+  - [x] `cart_to_payment_args(CartMandate) → AlgorandPaymentArgs` — extracts `mandate_app_id`, `asset_id`, `amount_micro_usdc` from AP2 CartMandate
+  - [x] `settle(PaymentMandate, algod_url) → PaymentReceipt` — submits base64-msgpack SignedTransaction, waits for on-chain confirmation, returns AP2 `PaymentReceipt` with Algorand txid as all three confirmation IDs
+  - [x] `settle_raw(x_payment, algod_url) → txid` — lower-level alternative (no AP2 dep required)
+  - [x] `sample/scenario.py` — end-to-end demo: `IntentMandate → CartMandate → PaymentMandate → settle → PaymentReceipt`
+- [x] `GET /.well-known/ap2` — AP2 discovery endpoint on Railway declaring x402 Algorand as supported payment method
+- [x] Security design: `network_confirmation_id = Algorand txid` — "the network IS the ledger"
+
+### Key insight: x402 maps cleanly onto AP2
+
+| AP2 field | Algorand value |
+|---|---|
+| `payment_response.details["value"]` | base64(msgpack(SignedTransaction)) |
+| `method_name` | `https://www.x402.org/` |
+| `merchant_confirmation_id` | Algorand txid |
+| `network_confirmation_id` | Algorand txid (same — Algorand is the network) |
+| OTP challenge | skipped (AVM mandate enforces limits) |
+
+### Next: publish to PyPI + PR to AP2 repo
+
+- [ ] `pip build && twine upload` — publish `ap2-algorand@0.1.0` to PyPI
+- [ ] Open PR to `google-agentic-commerce/AP2` with sample scenario + adapter reference
+- [ ] Update `samples/python/scenarios/a2a/human-present/x402/README.md` — remove "coming soon" placeholder
