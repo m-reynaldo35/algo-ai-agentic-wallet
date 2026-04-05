@@ -77,8 +77,10 @@ function Nav() {
   return (
     <nav className="flex items-center justify-between px-6 py-4 border-b border-zinc-800/60 max-w-6xl mx-auto w-full">
       <span className="font-semibold text-white tracking-tight">algo-wallet</span>
-      <div className="flex items-center gap-4 text-sm">
-        <a href="/docs" className="text-zinc-400 hover:text-white transition-colors">Read the docs</a>
+      <div className="flex items-center gap-5 text-sm">
+        <Link href="/registry" className="text-zinc-400 hover:text-white transition-colors">Marketplace</Link>
+        <Link href="/sell" className="text-zinc-400 hover:text-white transition-colors">Sell an API</Link>
+        <a href="/docs" className="text-zinc-400 hover:text-white transition-colors">Docs</a>
         <Link
           href="/sign-in"
           className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1.5 rounded-md transition-colors font-medium"
@@ -331,12 +333,65 @@ function NativeIntegrations() {
   );
 }
 
+function SellerSection() {
+  return (
+    <section className="py-16 px-6 max-w-5xl mx-auto">
+      <div className="bg-gradient-to-br from-emerald-950/40 to-zinc-900 border border-emerald-900/50 rounded-2xl p-8 sm:p-12">
+        <div className="grid lg:grid-cols-2 gap-10 items-center">
+          <div>
+            <div className="inline-flex items-center gap-2 bg-emerald-950/60 border border-emerald-800/50 text-emerald-400 text-xs px-3 py-1 rounded-full mb-6">
+              For API providers
+            </div>
+            <h2 className="text-2xl font-bold text-white mb-4">
+              Sell your API to AI agents
+            </h2>
+            <p className="text-zinc-400 text-sm leading-relaxed mb-6">
+              Add one middleware function. List in the registry. Every AI agent using
+              the Bazaar MCP discovers and pays for your API automatically — USDC
+              lands in your Algorand address in 3.3 seconds, no invoicing required.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <Link
+                href="/sell"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-5 py-2.5 rounded-lg transition-colors text-sm"
+              >
+                Become a seller →
+              </Link>
+              <Link
+                href="/registry"
+                className="bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 font-medium px-5 py-2.5 rounded-lg transition-colors text-sm"
+              >
+                Browse the marketplace
+              </Link>
+            </div>
+          </div>
+          <div className="space-y-3">
+            {[
+              { stat: "$0",      label: "Platform fees during beta" },
+              { stat: "3.3s",   label: "Settlement time on Algorand" },
+              { stat: "1 fn",   label: "To gate any endpoint" },
+              { stat: "∞",      label: "Agents can discover and pay you" },
+            ].map(({ stat, label }) => (
+              <div key={label} className="flex items-center justify-between bg-zinc-900/60 border border-zinc-800 rounded-xl px-5 py-3">
+                <span className="text-zinc-400 text-sm">{label}</span>
+                <span className="text-emerald-400 font-bold font-mono">{stat}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function Footer() {
   return (
     <footer className="border-t border-zinc-800/60 py-10 px-6 mt-8">
       <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-zinc-600">
         <span>© 2026 algo-wallet. Built on Algorand.</span>
         <div className="flex items-center gap-6">
+          <Link href="/registry" className="hover:text-zinc-400 transition-colors">Marketplace</Link>
+          <Link href="/sell" className="hover:text-zinc-400 transition-colors">Sell an API</Link>
           <a href="/docs" className="hover:text-zinc-400 transition-colors">Documentation</a>
           <Link href="/privacy" className="hover:text-zinc-400 transition-colors">Privacy</Link>
           <Link href="/terms" className="hover:text-zinc-400 transition-colors">Terms</Link>
@@ -366,6 +421,7 @@ export default function LandingPage() {
       <Pricing />
       <DeveloperQuickstart />
       <NativeIntegrations />
+      <SellerSection />
       <Footer />
     </div>
   );
