@@ -229,6 +229,29 @@ app.get("/.well-known/mcp/server-card.json", (_req, res) => {
   });
 });
 
+// ── AP2 discovery ────────────────────────────────────────────────
+app.get("/.well-known/ap2", (_req, res) => {
+  res.json({
+    version:         "0.1",
+    payment_methods: [
+      {
+        supported_methods: "https://www.x402.org/",
+        description:       "Algorand x402 USDC payments via AVM MandateContract",
+        network:           "algorand-mainnet",
+        asset:             "USDC (ASA 31566704)",
+        adapter_package:   "ap2-algorand",
+        adapter_source:    "https://github.com/algo-wallet/x402-mcp/tree/main/packages/ap2-adapter",
+        settle_endpoint:   "https://api.ai-agentic-wallet.com/api/settle",
+        docs:              "https://ai-agentic-wallet.com/docs/ap2",
+      },
+    ],
+    identity: {
+      name:     "Algo Wallet x402",
+      base_url: "https://api.ai-agentic-wallet.com",
+    },
+  });
+});
+
 // ── Health ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
   const [node, haltRecord, circuitState] = await Promise.all([

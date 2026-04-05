@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ap2-algorand"
+version = "0.1.0"
+description = "Google AP2 × Algorand adapter — settle x402 payments from AP2 CartMandate/PaymentMandate"
+requires-python = ">=3.10"
+license = "MIT"
+readme = "README.md"
+keywords = ["algorand", "x402", "usdc", "ap2", "agent-payments", "ai-agent"]
+dependencies = [
+    "py-algorand-sdk>=2.0,<3.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+ap2 = []   # pip install ap2  (from google-agentic-commerce/AP2 when published)
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
