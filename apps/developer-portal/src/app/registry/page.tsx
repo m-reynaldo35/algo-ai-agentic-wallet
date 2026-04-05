@@ -197,7 +197,7 @@ export default function RegistryPage() {
                 {showSnippet ? "Hide" : "Use"} Bazaar MCP
               </button>
               <Link
-                href="/get-started"
+                href="/sell"
                 className="text-sm bg-white text-black font-medium px-4 py-2 rounded-lg hover:bg-zinc-100 transition-colors"
               >
                 List your API →
@@ -285,10 +285,10 @@ export default function RegistryPage() {
           </p>
           <div className="flex items-center justify-center gap-3 flex-wrap">
             <Link
-              href="/docs#seller"
+              href="/sell"
               className="text-sm bg-white text-black font-medium px-5 py-2.5 rounded-lg hover:bg-zinc-100 transition-colors"
             >
-              Seller quickstart →
+              Become a seller →
             </Link>
             <a
               href="https://www.npmjs.com/package/@algo-wallet/x402-mcp"
