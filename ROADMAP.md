@@ -1463,10 +1463,12 @@ with enough variety that agents have real choices. Target: 10 listed APIs across
 - [x] `GET /api/news?topic=` — headlines via NewsData.io free tier ($0.005) ✅
 
 ### 21.2 Third-Party Seller Outreach
-- [ ] Write "Become a Seller" landing page at `/sell`:
-      - "Your API earns USDC every time an AI agent calls it"
-      - Setup guide: 3 steps, one npm install
-      - Earnings calculator: N calls/day × $0.001 = $X/month
+- [x] `/sell` — "Become a Seller" landing page ✅ (2026-04-05)
+  - Hero: "Your API earns USDC every time an AI agent calls it"
+  - Interactive earnings calculator (sliders: calls/day × price → daily/monthly/yearly USDC)
+  - 3-step setup: install → middleware (Express/FastAPI/Flask tabbed) → registry listing
+  - Payment verification flow diagram + FAQ accordion
+  - Cross-linked from `/registry` "List your API" and CTA buttons
 - [ ] Reach out to 5 API providers in the Algorand ecosystem
 - [ ] Write blog post: "How to monetise your API for AI agents with Algorand USDC"
 
