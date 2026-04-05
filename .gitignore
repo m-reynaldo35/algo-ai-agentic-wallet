@@ -18,3 +18,4 @@ testnet-wallet.txt
 *-qr.jpg
 certs/
 .env*.local
+packages/ap2-adapter/src/ap2_algorand/__pycache__/
