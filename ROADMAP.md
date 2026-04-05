@@ -1382,8 +1382,13 @@ agents query to find what's available to buy. It also creates the flywheel: more
 - [x] Verification: server pings `endpoint/.well-known/x402` — sets `verified` flag
 - [x] `seedFirstPartyTools()` — idempotent boot-time seeding of 4 first-party APIs
 
-### 19.2 Registry Frontend Page
-- [ ] New public page at `ai-agentic-wallet.com/registry` (developer-portal, Sprint 19.2)
+### 19.2 Registry Frontend Page ✅
+- [x] `/registry` — public page (no sidebar), live card grid from `/api/registry`
+  - Category filter pills, price badges, verified tick, copy endpoint button
+  - "Use Bazaar MCP" toggle → Claude Desktop config snippet
+  - "List your API" CTA with seller npm snippet
+- [x] `/api/registry` Next.js proxy route (public, 60s cache)
+- [x] PortalShell: `/registry` treated as sidebar-free public page
 
 ### 19.3 Registry in DOCS_FOR_AGENTS.md
 - [ ] Section: "Discoverable APIs" — lists registry entries with endpoint + price
@@ -1455,7 +1460,7 @@ with enough variety that agents have real choices. Target: 10 listed APIs across
 - [x] `GET /api/fx?from=USD&to=NGN` — FX rates via ExchangeRate-API ($0.002)
 - [x] `GET /api/geocode?address=` — address → lat/lng via Nominatim ($0.001)
 - [x] `GET /api/crypto/price?symbol=ALGO` — crypto price via CoinGecko ($0.001)
-- [ ] `GET /api/news?topic=` — headlines via NewsData.io free tier ($0.005)
+- [x] `GET /api/news?topic=` — headlines via NewsData.io free tier ($0.005) ✅
 
 ### 21.2 Third-Party Seller Outreach
 - [ ] Write "Become a Seller" landing page at `/sell`:
